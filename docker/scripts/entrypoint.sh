@@ -77,6 +77,26 @@ start_node() {
         auth_config="-mycelium auth_enabled true -mycelium auth_key_dir '\"/app/data/keys\"' -mycelium auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
     fi
 
+    # Build encryption config
+    local encryption_config=""
+    if [ "$ENCRYPTION_ENABLED" = "true" ]; then
+        encryption_config="-mycelium encryption_enabled true"
+    elif [ "$ENCRYPTION_ENABLED" = "false" ]; then
+        encryption_config="-mycelium encryption_enabled false"
+    fi
+
+    # Build whitelist config if provided
+    local whitelist_config=""
+    if [ -n "$COOKIE_ONLY_NODES" ]; then
+        whitelist_config="-mycelium cookie_only_nodes [$COOKIE_ONLY_NODES]"
+    fi
+
+    # Build dist_cookie config (to match what mycelium sets)
+    local dist_cookie_config=""
+    if [ -n "$DIST_COOKIE" ]; then
+        dist_cookie_config="-mycelium dist_cookie $DIST_COOKIE"
+    fi
+
     # Build the startup eval with join retry logic
     local startup_eval
     if [ -n "$contact_node" ]; then
@@ -104,12 +124,19 @@ start_node() {
         startup_eval="application:ensure_all_started(mycelium), file:write_file(\"/tmp/mycelium_ready\", <<>>)"
     fi
 
+    echo "Encryption enabled: ${ENCRYPTION_ENABLED:-default}"
+    echo "Cookie only nodes: ${COOKIE_ONLY_NODES:-none}"
+    echo "Dist cookie: ${DIST_COOKIE:-default}"
+
     exec erl \
         -sname "$short_name" \
         -setcookie "$ERLANG_COOKIE" \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/config/sys \
         $auth_config \
+        $encryption_config \
+        $whitelist_config \
+        $dist_cookie_config \
         -eval "$startup_eval" \
         -noshell
 }

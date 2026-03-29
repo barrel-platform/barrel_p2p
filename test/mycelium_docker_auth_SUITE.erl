@@ -35,7 +35,18 @@
     %% Cluster operations with auth
     test_rpc_call_authenticated/1,
     test_service_registration_authenticated/1,
-    test_node_rejoin_authenticated/1
+    test_node_rejoin_authenticated/1,
+
+    %% Encryption tests
+    test_encryption_enabled/1,
+    test_crypto_module_available/1,
+
+    %% Whitelist tests
+    test_whitelist_config/1,
+    test_whitelist_pattern_matching/1,
+
+    %% Security tests
+    test_automatic_cookie/1
 ]).
 
 %%====================================================================
@@ -48,7 +59,10 @@ suite() ->
 all() ->
     [{group, auth_basic},
      {group, auth_tofu},
-     {group, auth_cluster}].
+     {group, auth_cluster},
+     {group, encryption_tests},
+     {group, whitelist_tests},
+     {group, security_tests}].
 
 groups() ->
     [
@@ -69,6 +83,17 @@ groups() ->
             test_rpc_call_authenticated,
             test_service_registration_authenticated,
             test_node_rejoin_authenticated
+        ]},
+        {encryption_tests, [sequence], [
+            test_encryption_enabled,
+            test_crypto_module_available
+        ]},
+        {whitelist_tests, [sequence], [
+            test_whitelist_config,
+            test_whitelist_pattern_matching
+        ]},
+        {security_tests, [sequence], [
+            test_automatic_cookie
         ]}
     ].
 
@@ -309,6 +334,119 @@ test_node_rejoin_authenticated(Config) ->
     ct:pal("After rejoin, Node3 -> Node1: ~p", [Result]),
     ?assertEqual(Node1, Result),
 
+    ok.
+
+%%====================================================================
+%% Encryption Tests
+%%====================================================================
+
+test_encryption_enabled(Config) ->
+    Nodes = ?config(test_nodes, Config),
+    [Node1 | _] = Nodes,
+
+    %% Check if encryption is enabled (default is true)
+    EncEnabled = rpc:call(Node1, mycelium_crypto, is_encryption_enabled, []),
+    ct:pal("Node1 encryption_enabled: ~p", [EncEnabled]),
+
+    %% Should be a boolean
+    ?assert(is_boolean(EncEnabled)),
+    ok.
+
+test_crypto_module_available(Config) ->
+    Nodes = ?config(test_nodes, Config),
+    [Node1 | _] = Nodes,
+
+    %% Verify crypto module functions are available
+    {module, Module} = rpc:call(Node1, code, ensure_loaded, [mycelium_crypto]),
+    ct:pal("mycelium_crypto module loaded: ~p", [Module]),
+    ?assertEqual(mycelium_crypto, Module),
+
+    %% Test key generation works
+    {PubKey, PrivKey} = rpc:call(Node1, mycelium_crypto, generate_ephemeral_keypair, []),
+    ct:pal("Generated ephemeral keypair, pub size: ~p, priv size: ~p",
+           [byte_size(PubKey), byte_size(PrivKey)]),
+    ?assertEqual(32, byte_size(PubKey)),
+    ?assertEqual(32, byte_size(PrivKey)),
+    ok.
+
+%%====================================================================
+%% Whitelist Tests
+%%====================================================================
+
+test_whitelist_config(Config) ->
+    Nodes = ?config(test_nodes, Config),
+    [Node1 | _] = Nodes,
+
+    %% Get whitelist configuration (defaults to empty)
+    Whitelist = rpc:call(Node1, application, get_env, [mycelium, cookie_only_nodes, []]),
+    ct:pal("Node1 cookie_only_nodes: ~p", [Whitelist]),
+
+    %% Should be a list
+    ?assert(is_list(Whitelist)),
+    ok.
+
+test_whitelist_pattern_matching(Config) ->
+    Nodes = ?config(test_nodes, Config),
+    [Node1 | _] = Nodes,
+
+    %% Test pattern matching on remote node
+    %% First, set a test whitelist
+    ok = rpc:call(Node1, application, set_env, [mycelium, cookie_only_nodes, [
+        'cnode@localhost',
+        'monitor@*',
+        '*@trusted.local'
+    ]]),
+
+    %% Test exact match
+    ExactMatch = rpc:call(Node1, mycelium_dist_auth, is_cookie_only_allowed, ['cnode@localhost']),
+    ct:pal("Exact match 'cnode@localhost': ~p", [ExactMatch]),
+    ?assert(ExactMatch),
+
+    %% Test wildcard host match
+    WildcardHost = rpc:call(Node1, mycelium_dist_auth, is_cookie_only_allowed, ['monitor@anyhost']),
+    ct:pal("Wildcard host 'monitor@anyhost': ~p", [WildcardHost]),
+    ?assert(WildcardHost),
+
+    %% Test wildcard name match
+    WildcardName = rpc:call(Node1, mycelium_dist_auth, is_cookie_only_allowed, ['anything@trusted.local']),
+    ct:pal("Wildcard name 'anything@trusted.local': ~p", [WildcardName]),
+    ?assert(WildcardName),
+
+    %% Test no match
+    NoMatch = rpc:call(Node1, mycelium_dist_auth, is_cookie_only_allowed, ['random@random']),
+    ct:pal("No match 'random@random': ~p", [NoMatch]),
+    ?assertNot(NoMatch),
+
+    %% Clean up - reset to empty whitelist
+    ok = rpc:call(Node1, application, set_env, [mycelium, cookie_only_nodes, []]),
+    ok.
+
+%%====================================================================
+%% Security Tests
+%%====================================================================
+
+test_automatic_cookie(Config) ->
+    Nodes = ?config(test_nodes, Config),
+    [Node1, Node2 | _] = Nodes,
+
+    %% Get the configured dist_cookie
+    Cookie1 = rpc:call(Node1, application, get_env, [mycelium, dist_cookie, undefined]),
+    Cookie2 = rpc:call(Node2, application, get_env, [mycelium, dist_cookie, undefined]),
+    ct:pal("Node1 dist_cookie config: ~p", [Cookie1]),
+    ct:pal("Node2 dist_cookie config: ~p", [Cookie2]),
+
+    %% Get actual cookies (this is what erlang:get_cookie returns)
+    ActualCookie1 = rpc:call(Node1, erlang, get_cookie, []),
+    ActualCookie2 = rpc:call(Node2, erlang, get_cookie, []),
+    ct:pal("Node1 actual cookie: ~p", [ActualCookie1]),
+    ct:pal("Node2 actual cookie: ~p", [ActualCookie2]),
+
+    %% Cookies should be atoms
+    ?assert(is_atom(ActualCookie1)),
+    ?assert(is_atom(ActualCookie2)),
+
+    %% Both nodes should have the same cookie (either from config or default)
+    ?assertEqual(ActualCookie1, ActualCookie2),
     ok.
 
 %%====================================================================

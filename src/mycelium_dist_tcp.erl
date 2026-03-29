@@ -53,7 +53,22 @@ accept({ListenSocket, _NetAddr, _Creation}) ->
 -spec accept_connection(pid(), term(), node(), term(), non_neg_integer()) -> pid().
 accept_connection(AcceptPid, DistCtrl, MyNode, Allowed, SetupTime) ->
     spawn_opt(fun() ->
-        do_accept(AcceptPid, DistCtrl, MyNode, Allowed, SetupTime)
+        %% Handle different DistCtrl formats:
+        %% - Socket (plain socket)
+        %% - {Socket, BufferedData} (c-node with buffered OTP handshake data)
+        %% - {Socket, {crypto, CryptoSession}} (encrypted connection)
+        case DistCtrl of
+            {Socket, {crypto, CryptoSession}} ->
+                %% Store crypto session for encrypted send/recv
+                put(mycelium_crypto_session, CryptoSession),
+                do_accept(AcceptPid, Socket, MyNode, Allowed, SetupTime);
+            {Socket, BufferedData} when is_binary(BufferedData) ->
+                %% Store buffered data for recv_func to return first
+                put(mycelium_buffered_data, BufferedData),
+                do_accept(AcceptPid, Socket, MyNode, Allowed, SetupTime);
+            Socket ->
+                do_accept(AcceptPid, Socket, MyNode, Allowed, SetupTime)
+        end
     end, dist_util:net_ticker_spawn_options()).
 
 %% @doc Initiate outbound connection
@@ -115,11 +130,47 @@ accept_loop(Kernel, ListenSocket) ->
                     %% Ed25519 authentication before OTP handshake
                     case mycelium_dist_auth:authenticate_incoming(Socket) of
                         ok ->
+                            %% Auth succeeded, no encryption
                             Kernel ! {accept, self(), Socket, ?FAMILY, tcp},
                             receive
                                 {Kernel, controller, Pid} ->
                                     ok = gen_tcp:controlling_process(Socket, Pid),
                                     Pid ! {self(), controller};
+                                {Kernel, unsupported_protocol} ->
+                                    gen_tcp:close(Socket)
+                            end,
+                            accept_loop(Kernel, ListenSocket);
+                        {ok, CryptoSession} ->
+                            %% Auth succeeded with encryption - pass crypto session
+                            Kernel ! {accept, self(), {Socket, {crypto, CryptoSession}}, ?FAMILY, tcp},
+                            receive
+                                {Kernel, controller, Pid} ->
+                                    ok = gen_tcp:controlling_process(Socket, Pid),
+                                    Pid ! {self(), controller, {crypto, CryptoSession}};
+                                {Kernel, unsupported_protocol} ->
+                                    gen_tcp:close(Socket)
+                            end,
+                            accept_loop(Kernel, ListenSocket);
+                        {error, auth_not_attempted} ->
+                            %% Peer didn't send Ed25519 HELLO (likely c-node)
+                            %% Let OTP handshake proceed - cookie will be checked
+                            Kernel ! {accept, self(), Socket, ?FAMILY, tcp},
+                            receive
+                                {Kernel, controller, Pid} ->
+                                    ok = gen_tcp:controlling_process(Socket, Pid),
+                                    Pid ! {self(), controller};
+                                {Kernel, unsupported_protocol} ->
+                                    gen_tcp:close(Socket)
+                            end,
+                            accept_loop(Kernel, ListenSocket);
+                        {error, {auth_not_attempted, BufferedData}} ->
+                            %% Peer sent OTP handshake data instead of AUTH_HELLO
+                            %% Store the buffered data and let OTP handle it
+                            Kernel ! {accept, self(), {Socket, BufferedData}, ?FAMILY, tcp},
+                            receive
+                                {Kernel, controller, Pid} ->
+                                    ok = gen_tcp:controlling_process(Socket, Pid),
+                                    Pid ! {self(), controller, BufferedData};
                                 {Kernel, unsupported_protocol} ->
                                     gen_tcp:close(Socket)
                             end,
@@ -159,6 +210,11 @@ do_setup(Node, Type, MyNode, LongOrShort, SetupTime) ->
                             %% Ed25519 authentication before OTP handshake
                             case mycelium_dist_auth:authenticate_outgoing(Socket, Node) of
                                 ok ->
+                                    HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
+                                    dist_util:handshake_we_started(HSData);
+                                {ok, CryptoSession} ->
+                                    %% Store crypto session for encrypted send/recv
+                                    put(mycelium_crypto_session, CryptoSession),
                                     HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
                                     dist_util:handshake_we_started(HSData);
                                 {error, _Reason} ->
@@ -240,9 +296,78 @@ make_hs_data_incoming(Socket, MyNode, Timer, Allowed) ->
 %%====================================================================
 
 send_func(Socket, Data) ->
-    gen_tcp:send(Socket, Data).
+    case get(mycelium_crypto_session) of
+        undefined ->
+            %% No encryption
+            gen_tcp:send(Socket, Data);
+        Session ->
+            %% Encrypt data before sending
+            DataBin = iolist_to_binary(Data),
+            case mycelium_crypto:encrypt(DataBin, Session, <<>>) of
+                {ok, Encrypted, UpdatedSession} ->
+                    put(mycelium_crypto_session, UpdatedSession),
+                    %% Send length-prefixed encrypted data
+                    Len = byte_size(Encrypted),
+                    gen_tcp:send(Socket, <<Len:32/big, Encrypted/binary>>);
+                {error, _Reason} = Error ->
+                    Error
+            end
+    end.
 
 recv_func(Socket, Length, Timeout) ->
+    %% Check for buffered data from c-node detection
+    case erase(mycelium_buffered_data) of
+        undefined ->
+            do_recv_maybe_encrypted(Socket, Length, Timeout);
+        BufferedData when is_binary(BufferedData) ->
+            %% Return buffered data first (c-node case, no encryption)
+            BufferedLen = byte_size(BufferedData),
+            if
+                Length =:= 0 orelse BufferedLen >= Length ->
+                    %% Buffered data is enough
+                    {ok, BufferedData};
+                true ->
+                    %% Need more data - get from socket
+                    Remaining = Length - BufferedLen,
+                    case do_recv(Socket, Remaining, Timeout) of
+                        {ok, MoreData} ->
+                            {ok, <<BufferedData/binary, MoreData/binary>>};
+                        Error ->
+                            Error
+                    end
+            end
+    end.
+
+do_recv_maybe_encrypted(Socket, Length, Timeout) ->
+    case get(mycelium_crypto_session) of
+        undefined ->
+            %% No encryption
+            do_recv(Socket, Length, Timeout);
+        Session ->
+            %% Read length-prefixed encrypted block
+            case gen_tcp:recv(Socket, 4, Timeout) of
+                {ok, <<Len:32/big>>} ->
+                    case gen_tcp:recv(Socket, Len, Timeout) of
+                        {ok, Encrypted} ->
+                            case mycelium_crypto:decrypt(Encrypted, Session, <<>>) of
+                                {ok, Plaintext, UpdatedSession} ->
+                                    put(mycelium_crypto_session, UpdatedSession),
+                                    {ok, Plaintext};
+                                {error, _Reason} = Error ->
+                                    Error
+                            end;
+                        Error ->
+                            Error
+                    end;
+                {ok, PartialLen} ->
+                    %% Received partial length header - this shouldn't happen with {packet, N}
+                    {error, {partial_length_header, PartialLen}};
+                Error ->
+                    Error
+            end
+    end.
+
+do_recv(Socket, Length, Timeout) ->
     case gen_tcp:recv(Socket, Length, Timeout) of
         {ok, Data} when is_list(Data) ->
             {ok, list_to_binary(Data)};

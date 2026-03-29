@@ -64,12 +64,21 @@
 }).
 
 %% Trusted peer key for Ed25519 authentication
+%% Identity is based on key fingerprint (SHA-256 hash), not node name
 -record(peer_key, {
-    node        :: node(),
+    fingerprint :: binary(),        %% SHA-256 hash of public key (32 bytes)
     public_key  :: binary(),        %% 32 bytes Ed25519 public key
     added_at    :: integer(),       %% erlang:system_time(millisecond)
     last_seen   :: integer(),       %% erlang:system_time(millisecond)
     trust_level :: permanent | tofu %% permanent = pre-configured, tofu = trust on first use
+}).
+
+%% Crypto session state for encrypted distribution
+-record(crypto_session, {
+    send_key    :: binary(),           %% 32 bytes ChaCha20 key for sending
+    recv_key    :: binary(),           %% 32 bytes ChaCha20 key for receiving
+    send_nonce  :: non_neg_integer(),  %% Counter for send nonce
+    recv_nonce  :: non_neg_integer()   %% Counter for receive nonce
 }).
 
 %% HyParView protocol messages (sent over Erlang distribution)

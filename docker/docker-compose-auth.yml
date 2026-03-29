@@ -9,9 +9,11 @@ x-erlang-node: &erlang-node
     context: ..
     dockerfile: docker/Dockerfile
   environment:
-    ERLANG_COOKIE: mycelium_test_cookie
+    ERLANG_COOKIE: mycelium
+    DIST_COOKIE: mycelium
     AUTH_ENABLED: "true"
     AUTH_TRUST_MODE: tofu
+    ENCRYPTION_ENABLED: "true"
   networks:
     - mycelium_auth_net
 
@@ -22,11 +24,13 @@ services:
     hostname: node1
     container_name: mycelium_auth_node1
     environment:
-      ERLANG_COOKIE: mycelium_test_cookie
+      ERLANG_COOKIE: mycelium
+      DIST_COOKIE: mycelium
       NODE_NAME: node1@node1
       NODE_ROLE: seed
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
+      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node1:/app/data/keys
 
@@ -36,12 +40,14 @@ services:
     hostname: node2
     container_name: mycelium_auth_node2
     environment:
-      ERLANG_COOKIE: mycelium_test_cookie
+      ERLANG_COOKIE: mycelium
+      DIST_COOKIE: mycelium
       NODE_NAME: node2@node2
       NODE_ROLE: member
       CONTACT_NODE: node1@node1
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
+      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node2:/app/data/keys
     depends_on:
@@ -53,12 +59,14 @@ services:
     hostname: node3
     container_name: mycelium_auth_node3
     environment:
-      ERLANG_COOKIE: mycelium_test_cookie
+      ERLANG_COOKIE: mycelium
+      DIST_COOKIE: mycelium
       NODE_NAME: node3@node3
       NODE_ROLE: member
       CONTACT_NODE: node1@node1
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
+      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node3:/app/data/keys
     depends_on:
@@ -71,7 +79,8 @@ services:
     hostname: test_runner
     container_name: mycelium_auth_test_runner
     environment:
-      ERLANG_COOKIE: mycelium_test_cookie
+      ERLANG_COOKIE: mycelium
+      DIST_COOKIE: mycelium
       NODE_NAME: test_runner@test_runner
       NODE_ROLE: auth_test_runner
       TEST_NODES: "node1@node1,node2@node2,node3@node3"

@@ -36,12 +36,29 @@
     test_key_persistence_to_disk/1
 ]).
 
+%% Test cases - Whitelist
+-export([
+    test_whitelist_exact_match/1,
+    test_whitelist_wildcard_host/1,
+    test_whitelist_wildcard_name/1,
+    test_whitelist_no_match/1,
+    test_whitelist_empty/1,
+    test_whitelist_invalid_pattern/1
+]).
+
+%% Test cases - Key exchange protocol
+-export([
+    test_key_exchange_encode_decode/1,
+    test_key_exchange_invalid_size/1
+]).
+
 %%====================================================================
 %% CT Callbacks
 %%====================================================================
 
 all() ->
-    [{group, unit_tests}, {group, protocol_tests}, {group, trust_tests}].
+    [{group, unit_tests}, {group, protocol_tests}, {group, trust_tests},
+     {group, whitelist_tests}, {group, key_exchange_tests}].
 
 groups() ->
     [
@@ -58,13 +75,27 @@ groups() ->
             test_challenge_encode_decode,
             test_response_encode_decode,
             test_ok_fail_encode_decode,
-            test_invalid_message_rejected
+            test_invalid_message_rejected,
+            test_key_exchange_encode_decode,
+            test_key_exchange_invalid_size
         ]},
         {trust_tests, [sequence], [
             test_strict_rejects_unknown,
             test_tofu_accepts_first,
             test_tofu_rejects_key_change,
             test_key_persistence_to_disk
+        ]},
+        {whitelist_tests, [parallel], [
+            test_whitelist_exact_match,
+            test_whitelist_wildcard_host,
+            test_whitelist_wildcard_name,
+            test_whitelist_no_match,
+            test_whitelist_empty,
+            test_whitelist_invalid_pattern
+        ]},
+        {key_exchange_tests, [sequence], [
+            test_key_exchange_encode_decode,
+            test_key_exchange_invalid_size
         ]}
     ].
 
@@ -263,10 +294,9 @@ test_strict_rejects_unknown(_Config) ->
     mycelium_dist_keys:set_trust_mode(strict),
     ?assertEqual(strict, mycelium_dist_keys:get_trust_mode()),
 
-    %% Unknown node should not be trusted
-    UnknownNode = 'unknown@host',
+    %% Unknown key should not be trusted
     UnknownKey = crypto:strong_rand_bytes(32),
-    ?assertNot(mycelium_dist_keys:is_trusted(UnknownNode, UnknownKey)),
+    ?assertNot(mycelium_dist_keys:is_key_trusted(UnknownKey)),
     ok.
 
 test_tofu_accepts_first(_Config) ->
@@ -275,15 +305,15 @@ test_tofu_accepts_first(_Config) ->
     ?assertEqual(tofu, mycelium_dist_keys:get_trust_mode()),
 
     %% Store a new key (TOFU)
-    NewNode = 'newnode@host',
     NewKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(NewNode, NewKey),
+    ok = mycelium_dist_keys:store_key_if_new(NewKey),
 
     %% Should now be trusted
-    ?assert(mycelium_dist_keys:is_trusted(NewNode, NewKey)),
+    ?assert(mycelium_dist_keys:is_key_trusted(NewKey)),
 
-    %% Can look it up
-    {ok, LookedUpKey} = mycelium_dist_keys:lookup_key(NewNode),
+    %% Can look it up by fingerprint
+    Fp = mycelium_dist_keys:fingerprint(NewKey),
+    {ok, LookedUpKey} = mycelium_dist_keys:lookup_key(Fp),
     ?assertEqual(NewKey, LookedUpKey),
     ok.
 
@@ -291,19 +321,18 @@ test_tofu_rejects_key_change(_Config) ->
     mycelium_dist_keys:set_trust_mode(tofu),
 
     %% Store a key
-    Node = 'stable@host',
     OriginalKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(Node, OriginalKey),
+    ok = mycelium_dist_keys:store_key_if_new(OriginalKey),
 
-    %% Try to store a different key for the same node
+    %% Storing same key again should succeed (updates last_seen)
+    ok = mycelium_dist_keys:store_key_if_new(OriginalKey),
+
+    %% Original key should be trusted
+    ?assert(mycelium_dist_keys:is_key_trusted(OriginalKey)),
+
+    %% Different key is simply a different identity (not a conflict)
     DifferentKey = crypto:strong_rand_bytes(32),
-    {error, key_mismatch} = mycelium_dist_keys:store_key_if_new(Node, DifferentKey),
-
-    %% Original key should still be trusted
-    ?assert(mycelium_dist_keys:is_trusted(Node, OriginalKey)),
-
-    %% Different key should NOT be trusted
-    ?assertNot(mycelium_dist_keys:is_trusted(Node, DifferentKey)),
+    ?assertNot(mycelium_dist_keys:is_key_trusted(DifferentKey)),
     ok.
 
 test_key_persistence_to_disk(Config) ->
@@ -311,20 +340,127 @@ test_key_persistence_to_disk(Config) ->
     mycelium_dist_keys:set_trust_mode(tofu),
 
     %% Store a key
-    Node = 'persistent@host',
     PubKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(Node, PubKey),
+    ok = mycelium_dist_keys:store_key_if_new(PubKey),
 
-    %% Check file was created
+    %% Check file was created (filename is first 16 chars of hex fingerprint)
     TrustedDir = filename:join(KeyDir, "trusted"),
-    KeyFile = filename:join(TrustedDir, "persistent@host.pub"),
+    FpHex = mycelium_dist_keys:fingerprint_hex(PubKey),
+    ShortFp = binary:part(FpHex, 0, 16),
+    KeyFile = filename:join(TrustedDir, binary_to_list(ShortFp) ++ ".pub"),
     ?assert(filelib:is_file(KeyFile)),
 
-    %% Read the file and verify contents
+    %% Read the file and verify format: algorithm base64-key
     {ok, FileContents} = file:read_file(KeyFile),
-    ?assertEqual(PubKey, FileContents),
+    ExpectedLine = <<"mycelium-ed25519 ", (base64:encode(PubKey))/binary, "\n">>,
+    ?assertEqual(ExpectedLine, FileContents),
 
-    %% Delete the key
-    ok = mycelium_dist_keys:delete_key(Node),
+    %% Delete the key by fingerprint
+    Fp = mycelium_dist_keys:fingerprint(PubKey),
+    ok = mycelium_dist_keys:delete_key(Fp),
     ?assertNot(filelib:is_file(KeyFile)),
+    ok.
+
+%%====================================================================
+%% Whitelist Tests
+%%====================================================================
+
+test_whitelist_exact_match(_Config) ->
+    %% Set up whitelist with exact match
+    application:set_env(mycelium, cookie_only_nodes, ['cnode@localhost']),
+
+    %% Exact match should be allowed
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('cnode@localhost')),
+
+    %% Different node should not match
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('other@localhost')),
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('cnode@otherhost')),
+    ok.
+
+test_whitelist_wildcard_host(_Config) ->
+    %% Set up whitelist with wildcard host
+    application:set_env(mycelium, cookie_only_nodes, ['monitor@*']),
+
+    %% Any host should match
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('monitor@localhost')),
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('monitor@server1')),
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('monitor@192.168.1.1')),
+
+    %% Different name should not match
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('other@localhost')),
+    ok.
+
+test_whitelist_wildcard_name(_Config) ->
+    %% Set up whitelist with wildcard name
+    application:set_env(mycelium, cookie_only_nodes, ['*@trusted.local']),
+
+    %% Any name should match on trusted.local
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('cnode@trusted.local')),
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('monitor@trusted.local')),
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('anything@trusted.local')),
+
+    %% Different host should not match
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('cnode@untrusted.local')),
+    ok.
+
+test_whitelist_no_match(_Config) ->
+    %% Set up whitelist
+    application:set_env(mycelium, cookie_only_nodes, [
+        'cnode@localhost',
+        'monitor@*',
+        '*@trusted.local'
+    ]),
+
+    %% Nodes that don't match any pattern
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('random@random')),
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('other@server')),
+    ok.
+
+test_whitelist_empty(_Config) ->
+    %% Empty whitelist
+    application:set_env(mycelium, cookie_only_nodes, []),
+
+    %% Nothing should match
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('cnode@localhost')),
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('anything@anywhere')),
+    ok.
+
+test_whitelist_invalid_pattern(_Config) ->
+    %% Set up whitelist with valid and invalid patterns
+    application:set_env(mycelium, cookie_only_nodes, [
+        'valid@localhost',
+        invalid_no_at,  %% Missing @
+        'also@valid'
+    ]),
+
+    %% Valid patterns should work
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('valid@localhost')),
+    ?assert(mycelium_dist_auth:is_cookie_only_allowed('also@valid')),
+
+    %% Invalid pattern should not crash, just not match
+    ?assertNot(mycelium_dist_auth:is_cookie_only_allowed('invalid_no_at@somewhere')),
+    ok.
+
+%%====================================================================
+%% Key Exchange Protocol Tests
+%%====================================================================
+
+test_key_exchange_encode_decode(_Config) ->
+    %% Generate X25519 keypair
+    {PubKey, _PrivKey} = crypto:generate_key(ecdh, x25519),
+    ?assertEqual(32, byte_size(PubKey)),
+
+    %% Encode key exchange message
+    Encoded = mycelium_dist_protocol:encode_key_exchange(PubKey),
+
+    %% Decode and verify
+    {key_exchange, DecodedPubKey} = mycelium_dist_protocol:decode(Encoded),
+    ?assertEqual(PubKey, DecodedPubKey),
+    ok.
+
+test_key_exchange_invalid_size(_Config) ->
+    %% Try to decode with wrong key size
+    InvalidMsg = <<6:8, "short">>,  %% Type 6 = KEY_EXCHANGE, but only 5 bytes
+    Result = mycelium_dist_protocol:decode(InvalidMsg),
+    ?assertEqual({error, invalid_key_exchange_payload}, Result),
     ok.

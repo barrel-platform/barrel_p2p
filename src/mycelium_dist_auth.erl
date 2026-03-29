@@ -7,7 +7,8 @@
     get_public_key/0,
     get_private_key/0,
     authenticate_outgoing/2,
-    authenticate_incoming/1
+    authenticate_incoming/1,
+    is_cookie_only_allowed/1
 ]).
 
 %% Challenge-response protocol
@@ -81,8 +82,9 @@ get_private_key() ->
     file:read_file(PrivKeyFile).
 
 %% @doc Authenticate as connection initiator (outgoing)
+%% Returns {ok, CryptoSession} if encryption is enabled, ok otherwise.
 -spec authenticate_outgoing(gen_tcp:socket() | ssl:sslsocket(), node()) ->
-    ok | {error, term()}.
+    ok | {ok, #crypto_session{}} | {error, term()}.
 authenticate_outgoing(Socket, TargetNode) ->
     case is_auth_enabled() of
         false -> ok;
@@ -90,8 +92,10 @@ authenticate_outgoing(Socket, TargetNode) ->
     end.
 
 %% @doc Authenticate as connection acceptor (incoming)
+%% Returns {ok, CryptoSession} if encryption is enabled, ok otherwise.
+%% Returns {error, auth_not_attempted} if peer doesn't support Ed25519 (c-node).
 -spec authenticate_incoming(gen_tcp:socket() | ssl:sslsocket()) ->
-    ok | {error, term()}.
+    ok | {ok, #crypto_session{}} | {error, term()}.
 authenticate_incoming(Socket) ->
     case is_auth_enabled() of
         false -> ok;
@@ -294,11 +298,14 @@ handle_outgoing_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
 
 do_authenticate_incoming(Socket) ->
     Timeout = get_handshake_timeout(),
+    %% Use a short timeout for initial detection of c-nodes
+    %% C-nodes and legacy tools won't send AUTH_HELLO, they'll start OTP handshake directly
+    CNodeTimeout = get_cnode_detection_timeout(),
     case get_public_key() of
         {ok, MyPubKey} ->
             MyNode = node(),
-            %% Step 1: Receive peer's AUTH_HELLO
-            case socket_recv(Socket, Timeout) of
+            %% Step 1: Try to receive peer's AUTH_HELLO with short timeout
+            case socket_recv(Socket, CNodeTimeout) of
                 {ok, HelloData} ->
                     case mycelium_dist_protocol:decode(HelloData) of
                         {hello, PeerNode, PeerPubKey} ->
@@ -312,8 +319,14 @@ do_authenticate_incoming(Socket) ->
                                     {error, {send_hello_failed, Reason}}
                             end;
                         _ ->
-                            {error, unexpected_message}
+                            %% Received data but not AUTH_HELLO - likely OTP handshake
+                            %% Return the raw data so it can be replayed for OTP
+                            {error, {auth_not_attempted, HelloData}}
                     end;
+                {error, timeout} ->
+                    %% No data within short timeout - likely c-node waiting for us
+                    %% Return so OTP handshake can proceed
+                    {error, auth_not_attempted};
                 {error, Reason} ->
                     {error, {recv_hello_failed, Reason}}
             end;
@@ -321,9 +334,9 @@ do_authenticate_incoming(Socket) ->
             Error
     end.
 
-handle_incoming_after_hello(Socket, MyPubKey, PeerNode, PeerPubKey, Timeout) ->
-    %% Check if peer is trusted
-    case mycelium_dist_keys:is_trusted(PeerNode, PeerPubKey) of
+handle_incoming_after_hello(Socket, MyPubKey, _PeerNode, PeerPubKey, Timeout) ->
+    %% Check if peer's key is trusted (identity is based on key fingerprint, not node name)
+    case mycelium_dist_keys:is_key_trusted(PeerPubKey) of
         true ->
             continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout);
         false ->
@@ -385,9 +398,14 @@ handle_incoming_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
                                             case socket_send(Socket, OkMsg) of
                                                 ok ->
                                                     %% Record trusted peer (TOFU)
-                                                    mycelium_dist_keys:store_key_if_new(
-                                                        get_peer_from_socket(Socket), PeerPubKey),
-                                                    ok;
+                                                    mycelium_dist_keys:store_key_if_new(PeerPubKey),
+                                                    %% Step 8: Perform key exchange if encryption enabled
+                                                    case mycelium_crypto:is_encryption_enabled() of
+                                                        true ->
+                                                            perform_key_exchange_responder(Socket, Timeout);
+                                                        false ->
+                                                            ok
+                                                    end;
                                                 {error, Reason} ->
                                                     {error, {send_ok_failed, Reason}}
                                             end;
@@ -417,7 +435,13 @@ finalize_auth(Socket, PeerPubKey, Timeout) ->
                     %% Record trusted peer (TOFU)
                     mycelium_dist_keys:store_key_if_new(
                         get_peer_from_socket(Socket), PeerPubKey),
-                    ok;
+                    %% Perform key exchange if encryption is enabled
+                    case mycelium_crypto:is_encryption_enabled() of
+                        true ->
+                            perform_key_exchange_initiator(Socket, Timeout);
+                        false ->
+                            ok
+                    end;
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 _ ->
@@ -436,6 +460,77 @@ sign_challenge_for_peer(Nonce, Timestamp, PeerPubKey) ->
             {ok, Signature};
         Error ->
             Error
+    end.
+
+%%====================================================================
+%% Key Exchange Protocol
+%%====================================================================
+
+%% @doc Perform X25519 key exchange as the initiator (outgoing connection).
+%% The initiator sends their ephemeral public key first, then receives peer's key.
+-spec perform_key_exchange_initiator(gen_tcp:socket() | ssl:sslsocket(), timeout()) ->
+    {ok, #crypto_session{}} | {error, term()}.
+perform_key_exchange_initiator(Socket, Timeout) ->
+    %% Generate our ephemeral X25519 keypair
+    {MyEphPub, MyEphPriv} = mycelium_crypto:generate_ephemeral_keypair(),
+    %% Send our ephemeral public key
+    KeyExMsg = mycelium_dist_protocol:encode_key_exchange(MyEphPub),
+    case socket_send(Socket, KeyExMsg) of
+        ok ->
+            %% Receive peer's ephemeral public key
+            case socket_recv(Socket, Timeout) of
+                {ok, KeyExData} ->
+                    case mycelium_dist_protocol:decode(KeyExData) of
+                        {key_exchange, PeerEphPub} ->
+                            %% Compute shared secret and derive session keys
+                            SharedSecret = mycelium_crypto:compute_shared_secret(PeerEphPub, MyEphPriv),
+                            {InitiatorSession, _ResponderSession} =
+                                mycelium_crypto:derive_session_keys(SharedSecret, MyEphPub, PeerEphPub),
+                            {ok, InitiatorSession};
+                        {fail, Reason} ->
+                            {error, {key_exchange_rejected, Reason}};
+                        _ ->
+                            {error, unexpected_key_exchange_message}
+                    end;
+                {error, Reason} ->
+                    {error, {recv_key_exchange_failed, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {send_key_exchange_failed, Reason}}
+    end.
+
+%% @doc Perform X25519 key exchange as the responder (incoming connection).
+%% The responder receives peer's ephemeral key first, then sends their key.
+-spec perform_key_exchange_responder(gen_tcp:socket() | ssl:sslsocket(), timeout()) ->
+    {ok, #crypto_session{}} | {error, term()}.
+perform_key_exchange_responder(Socket, Timeout) ->
+    %% Generate our ephemeral X25519 keypair
+    {MyEphPub, MyEphPriv} = mycelium_crypto:generate_ephemeral_keypair(),
+    %% Receive peer's ephemeral public key first
+    case socket_recv(Socket, Timeout) of
+        {ok, KeyExData} ->
+            case mycelium_dist_protocol:decode(KeyExData) of
+                {key_exchange, PeerEphPub} ->
+                    %% Send our ephemeral public key
+                    KeyExMsg = mycelium_dist_protocol:encode_key_exchange(MyEphPub),
+                    case socket_send(Socket, KeyExMsg) of
+                        ok ->
+                            %% Compute shared secret and derive session keys
+                            %% Note: PeerEphPub is initiator's key, MyEphPub is responder's key
+                            SharedSecret = mycelium_crypto:compute_shared_secret(PeerEphPub, MyEphPriv),
+                            {_InitiatorSession, ResponderSession} =
+                                mycelium_crypto:derive_session_keys(SharedSecret, PeerEphPub, MyEphPub),
+                            {ok, ResponderSession};
+                        {error, Reason} ->
+                            {error, {send_key_exchange_failed, Reason}}
+                    end;
+                {fail, Reason} ->
+                    {error, {key_exchange_rejected, Reason}};
+                _ ->
+                    {error, unexpected_key_exchange_message}
+            end;
+        {error, Reason} ->
+            {error, {recv_key_exchange_failed, Reason}}
     end.
 
 %%====================================================================
@@ -465,6 +560,38 @@ get_peer_from_socket(Socket) ->
     end.
 
 %%====================================================================
+%% C-Node Whitelist
+%%====================================================================
+
+%% @doc Check if a node is allowed cookie-only connection (no Ed25519 auth).
+%% Used for c-nodes and legacy tools that cannot perform Ed25519 authentication.
+-spec is_cookie_only_allowed(node()) -> boolean().
+is_cookie_only_allowed(Node) ->
+    Whitelist = application:get_env(mycelium, cookie_only_nodes, []),
+    lists:any(fun(Pattern) -> match_node_pattern(Pattern, Node) end, Whitelist).
+
+%% @doc Match a node against a pattern that may contain wildcards.
+%% Patterns support '*' for any name or any host:
+%%   'cnode@localhost'  - exact match
+%%   'monitor@*'        - any host
+%%   '*@trusted.local'  - any name on specific host
+-spec match_node_pattern(atom(), node()) -> boolean().
+match_node_pattern(Pattern, Node) when is_atom(Pattern), is_atom(Node) ->
+    PatternStr = atom_to_list(Pattern),
+    NodeStr = atom_to_list(Node),
+    case {string:split(PatternStr, "@"), string:split(NodeStr, "@")} of
+        {[PName, PHost], [NName, NHost]} ->
+            match_part(PName, NName) andalso match_part(PHost, NHost);
+        _ -> false
+    end;
+match_node_pattern(_, _) -> false.
+
+%% @doc Match a single part (name or host) with wildcard support.
+-spec match_part(string(), string()) -> boolean().
+match_part("*", _) -> true;
+match_part(P, N) -> P =:= N.
+
+%%====================================================================
 %% Configuration Helpers
 %%====================================================================
 
@@ -476,6 +603,9 @@ get_key_dir() ->
 
 get_handshake_timeout() ->
     application:get_env(mycelium, auth_handshake_timeout, 10000).
+
+get_cnode_detection_timeout() ->
+    application:get_env(mycelium, cnode_detection_timeout, 1000).
 
 get_timestamp_window() ->
     application:get_env(mycelium, auth_timestamp_window, ?TIMESTAMP_WINDOW_MS).
