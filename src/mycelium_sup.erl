@@ -34,6 +34,15 @@ init([]) ->
         modules => [mycelium_registry_sup]
     },
 
+    PlumtreeSup = #{
+        id => mycelium_plumtree_sup,
+        start => {mycelium_plumtree_sup, start_link, []},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [mycelium_plumtree_sup]
+    },
+
     Bridge = #{
         id => mycelium_bridge,
         start => {mycelium_bridge, start_link, []},
@@ -43,5 +52,5 @@ init([]) ->
         modules => [mycelium_bridge]
     },
 
-    ChildSpecs = [HyparviewSup, RegistrySup, Bridge],
+    ChildSpecs = [HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
     {ok, {SupFlags, ChildSpecs}}.

@@ -16,7 +16,9 @@
 
 -record(state, {
     %% Track known peers for sync
-    peers = [] :: [node()]
+    peers = [] :: [node()],
+    %% Use Plumtree for broadcast (if available)
+    use_plumtree = false :: boolean()
 }).
 
 %%====================================================================
@@ -43,15 +45,28 @@ handle_peer_down(Node) ->
 %%====================================================================
 
 init([]) ->
-    {ok, #state{}}.
+    %% Subscribe to Plumtree broadcasts if available
+    UsePlumtree = try
+        mycelium_plumtree:subscribe(self()),
+        true
+    catch _:_ ->
+        false
+    end,
+    {ok, #state{use_plumtree = UsePlumtree}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 handle_cast({broadcast, Update}, State) ->
-    %% Parallel broadcast to all known peers
-    Msg = {?SYNC_TAG, {delta, node(), [Update]}},
-    [erlang:send({?SERVER, Peer}, Msg, [nosuspend]) || Peer <- State#state.peers],
+    case State#state.use_plumtree of
+        true ->
+            %% Use Plumtree for efficient epidemic broadcast
+            mycelium_plumtree:broadcast(registry_sync, {delta, node(), [Update]});
+        false ->
+            %% Fallback: parallel broadcast to all known peers
+            Msg = {?SYNC_TAG, {delta, node(), [Update]}},
+            [erlang:send({?SERVER, Peer}, Msg, [nosuspend]) || Peer <- State#state.peers]
+    end,
     {noreply, State};
 
 handle_cast({peer_up, Node}, State) ->
@@ -90,7 +105,14 @@ handle_info({do_full_sync, Node}, State) ->
     {noreply, State};
 
 handle_info({?SYNC_TAG, {delta, FromNode, Updates}}, State) ->
-    %% Apply delta updates
+    %% Apply delta updates (from direct peer-to-peer)
+    lists:foreach(fun(Update) ->
+        apply_update(FromNode, Update)
+    end, Updates),
+    {noreply, State};
+
+handle_info({plumtree_broadcast, {registry_sync, {delta, FromNode, Updates}}}, State) ->
+    %% Apply delta updates (from Plumtree broadcast)
     lists:foreach(fun(Update) ->
         apply_update(FromNode, Update)
     end, Updates),
