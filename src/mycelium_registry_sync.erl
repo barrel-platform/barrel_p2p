@@ -16,9 +16,7 @@
 
 -record(state, {
     %% Track known peers for sync
-    peers = [] :: [node()],
-    %% Use Plumtree for broadcast (if available)
-    use_plumtree = false :: boolean()
+    peers = [] :: [node()]
 }).
 
 %%====================================================================
@@ -45,28 +43,16 @@ handle_peer_down(Node) ->
 %%====================================================================
 
 init([]) ->
-    %% Subscribe to Plumtree broadcasts if available
-    UsePlumtree = try
-        mycelium_plumtree:subscribe(self()),
-        true
-    catch _:_ ->
-        false
-    end,
-    {ok, #state{use_plumtree = UsePlumtree}}.
+    %% Subscribe to Plumtree broadcasts
+    ok = mycelium_plumtree:subscribe(self()),
+    {ok, #state{}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 handle_cast({broadcast, Update}, State) ->
-    case State#state.use_plumtree of
-        true ->
-            %% Use Plumtree for efficient epidemic broadcast
-            mycelium_plumtree:broadcast(registry_sync, {delta, node(), [Update]});
-        false ->
-            %% Fallback: parallel broadcast to all known peers
-            Msg = {?SYNC_TAG, {delta, node(), [Update]}},
-            [erlang:send({?SERVER, Peer}, Msg, [nosuspend]) || Peer <- State#state.peers]
-    end,
+    %% Use Plumtree for efficient epidemic broadcast
+    mycelium_plumtree:broadcast(registry_sync, {delta, node(), [Update]}),
     {noreply, State};
 
 handle_cast({peer_up, Node}, State) ->
