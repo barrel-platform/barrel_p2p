@@ -1,0 +1,27 @@
+# rebar3
+_build/
+_checkouts/
+rebar.lock
+
+# Common Test
+logs/
+ct_run.*
+
+# Dialyzer
+.dialyzer_plt
+*.plt
+
+# Editor
+*.swp
+*~
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Erlang
+erl_crash.dump
+*.beam
+*.ez

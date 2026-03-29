@@ -1,0 +1,31 @@
+{application, mycelium, [
+    {description, "HyParView peer membership with pluggable Erlang distribution carrier"},
+    {vsn, "0.1.0"},
+    {registered, [
+        mycelium_sup,
+        mycelium_hyparview,
+        mycelium_hyparview_shuffle,
+        mycelium_hyparview_events,
+        mycelium_bridge,
+        mycelium_registry,
+        mycelium_registry_sync
+    ]},
+    {mod, {mycelium_app, []}},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, [
+        {active_size, 5},
+        {passive_size, 30},
+        {arwl, 6},
+        {prwl, 3},
+        {shuffle_length, 8},
+        {shuffle_period, 10000},
+        {listen_port, 0},
+        {contact_nodes, []}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
