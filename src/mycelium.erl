@@ -39,6 +39,14 @@
     unsubscribe_services/1
 ]).
 
+%% Via callbacks for {via, mycelium, Name} registration
+-export([
+    register_name/2,
+    unregister_name/1,
+    whereis_name/1,
+    send/2
+]).
+
 %% Test helpers (for integration tests)
 -export([
     start_service_holder/1,
@@ -199,6 +207,60 @@ subscribe_services(Pid) ->
 -spec unsubscribe_services(pid()) -> ok.
 unsubscribe_services(Pid) ->
     mycelium_service_events:unsubscribe(Pid).
+
+%%====================================================================
+%% Via Callbacks - for use with {via, mycelium, Name}
+%%====================================================================
+%% These callbacks implement the standard name registration interface,
+%% allowing mycelium to be used as a process registry with gen_server,
+%% gen_statem, etc.
+%%
+%% Example usage:
+%%   %% Start a gen_server registered with mycelium
+%%   gen_server:start({via, mycelium, my_service}, ?MODULE, [], [])
+%%
+%%   %% Call the service by name
+%%   gen_server:call({via, mycelium, my_service}, request)
+%%
+%%   %% Send a message to a remote service
+%%   mycelium:send(my_service, {data, Payload})
+%%
+%% For remote services, use whereis_service/1 which returns {ok, Node, Pid}
+%% for remote processes, then send directly:
+%%   case mycelium:whereis_service(remote_svc) of
+%%       {ok, Pid} -> Pid ! Msg;                    %% local
+%%       {ok, _Node, Pid} -> Pid ! Msg;             %% remote
+%%       {error, not_found} -> handle_not_found()
+%%   end
+
+-spec register_name(Name :: term(), Pid :: pid()) -> yes | no.
+register_name(Name, Pid) when is_pid(Pid) ->
+    case mycelium_registry:register_service(Name, Pid, #{}) of
+        ok -> yes;
+        {error, _} -> no
+    end.
+
+-spec unregister_name(Name :: term()) -> ok.
+unregister_name(Name) ->
+    mycelium_registry:unregister_service(Name).
+
+-spec whereis_name(Name :: term()) -> pid() | undefined.
+whereis_name(Name) ->
+    case whereis_service(Name) of
+        {ok, Pid} -> Pid;
+        {ok, _Node, Pid} -> Pid;
+        {error, not_found} -> undefined
+    end.
+
+-spec send(Name :: term(), Msg :: term()) -> pid().
+send(Name, Msg) ->
+    case whereis_name(Name) of
+        undefined ->
+            erlang:error({badarg, {Name, Msg}});
+        Pid ->
+            Pid ! Msg,
+            Pid
+    end.
 
 %%====================================================================
 %% Test Helpers

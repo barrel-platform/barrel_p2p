@@ -6,7 +6,7 @@
 
 %% API
 -export([start_link/0]).
--export([register_service/2, unregister_service/1]).
+-export([register_service/2, register_service/3, unregister_service/1]).
 -export([lookup/1, lookup_local/1, list_services/0]).
 -export([get_all_local/0, get_local_ormap/0]).
 -export([overlay_lookup/1]).
@@ -39,6 +39,11 @@ start_link() ->
 -spec register_service(atom() | binary(), map()) -> ok | {error, term()}.
 register_service(Name, Meta) ->
     gen_server:call(?SERVER, {register, Name, Meta}).
+
+%% @doc Register a service with a specific pid (for via callbacks)
+-spec register_service(atom() | binary(), pid(), map()) -> ok | {error, term()}.
+register_service(Name, Pid, Meta) when is_pid(Pid) ->
+    gen_server:call(?SERVER, {register_pid, Name, Pid, Meta}).
 
 -spec unregister_service(atom() | binary()) -> ok.
 unregister_service(Name) ->
@@ -103,21 +108,10 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({register, Name, Meta}, {Pid, _}, State) ->
-    Key = {Name, node()},
-    case mycelium_ormap:get(Key, State#state.local) of
-        {ok, _} ->
-            {reply, {error, already_registered}, State};
-        not_found ->
-            Entry = #service_entry{name = Name, pid = Pid, node = node(), meta = Meta},
-            Local = mycelium_ormap:add(Key, Entry, State#state.local),
-            Ref = monitor(process, Pid),
-            Monitors = maps:put(Ref, {Name, Pid}, State#state.monitors),
-            %% Broadcast delta via sync
-            mycelium_registry_sync:broadcast_update({add, Key, Entry}),
-            %% Emit service event
-            mycelium_service_events:notify({service_registered, Name, node()}),
-            {reply, ok, State#state{local = Local, monitors = Monitors}}
-    end;
+    do_register(Name, Pid, Meta, State);
+
+handle_call({register_pid, Name, Pid, Meta}, _From, State) ->
+    do_register(Name, Pid, Meta, State);
 
 handle_call({unregister, Name}, _From, State) ->
     Key = {Name, node()},
@@ -221,6 +215,24 @@ terminate(_Reason, _State) ->
 %%====================================================================
 %% Internal Functions
 %%====================================================================
+
+%% Common registration logic for both register and register_pid
+do_register(Name, Pid, Meta, State) ->
+    Key = {Name, node()},
+    case mycelium_ormap:get(Key, State#state.local) of
+        {ok, _} ->
+            {reply, {error, already_registered}, State};
+        not_found ->
+            Entry = #service_entry{name = Name, pid = Pid, node = node(), meta = Meta},
+            Local = mycelium_ormap:add(Key, Entry, State#state.local),
+            Ref = monitor(process, Pid),
+            Monitors = maps:put(Ref, {Name, Pid}, State#state.monitors),
+            %% Broadcast delta via sync
+            mycelium_registry_sync:broadcast_update({add, Key, Entry}),
+            %% Emit service event
+            mycelium_service_events:notify({service_registered, Name, node()}),
+            {reply, ok, State#state{local = Local, monitors = Monitors}}
+    end.
 
 find_monitor_for_name(Name, Monitors) ->
     case [Ref || {Ref, {N, _Pid}} <- maps:to_list(Monitors), N =:= Name] of
