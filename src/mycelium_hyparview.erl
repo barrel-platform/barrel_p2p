@@ -8,6 +8,9 @@
 -export([peer_connected/2, peer_disconnected/2, peer_failed/2]).
 -export([initiate_shuffle/2]).
 
+%% Churn handling API
+-export([get_churn_stats/0, cleanup_passive_view/0]).
+
 %% Protocol handlers (called by mycelium_protocol)
 -export([handle_msg/2]).
 
@@ -57,6 +60,16 @@ peer_failed(Node, Reason) ->
 initiate_shuffle(Target, ShuffleLength) ->
     gen_server:cast(?SERVER, {initiate_shuffle, Target, ShuffleLength}).
 
+%% Churn stats for adaptive shuffle
+-spec get_churn_stats() -> {Joins :: non_neg_integer(), Leaves :: non_neg_integer()}.
+get_churn_stats() ->
+    gen_server:call(?SERVER, get_churn_stats).
+
+%% Trigger passive view cleanup (called by cleanup worker)
+-spec cleanup_passive_view() -> ok.
+cleanup_passive_view() ->
+    gen_server:cast(?SERVER, cleanup_passive_view).
+
 %% Called by mycelium_protocol when HyParView message received
 -spec handle_msg(hyparview_msg(), node()) -> ok.
 handle_msg(Msg, From) ->
@@ -74,6 +87,7 @@ init(Config) ->
         connected = true,
         priority = high
     },
+    Now = erlang:monotonic_time(millisecond),
     State = #view_state{
         active_size = maps:get(active_size, Config, 5),
         passive_size = maps:get(passive_size, Config, 30),
@@ -81,7 +95,13 @@ init(Config) ->
         prwl = maps:get(prwl, Config, 3),
         shuffle_length = maps:get(shuffle_length, Config, 8),
         shuffle_period = maps:get(shuffle_period, Config, 10000),
-        self = Self
+        self = Self,
+        %% Churn handling
+        max_fail_count = maps:get(max_fail_count, Config, 5),
+        base_backoff_ms = maps:get(base_backoff_ms, Config, 1000),
+        passive_max_age_ms = maps:get(passive_max_age_ms, Config, 300000),
+        churn_window_ms = maps:get(churn_window_ms, Config, 30000),
+        churn_window_start = Now
     },
     {ok, State}.
 
@@ -110,6 +130,12 @@ handle_call(active_view, _From, State) ->
 
 handle_call(passive_view, _From, State) ->
     {reply, maps:keys(State#view_state.passive_view), State};
+
+handle_call(get_churn_stats, _From, State) ->
+    %% Reset window if expired
+    Now = erlang:monotonic_time(millisecond),
+    State1 = maybe_reset_churn_window(Now, State),
+    {reply, {State1#view_state.recent_joins, State1#view_state.recent_leaves}, State1};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -151,6 +177,10 @@ handle_cast({peer_disconnected, Node, Reason}, State) ->
 
 handle_cast({peer_failed, Node, Reason}, State) ->
     handle_peer_removal(Node, Reason, failed, State);
+
+handle_cast(cleanup_passive_view, State) ->
+    State1 = do_cleanup_passive_view(State),
+    {noreply, State1};
 
 handle_cast({initiate_shuffle, Target, ShuffleLength}, State) ->
     case maps:is_key(Target, State#view_state.active_view) of
@@ -206,8 +236,11 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 handle_join(Sender, State) ->
+    %% Track churn event
+    State0 = record_churn_event(join, State),
+
     %% Add sender to active view
-    State1 = add_to_active_view(Sender, State),
+    State1 = add_to_active_view(Sender, State0),
 
     %% Forward join to all active peers (except sender)
     TTL = State1#view_state.arwl,
@@ -271,12 +304,14 @@ handle_forward_join(NewPeer, TTL, Sender, State) ->
 handle_disconnect(Sender, State) ->
     case maps:is_key(Sender#peer.id, State#view_state.active_view) of
         true ->
-            Active = maps:remove(Sender#peer.id, State#view_state.active_view),
-            Passive = add_to_passive(Sender, State#view_state.passive_view,
-                                     State#view_state.passive_size),
+            %% Track churn event
+            State0 = record_churn_event(leave, State),
+            Active = maps:remove(Sender#peer.id, State0#view_state.active_view),
+            Passive = add_to_passive(Sender, State0#view_state.passive_view,
+                                     State0#view_state.passive_size),
             mycelium_hyparview_events:notify({peer_down, Sender#peer.id, graceful}),
             mycelium_registry_sync:handle_peer_down(Sender#peer.id),
-            State1 = State#view_state{active_view = Active, passive_view = Passive},
+            State1 = State0#view_state{active_view = Active, passive_view = Passive},
             maybe_promote_passive(State1);
         false ->
             State
@@ -350,28 +385,42 @@ handle_shuffle_reply(Peers, State) ->
 %%====================================================================
 
 handle_peer_removal(Node, Reason, Type, State) ->
-    case maps:is_key(Node, State#view_state.active_view) of
+    %% Track churn event
+    State0 = record_churn_event(leave, State),
+    case maps:is_key(Node, State0#view_state.active_view) of
         true ->
-            Active = maps:remove(Node, State#view_state.active_view),
-            %% Only add to passive if graceful disconnect
+            Active = maps:remove(Node, State0#view_state.active_view),
             State1 = case Type of
                 graceful ->
-                    Peer = maps:get(Node, State#view_state.active_view),
-                    Passive = add_to_passive(Peer, State#view_state.passive_view,
-                                            State#view_state.passive_size),
-                    State#view_state{active_view = Active, passive_view = Passive};
+                    Peer = maps:get(Node, State0#view_state.active_view),
+                    Passive = add_to_passive(Peer, State0#view_state.passive_view,
+                                            State0#view_state.passive_size),
+                    State0#view_state{active_view = Active, passive_view = Passive};
                 failed ->
-                    %% Failed nodes don't go to passive view
-                    State#view_state{active_view = Active}
+                    %% Track failure in passive view if present
+                    Passive = record_peer_failure(Node, State0),
+                    State0#view_state{active_view = Active, passive_view = Passive}
             end,
             mycelium_hyparview_events:notify({peer_down, Node, Reason}),
             mycelium_registry_sync:handle_peer_down(Node),
             State2 = maybe_promote_passive(State1),
             {noreply, State2};
         false ->
-            %% Remove from pending if present
-            Pending = maps:remove(Node, State#view_state.pending),
-            {noreply, State#view_state{pending = Pending}}
+            %% Check if this was a pending connection that failed
+            case maps:take(Node, State0#view_state.pending) of
+                {{neighbor, _Ref}, NewPending} ->
+                    %% Failed neighbor request - track failure and try another
+                    Passive = record_peer_failure(Node, State0),
+                    State1 = State0#view_state{pending = NewPending, passive_view = Passive},
+                    State2 = maybe_promote_passive(State1),
+                    {noreply, State2};
+                {_, NewPending} ->
+                    %% Other pending types
+                    Passive = record_peer_failure(Node, State0),
+                    {noreply, State0#view_state{pending = NewPending, passive_view = Passive}};
+                error ->
+                    {noreply, State0}
+            end
     end.
 
 make_peer(Node) ->
@@ -388,8 +437,8 @@ add_to_active_view(Peer, State) ->
     Active = State#view_state.active_view,
     case maps:size(Active) < State#view_state.active_size of
         true ->
-            maps:put(Peer#peer.id, Peer, Active),
-            State#view_state{active_view = maps:put(Peer#peer.id, Peer, Active)};
+            NewActive = maps:put(Peer#peer.id, Peer, Active),
+            State#view_state{active_view = NewActive};
         false ->
             %% Need to drop someone
             Exclude = [Peer#peer.id],
@@ -432,26 +481,57 @@ add_to_passive(Peer, Passive, MaxSize) ->
 
 maybe_promote_passive(State) ->
     ActiveSize = maps:size(State#view_state.active_view),
-    PassiveSize = maps:size(State#view_state.passive_view),
-    case ActiveSize < State#view_state.active_size andalso PassiveSize > 0 of
+    case ActiveSize < State#view_state.active_size of
         true ->
-            {Node, _Peer} = random_active_peer_pair(State#view_state.passive_view, []),
-            Passive = maps:remove(Node, State#view_state.passive_view),
+            Now = erlang:monotonic_time(millisecond),
+            case find_eligible_passive_peer(State, Now) of
+                {ok, Node, _Peer} ->
+                    Passive = maps:remove(Node, State#view_state.passive_view),
 
-            %% Send NEIGHBOR request with priority based on active view state
-            Priority = case ActiveSize of
-                0 -> high;
-                _ -> low
-            end,
+                    %% Send NEIGHBOR request with priority based on active view state
+                    Priority = case ActiveSize of
+                        0 -> high;
+                        _ -> low
+                    end,
 
-            Ref = make_ref(),
-            Pending = maps:put(Node, {neighbor, Ref}, State#view_state.pending),
-            mycelium_protocol:send(Node, {neighbor, Priority, State#view_state.self}),
-            mycelium_bridge:request_connect(Node),
-            State#view_state{passive_view = Passive, pending = Pending};
+                    Ref = make_ref(),
+                    Pending = maps:put(Node, {neighbor, Ref}, State#view_state.pending),
+                    mycelium_protocol:send(Node, {neighbor, Priority, State#view_state.self}),
+                    mycelium_bridge:request_connect(Node),
+                    State#view_state{passive_view = Passive, pending = Pending};
+                none ->
+                    State
+            end;
         false ->
             State
     end.
+
+%% Find a passive peer eligible for promotion (not in backoff, not too many failures)
+find_eligible_passive_peer(State, Now) ->
+    MaxFails = State#view_state.max_fail_count,
+    Candidates = maps:to_list(State#view_state.passive_view),
+    Eligible = [{N, P} || {N, P} <- Candidates,
+                          P#peer.fail_count < MaxFails,
+                          is_backoff_expired(P, Now)],
+    case Eligible of
+        [] -> none;
+        _ ->
+            %% Prefer recently seen peers (more likely to be alive)
+            Sorted = lists:sort(fun({_, A}, {_, B}) ->
+                last_seen_cmp(A, B)
+            end, Eligible),
+            {Node, Peer} = hd(Sorted),
+            {ok, Node, Peer}
+    end.
+
+%% Compare peers by last_seen (more recent first)
+last_seen_cmp(#peer{last_seen = undefined}, #peer{last_seen = _}) -> false;
+last_seen_cmp(#peer{last_seen = _}, #peer{last_seen = undefined}) -> true;
+last_seen_cmp(#peer{last_seen = A}, #peer{last_seen = B}) -> A > B.
+
+%% Check if backoff period has expired
+is_backoff_expired(#peer{backoff_until = undefined}, _Now) -> true;
+is_backoff_expired(#peer{backoff_until = Until}, Now) -> Now >= Until.
 
 random_active_peer(Active, Exclude) ->
     Candidates = maps:keys(Active) -- Exclude,
@@ -475,6 +555,82 @@ random_peers(State, N) ->
     %% Shuffle and take N
     Shuffled = [X || {_, X} <- lists:sort([{rand:uniform(), P} || P <- All])],
     lists:sublist(Shuffled, N).
+
+%%====================================================================
+%% Churn Handling Functions
+%%====================================================================
+
+%% Record a churn event (join or leave)
+record_churn_event(Type, State) ->
+    Now = erlang:monotonic_time(millisecond),
+    State1 = maybe_reset_churn_window(Now, State),
+    case Type of
+        join ->
+            State1#view_state{recent_joins = State1#view_state.recent_joins + 1};
+        leave ->
+            State1#view_state{recent_leaves = State1#view_state.recent_leaves + 1}
+    end.
+
+%% Reset churn window if expired
+maybe_reset_churn_window(Now, State) ->
+    WindowStart = State#view_state.churn_window_start,
+    WindowMs = State#view_state.churn_window_ms,
+    case WindowStart =:= undefined orelse (Now - WindowStart) > WindowMs of
+        true ->
+            State#view_state{
+                recent_joins = 0,
+                recent_leaves = 0,
+                churn_window_start = Now
+            };
+        false ->
+            State
+    end.
+
+%% Record a peer failure in the passive view with exponential backoff
+record_peer_failure(Node, State) ->
+    Passive = State#view_state.passive_view,
+    case maps:get(Node, Passive, undefined) of
+        undefined ->
+            Passive;
+        Peer ->
+            Now = erlang:monotonic_time(millisecond),
+            NewFailCount = Peer#peer.fail_count + 1,
+            MaxFails = State#view_state.max_fail_count,
+            case NewFailCount >= MaxFails of
+                true ->
+                    %% Too many failures - remove from passive view
+                    maps:remove(Node, Passive);
+                false ->
+                    %% Calculate exponential backoff: base * 2^fail_count
+                    Base = State#view_state.base_backoff_ms,
+                    BackoffMs = Base * (1 bsl NewFailCount),  %% 2^fail_count
+                    %% Cap at 5 minutes
+                    CappedBackoff = min(BackoffMs, 300000),
+                    UpdatedPeer = Peer#peer{
+                        fail_count = NewFailCount,
+                        backoff_until = Now + CappedBackoff
+                    },
+                    maps:put(Node, UpdatedPeer, Passive)
+            end
+    end.
+
+%% Cleanup passive view - remove stale and too-failed entries
+do_cleanup_passive_view(State) ->
+    Now = erlang:monotonic_time(millisecond),
+    MaxAge = State#view_state.passive_max_age_ms,
+    MaxFails = State#view_state.max_fail_count,
+
+    Passive = maps:filter(fun(_Node, Peer) ->
+        %% Keep if: not too many failures AND (recently seen OR no last_seen)
+        FailOk = Peer#peer.fail_count < MaxFails,
+        AgeOk = case Peer#peer.last_seen of
+            undefined -> true;
+            LastSeen -> (Now - LastSeen) < MaxAge
+        end,
+        FailOk andalso AgeOk
+    end, State#view_state.passive_view),
+
+    State#view_state{passive_view = Passive}.
 
 get_self_address() ->
     case application:get_env(mycelium, address) of

@@ -10,10 +10,19 @@
 
 -define(SERVER, ?MODULE).
 
+%% Shuffle period bounds (ms)
+-define(MIN_SHUFFLE_PERIOD, 2000).   %% 2s minimum during high churn
+-define(MAX_SHUFFLE_PERIOD, 30000).  %% 30s maximum during low churn
+
+%% Churn thresholds
+-define(HIGH_CHURN_THRESHOLD, 10).   %% >10 events = high churn
+-define(MEDIUM_CHURN_THRESHOLD, 5).  %% >5 events = medium churn
+
 -record(state, {
-    shuffle_period :: pos_integer(),
+    base_shuffle_period :: pos_integer(),
     shuffle_length :: pos_integer(),
-    timer_ref :: reference() | undefined
+    timer_ref :: reference() | undefined,
+    current_period :: pos_integer()
 }).
 
 %%====================================================================
@@ -35,8 +44,9 @@ init(Config) ->
     Period = maps:get(shuffle_period, Config, 10000),
     Length = maps:get(shuffle_length, Config, 8),
     State = #state{
-        shuffle_period = Period,
-        shuffle_length = Length
+        base_shuffle_period = Period,
+        shuffle_length = Length,
+        current_period = Period
     },
     {ok, schedule_shuffle(State)}.
 
@@ -52,13 +62,15 @@ handle_cast(_Msg, State) ->
 
 handle_info(shuffle_timeout, State) ->
     do_shuffle(State),
-    {noreply, schedule_shuffle(State)};
+    NewPeriod = calculate_shuffle_period(State),
+    State1 = State#state{current_period = NewPeriod},
+    {noreply, schedule_shuffle(State1)};
 
 handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    case State#state.timer_ref of
+    _ = case State#state.timer_ref of
         undefined -> ok;
         Ref -> erlang:cancel_timer(Ref)
     end,
@@ -69,7 +81,7 @@ terminate(_Reason, State) ->
 %%====================================================================
 
 schedule_shuffle(State) ->
-    Ref = erlang:send_after(State#state.shuffle_period, self(), shuffle_timeout),
+    Ref = erlang:send_after(State#state.current_period, self(), shuffle_timeout),
     State#state{timer_ref = Ref}.
 
 do_shuffle(State) ->
@@ -81,3 +93,24 @@ do_shuffle(State) ->
             Target = lists:nth(rand:uniform(length(ActiveNodes)), ActiveNodes),
             mycelium_hyparview:initiate_shuffle(Target, State#state.shuffle_length)
     end.
+
+%% Calculate adaptive shuffle period based on churn rate
+calculate_shuffle_period(State) ->
+    {Joins, Leaves} = mycelium_hyparview:get_churn_stats(),
+    ChurnRate = Joins + Leaves,
+    BasePeriod = State#state.base_shuffle_period,
+
+    Period = if
+        ChurnRate > ?HIGH_CHURN_THRESHOLD ->
+            %% High churn: use minimum period for faster view refresh
+            ?MIN_SHUFFLE_PERIOD;
+        ChurnRate > ?MEDIUM_CHURN_THRESHOLD ->
+            %% Medium churn: use half of base period
+            max(?MIN_SHUFFLE_PERIOD, BasePeriod div 2);
+        true ->
+            %% Normal: use base period, capped at max
+            min(BasePeriod, ?MAX_SHUFFLE_PERIOD)
+    end,
+
+    %% Ensure within bounds
+    max(?MIN_SHUFFLE_PERIOD, min(Period, ?MAX_SHUFFLE_PERIOD)).

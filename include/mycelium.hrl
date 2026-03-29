@@ -3,12 +3,15 @@
 
 %% Peer representation (transport-agnostic)
 -record(peer, {
-    id        :: node(),                    %% Node name
-    address   :: inet:ip_address(),         %% IP address (for passive view)
-    port      :: inet:port_number(),        %% Distribution port
-    connected :: boolean(),                 %% Currently in active view?
-    priority  :: high | low,                %% For NEIGHBOR protocol
-    last_seen :: integer() | undefined      %% erlang:monotonic_time()
+    id            :: node(),                    %% Node name
+    address       :: inet:ip_address() | undefined, %% IP address (for passive view)
+    port          :: inet:port_number() | undefined, %% Distribution port
+    connected     :: boolean(),                 %% Currently in active view?
+    priority      :: high | low,                %% For NEIGHBOR protocol
+    last_seen     :: integer() | undefined,     %% erlang:monotonic_time()
+    %% Failure tracking for high churn handling
+    fail_count    = 0 :: non_neg_integer(),     %% Consecutive failures
+    backoff_until :: integer() | undefined      %% erlang:monotonic_time() - skip until this time
 }).
 
 %% HyParView state (application layer)
@@ -29,7 +32,18 @@
     pending = #{} :: #{node() => {atom(), reference()}},
 
     %% Self
-    self :: #peer{}
+    self :: #peer{},
+
+    %% Churn handling parameters
+    max_fail_count = 5 :: pos_integer(),        %% Max failures before removal
+    base_backoff_ms = 1000 :: pos_integer(),    %% Base backoff interval (ms)
+    passive_max_age_ms = 300000 :: pos_integer(), %% Max age for passive entries (5 min)
+
+    %% Churn tracking for adaptive shuffle
+    recent_joins = 0 :: non_neg_integer(),      %% Joins in current window
+    recent_leaves = 0 :: non_neg_integer(),     %% Leaves in current window
+    churn_window_start :: integer() | undefined, %% Window start time
+    churn_window_ms = 30000 :: pos_integer()    %% Churn tracking window (30s)
 }).
 
 %% Service registry entry
