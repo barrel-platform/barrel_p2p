@@ -39,6 +39,16 @@
     unsubscribe_services/1
 ]).
 
+%% Circuit Routing API
+-export([
+    circuit_create/1,
+    circuit_create/2,
+    circuit_send/2,
+    circuit_close/1,
+    circuit_info/1,
+    list_circuits/0
+]).
+
 %% Via callbacks for {via, mycelium, Name} registration
 -export([
     register_name/2,
@@ -260,6 +270,52 @@ send(Name, Msg) ->
         Pid ->
             Pid ! Msg,
             Pid
+    end.
+
+%%====================================================================
+%% Circuit Routing API
+%%====================================================================
+
+%% @doc Create a circuit to target node with default options
+-spec circuit_create(node()) -> {ok, term()} | {error, term()}.
+circuit_create(Target) ->
+    circuit_create(Target, #{}).
+
+%% @doc Create a circuit to target node with options
+%% Options:
+%%   hops => integer() - number of intermediate relay hops (default: 2)
+%%   ttl => integer() - circuit lifetime in milliseconds (default: 1 hour)
+-spec circuit_create(node(), map()) -> {ok, term()} | {error, term()}.
+circuit_create(Target, Opts) ->
+    mycelium_circuit:create(Target, Opts).
+
+%% @doc Send data through an established circuit
+-spec circuit_send(term(), binary()) -> ok | {error, term()}.
+circuit_send(CircuitId, Data) ->
+    mycelium_circuit:send(CircuitId, Data).
+
+%% @doc Close a circuit
+-spec circuit_close(term()) -> ok.
+circuit_close(CircuitId) ->
+    mycelium_circuit:close(CircuitId).
+
+%% @doc Get info about a circuit
+-spec circuit_info(term()) -> {ok, map()} | {error, not_found}.
+circuit_info(CircuitId) ->
+    mycelium_circuit:get_info(CircuitId).
+
+%% @doc List all active circuits on this node
+-spec list_circuits() -> [map()].
+list_circuits() ->
+    case ets:info(mycelium_circuits, size) of
+        undefined -> [];
+        _ ->
+            lists:filtermap(fun({_Key, Pid}) ->
+                case mycelium_circuit:get_info_by_pid(Pid) of
+                    {ok, Info} -> {true, Info};
+                    _ -> false
+                end
+            end, ets:tab2list(mycelium_circuits))
     end.
 
 %%====================================================================

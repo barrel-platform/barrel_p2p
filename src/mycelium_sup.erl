@@ -72,5 +72,14 @@ init([]) ->
         modules => [mycelium_bridge]
     },
 
-    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
+    CircuitSup = #{
+        id => mycelium_circuit_sup,
+        start => {mycelium_circuit_sup, start_link, []},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [mycelium_circuit_sup]
+    },
+
+    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, CircuitSup, Bridge],
     {ok, {SupFlags, ChildSpecs}}.

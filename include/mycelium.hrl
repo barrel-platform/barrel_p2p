@@ -91,4 +91,45 @@
     {shuffle, TTL :: integer(), Peers :: [#peer{}], Sender :: #peer{}} |
     {shuffle_reply, Peers :: [#peer{}], Sender :: #peer{}}.
 
+%%====================================================================
+%% Circuit Routing Records
+%%====================================================================
+
+%% Circuit identifier
+-record(circuit_id, {
+    id        :: binary(),       %% 16 bytes UUID
+    initiator :: node()
+}).
+
+%% Relay hop state (held by intermediate nodes)
+-record(circuit_hop, {
+    circuit_id :: #circuit_id{},
+    prev_node  :: node() | initiator,
+    next_node  :: node() | destination,
+    created_at :: integer(),
+    last_seen  :: integer()
+}).
+
+%% Full circuit state (endpoint only - initiator or destination)
+-record(circuit, {
+    id         :: #circuit_id{},
+    role       :: initiator | destination,
+    target     :: node(),
+    hops       :: [node()],
+    crypto     :: #crypto_session{},
+    state      :: building | ready | closing,
+    created_at :: integer(),
+    expires_at :: integer()
+}).
+
+%% Circuit protocol message types
+-define(CIRCUIT_CREATE, 1).
+-define(CIRCUIT_CREATED, 2).
+-define(CIRCUIT_EXTEND, 3).
+-define(CIRCUIT_EXTENDED, 4).
+-define(CIRCUIT_DATA, 5).
+-define(CIRCUIT_DESTROY, 6).
+-define(CIRCUIT_PING, 7).
+-define(CIRCUIT_PONG, 8).
+
 -endif.
