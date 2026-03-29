@@ -1,5 +1,7 @@
 -module(mycelium).
 
+-include("mycelium.hrl").
+
 %% Public API
 -export([
     join/1,
@@ -18,7 +20,8 @@
     unregister_service/1,
     lookup/1,
     lookup_local/1,
-    list_services/0
+    list_services/0,
+    whereis_service/1
 ]).
 
 %%====================================================================
@@ -80,3 +83,23 @@ lookup_local(Name) ->
 -spec list_services() -> [atom() | binary()].
 list_services() ->
     mycelium_registry:list_services().
+
+%% Find service with overlay routing fallback
+%% Checks local → remote cache → overlay routing
+-spec whereis_service(atom() | binary()) -> {ok, pid()} | {ok, node(), pid()} | {error, not_found}.
+whereis_service(Name) ->
+    %% First try local
+    case mycelium_registry:lookup_local(Name) of
+        {ok, Pid} ->
+            {ok, Pid};
+        {error, not_found} ->
+            %% Try remote cache
+            case mycelium_registry:lookup(Name) of
+                {ok, [Entry | _]} ->
+                    %% Found in remote cache
+                    {ok, Entry#service_entry.node, Entry#service_entry.pid};
+                {error, not_found} ->
+                    %% Try overlay routing
+                    mycelium_registry:overlay_lookup(Name)
+            end
+    end.

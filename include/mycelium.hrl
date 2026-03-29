@@ -55,6 +55,14 @@
     meta    = #{} :: map()
 }).
 
+%% Routing request for overlay lookup
+-record(route_req, {
+    service_name :: atom() | binary(),   %% Service to find
+    ttl = 5 :: non_neg_integer(),        %% Max hops remaining
+    origin :: node(),                     %% Node that initiated the request
+    visited = [] :: [node()]             %% Nodes already visited
+}).
+
 %% HyParView protocol messages (sent over Erlang distribution)
 -type hyparview_msg() ::
     {join, Sender :: #peer{}} |

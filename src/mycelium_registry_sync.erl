@@ -73,6 +73,8 @@ handle_cast({peer_up, Node}, State) ->
 handle_cast({peer_down, Node}, State) ->
     %% Remove entries from disconnected peer
     mycelium_registry:remove_node_entries(Node),
+    %% Invalidate routes through this node
+    mycelium_router:invalidate_route(Node),
     Peers = lists:delete(Node, State#state.peers),
     {noreply, State#state{peers = Peers}};
 
@@ -106,8 +108,13 @@ send_to_peer(Node, Msg) ->
 
 apply_update(FromNode, {add, Entry}) ->
     mycelium_registry:merge_remote(FromNode, [Entry]);
-apply_update(_FromNode, {remove, _Name, Node}) ->
-    %% Remove specific entry
-    mycelium_registry:remove_node_entries(Node),
-    %% This is a simplification - ideally we'd remove just the named entry
+apply_update(_FromNode, {remove, Name, Node}) ->
+    %% Remove specific entry from remote cache
+    mycelium_registry:remove_entry(Name, Node),
+    %% Invalidate route cache for this service
+    mycelium_router:invalidate_route(Name),
+    ok;
+apply_update(_FromNode, {service_down, Name, _Reason}) ->
+    %% Service went down - invalidate all routes to it
+    mycelium_router:invalidate_route(Name),
     ok.

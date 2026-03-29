@@ -34,5 +34,14 @@ init([]) ->
         modules => [mycelium_registry_sync]
     },
 
-    ChildSpecs = [Registry, Sync],
+    Router = #{
+        id => mycelium_router,
+        start => {mycelium_router, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_router]
+    },
+
+    ChildSpecs = [Registry, Sync, Router],
     {ok, {SupFlags, ChildSpecs}}.

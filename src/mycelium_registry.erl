@@ -8,9 +8,10 @@
 -export([register_service/2, unregister_service/1]).
 -export([lookup/1, lookup_local/1, list_services/0]).
 -export([get_all_local/0]).
+-export([overlay_lookup/1]).
 
 %% Internal API (used by sync)
--export([merge_remote/2, remove_node_entries/1]).
+-export([merge_remote/2, remove_node_entries/1, remove_entry/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -59,6 +60,11 @@ list_services() ->
 get_all_local() ->
     gen_server:call(?SERVER, get_all_local).
 
+%% Lookup using overlay routing (when not found locally/remotely)
+-spec overlay_lookup(atom() | binary()) -> {ok, node(), pid()} | {error, not_found}.
+overlay_lookup(Name) ->
+    mycelium_router:find_service(Name).
+
 %% Internal API
 -spec merge_remote(node(), [#service_entry{}]) -> ok.
 merge_remote(Node, Entries) ->
@@ -67,6 +73,10 @@ merge_remote(Node, Entries) ->
 -spec remove_node_entries(node()) -> ok.
 remove_node_entries(Node) ->
     gen_server:cast(?SERVER, {remove_node, Node}).
+
+-spec remove_entry(atom() | binary(), node()) -> ok.
+remove_entry(Name, Node) ->
+    gen_server:cast(?SERVER, {remove_entry, Name, Node}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -165,6 +175,16 @@ handle_cast({remove_node, Node}, State) ->
     Remote = maps:filter(fun({_Name, N}, _Entry) ->
         N =/= Node
     end, State#state.remote),
+    %% Invalidate routes to this node
+    mycelium_router:invalidate_route(Node),
+    {noreply, State#state{remote = Remote}};
+
+handle_cast({remove_entry, Name, Node}, State) ->
+    %% Remove specific entry from remote cache
+    Key = {Name, Node},
+    Remote = maps:remove(Key, State#state.remote),
+    %% Invalidate route cache for this service
+    mycelium_router:invalidate_route(Name),
     {noreply, State#state{remote = Remote}};
 
 handle_cast(_Msg, State) ->
