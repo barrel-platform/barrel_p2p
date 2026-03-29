@@ -2,6 +2,7 @@
 -behaviour(gen_server).
 
 -include("mycelium.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 %% API
 -export([start_link/0]).
@@ -101,8 +102,8 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 handle_cast({cache_route, ServiceName, ViaNode}, State) ->
-    Now = erlang:monotonic_time(millisecond),
-    ets:insert(?ROUTE_CACHE, {ServiceName, ViaNode, Now}),
+    HLC = mycelium_hlc:now(),
+    ets:insert(?ROUTE_CACHE, {ServiceName, ViaNode, HLC}),
     {noreply, State};
 
 handle_cast({invalidate, Key}, State) ->
@@ -131,12 +132,13 @@ terminate(_Reason, _State) ->
 %% Internal Functions
 %%====================================================================
 
-%% Get cached route if fresh
+%% Get cached route if fresh (uses HLC wall time for clock-skew-tolerant TTL)
 get_cached_route(Key) ->
     case ets:lookup(?ROUTE_CACHE, Key) of
-        [{_, ViaNode, Time}] ->
-            Now = erlang:monotonic_time(millisecond),
-            case Now - Time < ?CACHE_TTL_MS of
+        [{_, ViaNode, CacheHLC}] ->
+            CacheWall = mycelium_hlc:wall_time(CacheHLC),
+            NowWall = mycelium_hlc:wall_time(mycelium_hlc:now()),
+            case NowWall - CacheWall < ?CACHE_TTL_MS of
                 true -> {ok, ViaNode};
                 false ->
                     ets:delete(?ROUTE_CACHE, Key),

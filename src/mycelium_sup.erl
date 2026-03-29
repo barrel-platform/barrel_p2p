@@ -16,6 +16,16 @@ init([]) ->
         period => 10
     },
 
+    %% HLC must start first - other components depend on it
+    HLC = #{
+        id => mycelium_hlc,
+        start => {mycelium_hlc, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_hlc]
+    },
+
     HyparviewSup = #{
         id => mycelium_hyparview_sup,
         start => {mycelium_hyparview_sup, start_link, []},
@@ -52,5 +62,5 @@ init([]) ->
         modules => [mycelium_bridge]
     },
 
-    ChildSpecs = [HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
+    ChildSpecs = [HLC, HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
     {ok, {SupFlags, ChildSpecs}}.

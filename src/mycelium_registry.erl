@@ -2,17 +2,18 @@
 -behaviour(gen_server).
 
 -include("mycelium.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 %% API
 -export([start_link/0]).
 -export([register_service/2, unregister_service/1]).
 -export([lookup/1, lookup_local/1, list_services/0]).
--export([get_all_local/0]).
+-export([get_all_local/0, get_local_ormap/0]).
 -export([overlay_lookup/1]).
 -export([ensure_proxy/2, get_proxy/1]).
 
 %% Internal API (used by sync)
--export([merge_remote/2, remove_node_entries/1, remove_entry/2]).
+-export([merge_remote/1, remove_node_entries/1, remove_entry/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -20,14 +21,12 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
-    %% Local services: name -> #service_entry{}
-    local = #{} :: #{atom() | binary() => #service_entry{}},
-    %% Remote services: {name, node} -> #service_entry{}
-    remote = #{} :: #{{atom() | binary(), node()} => #service_entry{}},
-    %% Monitor refs: ref -> name
-    monitors = #{} :: #{reference() => atom() | binary()},
-    %% Version counter
-    version = 0 :: non_neg_integer()
+    %% Local services: {name, node} -> #service_entry{} (OR-Map)
+    local = mycelium_ormap:new() :: mycelium_ormap:ormap(),
+    %% Remote services: {name, node} -> #service_entry{} (OR-Map)
+    remote = mycelium_ormap:new() :: mycelium_ormap:ormap(),
+    %% Monitor refs: ref -> {name, pid}
+    monitors = #{} :: #{reference() => {atom() | binary(), pid()}}
 }).
 
 %%====================================================================
@@ -61,6 +60,11 @@ list_services() ->
 get_all_local() ->
     gen_server:call(?SERVER, get_all_local).
 
+%% Get the local OR-Map for full sync
+-spec get_local_ormap() -> mycelium_ormap:ormap().
+get_local_ormap() ->
+    gen_server:call(?SERVER, get_local_ormap).
+
 %% Lookup using overlay routing (when not found locally/remotely)
 -spec overlay_lookup(atom() | binary()) -> {ok, node(), pid()} | {error, not_found}.
 overlay_lookup(Name) ->
@@ -77,9 +81,11 @@ get_proxy(Name) ->
     mycelium_proxy_sup:get_proxy(Name).
 
 %% Internal API
--spec merge_remote(node(), [#service_entry{}]) -> ok.
-merge_remote(Node, Entries) ->
-    gen_server:cast(?SERVER, {merge_remote, Node, Entries}).
+
+%% Merge remote OR-Map delta
+-spec merge_remote(mycelium_ormap:ormap()) -> ok.
+merge_remote(DeltaMap) ->
+    gen_server:cast(?SERVER, {merge_remote, DeltaMap}).
 
 -spec remove_node_entries(node()) -> ok.
 remove_node_entries(Node) ->
@@ -97,35 +103,27 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({register, Name, Meta}, {Pid, _}, State) ->
-    case maps:is_key(Name, State#state.local) of
-        true ->
+    Key = {Name, node()},
+    case mycelium_ormap:get(Key, State#state.local) of
+        {ok, _} ->
             {reply, {error, already_registered}, State};
-        false ->
+        not_found ->
+            Entry = #service_entry{name = Name, pid = Pid, node = node(), meta = Meta},
+            Local = mycelium_ormap:add(Key, Entry, State#state.local),
             Ref = monitor(process, Pid),
-            Version = State#state.version + 1,
-            Entry = #service_entry{
-                name = Name,
-                pid = Pid,
-                node = node(),
-                version = Version,
-                meta = Meta
-            },
-            Local = maps:put(Name, Entry, State#state.local),
-            Monitors = maps:put(Ref, Name, State#state.monitors),
-            %% Notify sync
-            mycelium_registry_sync:broadcast_update({add, Entry}),
+            Monitors = maps:put(Ref, {Name, Pid}, State#state.monitors),
+            %% Broadcast delta via sync
+            mycelium_registry_sync:broadcast_update({add, Key, Entry}),
             %% Emit service event
             mycelium_service_events:notify({service_registered, Name, node()}),
-            {reply, ok, State#state{
-                local = Local,
-                monitors = Monitors,
-                version = Version
-            }}
+            {reply, ok, State#state{local = Local, monitors = Monitors}}
     end;
 
 handle_call({unregister, Name}, _From, State) ->
-    case maps:take(Name, State#state.local) of
-        {Entry, Local} ->
+    Key = {Name, node()},
+    case mycelium_ormap:get(Key, State#state.local) of
+        {ok, _Entry} ->
+            Local = mycelium_ormap:remove(Key, State#state.local),
             %% Find and remove monitor
             MonitorRef = find_monitor_for_name(Name, State#state.monitors),
             Monitors = case MonitorRef of
@@ -134,59 +132,55 @@ handle_call({unregister, Name}, _From, State) ->
                     demonitor(Ref, [flush]),
                     maps:remove(Ref, State#state.monitors)
             end,
-            %% Notify sync
-            mycelium_registry_sync:broadcast_update({remove, Entry#service_entry.name, node()}),
+            %% Broadcast removal
+            mycelium_registry_sync:broadcast_update({remove, Key}),
             %% Emit service event
             mycelium_service_events:notify({service_unregistered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}};
-        error ->
+        not_found ->
             {reply, ok, State}
     end;
 
 handle_call({lookup, Name}, _From, State) ->
-    LocalEntries = case maps:get(Name, State#state.local, undefined) of
-        undefined -> [];
-        Entry -> [Entry]
-    end,
-    RemoteEntries = [E || {{N, _Node}, E} <- maps:to_list(State#state.remote), N =:= Name],
+    %% Collect entries from local and remote OR-Maps
+    LocalEntries = collect_entries_by_name(Name, State#state.local),
+    RemoteEntries = collect_entries_by_name(Name, State#state.remote),
     case LocalEntries ++ RemoteEntries of
         [] -> {reply, {error, not_found}, State};
         Entries -> {reply, {ok, Entries}, State}
     end;
 
 handle_call({lookup_local, Name}, _From, State) ->
-    case maps:get(Name, State#state.local, undefined) of
-        undefined -> {reply, {error, not_found}, State};
-        #service_entry{pid = Pid} -> {reply, {ok, Pid}, State}
+    Key = {Name, node()},
+    case mycelium_ormap:get(Key, State#state.local) of
+        not_found -> {reply, {error, not_found}, State};
+        {ok, #service_entry{pid = Pid}} -> {reply, {ok, Pid}, State}
     end;
 
 handle_call(list_services, _From, State) ->
-    LocalNames = maps:keys(State#state.local),
-    RemoteNames = lists:usort([N || {N, _} <- maps:keys(State#state.remote)]),
+    LocalNames = [N || {N, _Node} <- mycelium_ormap:keys(State#state.local)],
+    RemoteNames = [N || {N, _Node} <- mycelium_ormap:keys(State#state.remote)],
     {reply, lists:usort(LocalNames ++ RemoteNames), State};
 
 handle_call(get_all_local, _From, State) ->
-    {reply, maps:values(State#state.local), State};
+    Entries = [E || {_Key, E} <- mycelium_ormap:to_list(State#state.local)],
+    {reply, Entries, State};
+
+handle_call(get_local_ormap, _From, State) ->
+    {reply, State#state.local, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
-handle_cast({merge_remote, Node, Entries}, State) ->
-    %% Merge entries from remote node using LWW
-    Remote = lists:foldl(fun(Entry, Acc) ->
-        Key = {Entry#service_entry.name, Node},
-        case maps:get(Key, Acc, undefined) of
-            undefined ->
-                maps:put(Key, Entry, Acc);
-            Existing when Entry#service_entry.version > Existing#service_entry.version ->
-                maps:put(Key, Entry, Acc);
-            _ ->
-                Acc
-        end
-    end, State#state.remote, Entries),
+handle_cast({merge_remote, DeltaMap}, State) ->
+    %% Update HLC from remote dots
+    update_hlc_from_ormap(DeltaMap),
+    %% Merge into remote OR-Map
+    Remote = mycelium_ormap:merge(State#state.remote, DeltaMap),
     {noreply, State#state{remote = Remote}};
 
 handle_cast({remove_node, Node}, State) ->
+    %% Remove all entries from the specified node
     Remote = maps:filter(fun({_Name, N}, _Entry) ->
         N =/= Node
     end, State#state.remote),
@@ -197,7 +191,7 @@ handle_cast({remove_node, Node}, State) ->
 handle_cast({remove_entry, Name, Node}, State) ->
     %% Remove specific entry from remote cache
     Key = {Name, Node},
-    Remote = maps:remove(Key, State#state.remote),
+    Remote = mycelium_ormap:remove(Key, State#state.remote),
     %% Invalidate route cache for this service
     mycelium_router:invalidate_route(Name),
     {noreply, State#state{remote = Remote}};
@@ -205,18 +199,15 @@ handle_cast({remove_entry, Name, Node}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', Ref, process, _Pid, Reason}, State) ->
+handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
     case maps:take(Ref, State#state.monitors) of
-        {Name, Monitors} ->
-            case maps:take(Name, State#state.local) of
-                {_Entry, Local} ->
-                    mycelium_registry_sync:broadcast_update({remove, Name, node()}),
-                    %% Emit service down event
-                    mycelium_service_events:notify({service_down, Name, node(), Reason}),
-                    {noreply, State#state{local = Local, monitors = Monitors}};
-                error ->
-                    {noreply, State#state{monitors = Monitors}}
-            end;
+        {{Name, Pid}, Monitors} ->
+            Key = {Name, node()},
+            Local = mycelium_ormap:remove(Key, State#state.local),
+            mycelium_registry_sync:broadcast_update({remove, Key}),
+            %% Emit service down event
+            mycelium_service_events:notify({service_down, Name, node(), Reason}),
+            {noreply, State#state{local = Local, monitors = Monitors}};
         error ->
             {noreply, State}
     end;
@@ -232,7 +223,19 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 find_monitor_for_name(Name, Monitors) ->
-    case [Ref || {Ref, N} <- maps:to_list(Monitors), N =:= Name] of
+    case [Ref || {Ref, {N, _Pid}} <- maps:to_list(Monitors), N =:= Name] of
         [Ref | _] -> Ref;
         [] -> undefined
     end.
+
+%% Collect all entries matching a service name from an OR-Map
+collect_entries_by_name(Name, ORMap) ->
+    [Entry || {{N, _Node}, Entry} <- mycelium_ormap:to_list(ORMap), N =:= Name].
+
+%% Update local HLC from all dots in an OR-Map
+update_hlc_from_ormap(ORMap) ->
+    maps:foreach(fun(_Key, {_Entry, Dots}) ->
+        lists:foreach(fun({_Node, HLC}) ->
+            mycelium_hlc:update(HLC)
+        end, maps:keys(Dots))
+    end, ORMap).

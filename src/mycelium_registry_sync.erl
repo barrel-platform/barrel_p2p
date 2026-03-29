@@ -50,9 +50,16 @@ init([]) ->
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
-handle_cast({broadcast, Update}, State) ->
-    %% Use Plumtree for efficient epidemic broadcast
-    mycelium_plumtree:broadcast(registry_sync, {delta, node(), [Update]}),
+handle_cast({broadcast, {add, Key, Entry}}, State) ->
+    %% Wrap in OR-Map format for merge (single entry with dot)
+    Dot = {node(), mycelium_hlc:now()},
+    Delta = #{Key => {Entry, #{Dot => true}}},
+    mycelium_plumtree:broadcast(registry_sync, {delta, node(), Delta}),
+    {noreply, State};
+
+handle_cast({broadcast, {remove, Key}}, State) ->
+    %% Broadcast removal - receiver will remove from their OR-Map
+    mycelium_plumtree:broadcast(registry_sync, {remove, node(), Key}),
     {noreply, State};
 
 handle_cast({peer_up, Node}, State) ->
@@ -77,36 +84,40 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info({do_full_sync, Node}, State) ->
-    %% Non-blocking full sync
+    %% Non-blocking full sync with OR-Map
     case lists:member(Node, State#state.peers) of
         true ->
-            LocalEntries = mycelium_registry:get_all_local(),
-            case LocalEntries of
-                [] -> ok;
-                _ -> send_to_peer(Node, {full_sync, node(), LocalEntries})
+            LocalORMap = mycelium_registry:get_local_ormap(),
+            case mycelium_ormap:is_empty(LocalORMap) of
+                true -> ok;
+                false -> send_to_peer(Node, {full_sync, node(), LocalORMap})
             end;
         false ->
             ok
     end,
     {noreply, State};
 
-handle_info({?SYNC_TAG, {delta, FromNode, Updates}}, State) ->
-    %% Apply delta updates (from direct peer-to-peer)
-    lists:foreach(fun(Update) ->
-        apply_update(FromNode, Update)
-    end, Updates),
+handle_info({?SYNC_TAG, {full_sync, _FromNode, RemoteORMap}}, State) ->
+    %% Apply full sync from peer - merge their OR-Map
+    mycelium_registry:merge_remote(RemoteORMap),
     {noreply, State};
 
-handle_info({plumtree_broadcast, {registry_sync, {delta, FromNode, Updates}}}, State) ->
-    %% Apply delta updates (from Plumtree broadcast)
-    lists:foreach(fun(Update) ->
-        apply_update(FromNode, Update)
-    end, Updates),
+handle_info({plumtree_broadcast, {registry_sync, {delta, FromNode, DeltaMap}}}, State) ->
+    %% Apply delta from Plumtree broadcast
+    mycelium_registry:merge_remote(DeltaMap),
+    %% Emit events for new entries
+    maps:foreach(fun({Name, _Node}, {_Entry, _Dots}) ->
+        mycelium_service_events:notify({service_registered, Name, FromNode})
+    end, DeltaMap),
     {noreply, State};
 
-handle_info({?SYNC_TAG, {full_sync, FromNode, Entries}}, State) ->
-    %% Apply full sync from peer
-    mycelium_registry:merge_remote(FromNode, Entries),
+handle_info({plumtree_broadcast, {registry_sync, {remove, FromNode, {Name, Node}}}}, State) ->
+    %% Apply removal
+    mycelium_registry:remove_entry(Name, Node),
+    %% Invalidate route cache for this service
+    mycelium_router:invalidate_route(Name),
+    %% Emit event
+    mycelium_service_events:notify({service_unregistered, Name, FromNode}),
     {noreply, State};
 
 handle_info(_Info, State) ->
@@ -121,20 +132,3 @@ terminate(_Reason, _State) ->
 
 send_to_peer(Node, Msg) ->
     erlang:send({?SERVER, Node}, {?SYNC_TAG, Msg}, [noconnect]).
-
-apply_update(FromNode, {add, Entry}) ->
-    mycelium_registry:merge_remote(FromNode, [Entry]),
-    %% Emit remote service registered event
-    mycelium_service_events:notify({service_registered, Entry#service_entry.name, FromNode});
-apply_update(_FromNode, {remove, Name, Node}) ->
-    %% Remove specific entry from remote cache
-    mycelium_registry:remove_entry(Name, Node),
-    %% Invalidate route cache for this service
-    mycelium_router:invalidate_route(Name),
-    %% Emit remote service unregistered event
-    mycelium_service_events:notify({service_unregistered, Name, Node}),
-    ok;
-apply_update(_FromNode, {service_down, Name, _Reason}) ->
-    %% Service went down - invalidate all routes to it
-    mycelium_router:invalidate_route(Name),
-    ok.

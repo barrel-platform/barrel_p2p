@@ -2,6 +2,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("hlc/include/hlc.hrl").
 -include("mycelium.hrl").
 
 %% CT callbacks
@@ -131,15 +132,15 @@ test_invalidate_all(_Config) ->
     ok.
 
 test_route_cache_expiry(_Config) ->
-    %% Test that cache entries have timestamps
+    %% Test that cache entries have HLC timestamps
     ServiceName = expiry_test,
-    Before = erlang:monotonic_time(millisecond),
+    BeforeHLC = mycelium_hlc:now(),
     ok = mycelium_router:cache_route(ServiceName, 'some@node'),
     timer:sleep(50),
 
-    %% Verify entry has timestamp
-    [{ServiceName, _Node, Time}] = ets:lookup(mycelium_route_cache, ServiceName),
-    ?assert(is_integer(Time)),
-    %% Time should be >= the time before we cached (monotonic time can be negative)
-    ?assert(Time >= Before),
+    %% Verify entry has HLC timestamp
+    [{ServiceName, _Node, HLC}] = ets:lookup(mycelium_route_cache, ServiceName),
+    ?assertMatch(#timestamp{}, HLC),
+    %% HLC should be >= the time before we cached
+    ?assertNotEqual(lt, mycelium_hlc:compare(HLC, BeforeHLC)),
     ok.

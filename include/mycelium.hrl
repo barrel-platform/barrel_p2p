@@ -47,11 +47,11 @@
 }).
 
 %% Service registry entry
+%% Note: version removed - OR-Map CRDT handles conflict resolution via HLC dots
 -record(service_entry, {
     name    :: atom() | binary(),
     pid     :: pid(),
     node    :: node(),
-    version :: pos_integer(),           %% For LWW conflict resolution
     meta    = #{} :: map()
 }).
 

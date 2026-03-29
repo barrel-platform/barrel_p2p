@@ -11,6 +11,7 @@
 %% - O(n) messages vs O(n²) for flooding
 
 -include("mycelium.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 %% API
 -export([start_link/0]).
@@ -34,8 +35,8 @@
     eager_peers = [] :: [node()],     %% Push immediately
     lazy_peers = [] :: [node()],      %% Send IHAVEs only
 
-    %% Message tracking
-    received = #{} :: #{binary() => {term(), integer()}},  %% MsgId -> {Payload, Timestamp}
+    %% Message tracking (uses HLC timestamps for clock-skew-tolerant TTL)
+    received = #{} :: #{binary() => {term(), mycelium_hlc:timestamp()}},  %% MsgId -> {Payload, HLC}
     pending_ihaves = #{} :: #{binary() => {node(), reference()}}, %% MsgId -> {Sender, TimerRef}
 
     %% Subscribers for delivered messages
@@ -140,9 +141,9 @@ handle_cast({broadcast, Tag, Payload, MsgId}, State) ->
             %% Already broadcast - ignore
             {noreply, State};
         false ->
-            %% Store message locally
-            Now = erlang:monotonic_time(millisecond),
-            Received = maps:put(MsgId, {{Tag, Payload}, Now}, State#state.received),
+            %% Store message locally with HLC timestamp
+            HLC = mycelium_hlc:now(),
+            Received = maps:put(MsgId, {{Tag, Payload}, HLC}, State#state.received),
 
             %% Deliver to local subscribers
             deliver_to_subscribers({Tag, Payload}, State#state.subscribers),
@@ -167,8 +168,8 @@ handle_info({?PLUMTREE_TAG, {gossip, MsgId, Tag, Payload, Sender}}, State) ->
             {noreply, State2#state{prune_sent = State2#state.prune_sent + 1}};
         false ->
             %% New message - store, deliver, and forward
-            Now = erlang:monotonic_time(millisecond),
-            Received = maps:put(MsgId, {{Tag, Payload}, Now}, State2#state.received),
+            HLC = mycelium_hlc:now(),
+            Received = maps:put(MsgId, {{Tag, Payload}, HLC}, State2#state.received),
 
             %% Cancel any pending IHAVE timer for this message
             State3 = cancel_pending_ihave(MsgId, State2#state{received = Received}),
@@ -266,14 +267,14 @@ handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
             {noreply, State}
     end;
 
-%% Periodic cleanup
+%% Periodic cleanup using HLC wall time
 handle_info(cleanup, State) ->
-    Now = erlang:monotonic_time(millisecond),
-    Cutoff = Now - ?MESSAGE_TTL,
+    NowWall = mycelium_hlc:wall_time(mycelium_hlc:now()),
+    Cutoff = NowWall - ?MESSAGE_TTL,
 
-    %% Remove old messages
-    Received = maps:filter(fun(_MsgId, {_Payload, Time}) ->
-        Time > Cutoff
+    %% Remove old messages based on HLC wall time
+    Received = maps:filter(fun(_MsgId, {_Payload, HLC}) ->
+        mycelium_hlc:wall_time(HLC) > Cutoff
     end, State#state.received),
 
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup),
@@ -290,9 +291,12 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 generate_msg_id() ->
-    %% Unique message ID: {node, timestamp, random}
+    %% Unique message ID using HLC for causal ordering
+    HLC = mycelium_hlc:now(),
+    Wall = mycelium_hlc:wall_time(HLC),
+    Logical = mycelium_hlc:logical(HLC),
     Rand = rand:uniform(16#FFFFFFFF),
-    Term = {node(), erlang:monotonic_time(), Rand},
+    Term = {node(), Wall, Logical, Rand},
     crypto:hash(sha256, term_to_binary(Term)).
 
 send_gossip(MsgId, Tag, Payload, Origin, Peers, State) ->
