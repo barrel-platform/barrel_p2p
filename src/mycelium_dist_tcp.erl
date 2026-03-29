@@ -141,13 +141,13 @@ check_ip_access(_Socket) ->
 
 do_setup(Node, Type, MyNode, LongOrShort, SetupTime) ->
     Timer = dist_util:start_timer(SetupTime),
-    case inet_tcp_dist:split_node(Node, LongOrShort) of
+    case split_node(Node, LongOrShort) of
         {node, Name, Host} ->
             case erl_epmd:port_please(Name, Host) of
                 {port, Port, Version} ->
                     dist_util:reset_timer(Timer),
-                    case gen_tcp:connect(Host, Port, connect_opts(),
-                                        dist_util:time_left(Timer)) of
+                    Timeout = time_left(Timer),
+                    case gen_tcp:connect(Host, Port, connect_opts(), Timeout) of
                         {ok, Socket} ->
                             HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
                             dist_util:handshake_we_started(HSData);
@@ -314,4 +314,43 @@ get_listen_port() ->
     case application:get_env(mycelium, listen_port) of
         {ok, Port} when is_integer(Port) -> Port;
         _ -> 0
+    end.
+
+%% @doc Split node name into components
+%% Returns {node, Name, Host} or {error, Reason}
+-spec split_node(node(), shortnames | longnames) -> {node, string(), string()} | {error, term()}.
+split_node(Node, LongOrShort) when is_atom(Node) ->
+    case string:split(atom_to_list(Node), "@") of
+        [Name, Host] ->
+            case LongOrShort of
+                longnames ->
+                    case string:find(Host, ".") of
+                        nomatch -> {error, not_long_name};
+                        _ -> {node, Name, Host}
+                    end;
+                shortnames ->
+                    {node, Name, Host}
+            end;
+        _ ->
+            {error, invalid_node_name}
+    end;
+split_node(_, _) ->
+    {error, not_atom}.
+
+%% @doc Get remaining time from timer
+%% Compatible with OTP 27+ timer format
+-spec time_left(term()) -> non_neg_integer() | infinity.
+time_left(Timer) ->
+    case Timer of
+        {deadline, Deadline} ->
+            %% OTP 25+ format: {deadline, MonotonicTime}
+            Now = erlang:monotonic_time(millisecond),
+            max(0, Deadline - Now);
+        infinity ->
+            infinity;
+        Timeout when is_integer(Timeout) ->
+            Timeout;
+        _ ->
+            %% Fallback for older timer formats
+            infinity
     end.
