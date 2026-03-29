@@ -485,21 +485,38 @@ finalize_circuit(EphPubKey, Data) ->
 select_hops(_Target, NumHops) when NumHops =< 0 ->
     {ok, []};
 select_hops(Target, NumHops) ->
-    case mycelium_hyparview:random_active_peers(NumHops + 1) of
-        Peers when length(Peers) >= NumHops ->
-            %% Filter out target from hops
-            Hops = lists:sublist([P || P <- Peers, P =/= Target], NumHops),
-            {ok, Hops};
-        _Peers ->
-            %% Try passive view as fallback
+    %% Prefer direct route if target is a direct neighbor
+    ActiveView = mycelium_hyparview:active_view(),
+    case lists:member(Target, ActiveView) of
+        true ->
+            %% Target is a direct neighbor, no intermediate hops needed
+            {ok, []};
+        false ->
+            select_intermediate_hops(Target, NumHops, ActiveView)
+    end.
+
+select_intermediate_hops(Target, NumHops, ActiveView) ->
+    %% Prefer active peers for hops (direct neighbors)
+    AvailableActive = [P || P <- ActiveView, P =/= Target],
+    case length(AvailableActive) >= NumHops of
+        true ->
+            %% Shuffle and take required number
+            Shuffled = shuffle_list(AvailableActive),
+            {ok, lists:sublist(Shuffled, NumHops)};
+        false ->
+            %% Need more peers from passive view
             case mycelium_hyparview:passive_view() of
-                PassivePeers when length(PassivePeers) >= NumHops ->
-                    Hops = lists:sublist([P || P <- PassivePeers, P =/= Target], NumHops),
-                    {ok, Hops};
+                PassivePeers when length(PassivePeers) + length(AvailableActive) >= NumHops ->
+                    AvailablePassive = [P || P <- PassivePeers, P =/= Target],
+                    AllPeers = AvailableActive ++ shuffle_list(AvailablePassive),
+                    {ok, lists:sublist(AllPeers, NumHops)};
                 _ ->
                     {error, not_enough_peers}
             end
     end.
+
+shuffle_list(List) ->
+    [X || {_, X} <- lists:sort([{rand:uniform(), N} || N <- List])].
 
 get_default_hops() ->
     application:get_env(mycelium, circuit_default_hops, 2).
