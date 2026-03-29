@@ -1,0 +1,62 @@
+# Multi-stage Dockerfile for Mycelium integration tests
+# Target: OTP 28+ (Erlang 28)
+
+ARG ERLANG_VERSION=28
+FROM erlang:${ERLANG_VERSION}-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy rebar configs first for better layer caching
+COPY rebar.config rebar.lock* ./
+
+# Fetch dependencies
+RUN rebar3 get-deps
+
+# Copy source code
+COPY config/ config/
+COPY include/ include/
+COPY src/ src/
+COPY test/ test/
+
+# Compile with test profile (includes test dependencies)
+RUN rebar3 as test compile
+
+# ============================================
+# Runtime stage
+# ============================================
+FROM erlang:${ERLANG_VERSION}-alpine AS runtime
+
+RUN apk add --no-cache bash netcat-openbsd iputils
+
+WORKDIR /app
+
+# Copy compiled artifacts from builder
+COPY --from=builder /app/_build /app/_build
+COPY --from=builder /app/rebar.config /app/
+COPY --from=builder /app/config /app/config
+COPY --from=builder /app/include /app/include
+COPY --from=builder /app/src /app/src
+COPY --from=builder /app/test /app/test
+
+# Copy scripts and test configs
+COPY docker/scripts/ /app/scripts/
+COPY docker/test.config /app/docker/test.config
+COPY docker/auth-test.config /app/docker/auth-test.config
+RUN chmod +x /app/scripts/*.sh
+
+# Create data directory for keys
+RUN mkdir -p /app/data/keys/trusted && chmod 700 /app/data/keys
+
+# Environment
+ENV ERLANG_COOKIE=mycelium_test_cookie
+ENV NODE_ROLE=member
+ENV NODE_NAME=node@localhost
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=3 \
+    CMD /app/scripts/health_check.sh
+
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]

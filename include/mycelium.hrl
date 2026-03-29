@@ -63,6 +63,15 @@
     visited = [] :: [node()]             %% Nodes already visited
 }).
 
+%% Trusted peer key for Ed25519 authentication
+-record(peer_key, {
+    node        :: node(),
+    public_key  :: binary(),        %% 32 bytes Ed25519 public key
+    added_at    :: integer(),       %% erlang:system_time(millisecond)
+    last_seen   :: integer(),       %% erlang:system_time(millisecond)
+    trust_level :: permanent | tofu %% permanent = pre-configured, tofu = trust on first use
+}).
+
 %% HyParView protocol messages (sent over Erlang distribution)
 -type hyparview_msg() ::
     {join, Sender :: #peer{}} |

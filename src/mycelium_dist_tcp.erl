@@ -112,15 +112,22 @@ accept_loop(Kernel, ListenSocket) ->
         {ok, Socket} ->
             case check_ip_access(Socket) of
                 true ->
-                    Kernel ! {accept, self(), Socket, ?FAMILY, tcp},
-                    receive
-                        {Kernel, controller, Pid} ->
-                            ok = gen_tcp:controlling_process(Socket, Pid),
-                            Pid ! {self(), controller};
-                        {Kernel, unsupported_protocol} ->
-                            gen_tcp:close(Socket)
-                    end,
-                    accept_loop(Kernel, ListenSocket);
+                    %% Ed25519 authentication before OTP handshake
+                    case mycelium_dist_auth:authenticate_incoming(Socket) of
+                        ok ->
+                            Kernel ! {accept, self(), Socket, ?FAMILY, tcp},
+                            receive
+                                {Kernel, controller, Pid} ->
+                                    ok = gen_tcp:controlling_process(Socket, Pid),
+                                    Pid ! {self(), controller};
+                                {Kernel, unsupported_protocol} ->
+                                    gen_tcp:close(Socket)
+                            end,
+                            accept_loop(Kernel, ListenSocket);
+                        {error, _Reason} ->
+                            gen_tcp:close(Socket),
+                            accept_loop(Kernel, ListenSocket)
+                    end;
                 false ->
                     gen_tcp:close(Socket),
                     accept_loop(Kernel, ListenSocket)
@@ -149,8 +156,15 @@ do_setup(Node, Type, MyNode, LongOrShort, SetupTime) ->
                     Timeout = time_left(Timer),
                     case gen_tcp:connect(Host, Port, connect_opts(), Timeout) of
                         {ok, Socket} ->
-                            HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
-                            dist_util:handshake_we_started(HSData);
+                            %% Ed25519 authentication before OTP handshake
+                            case mycelium_dist_auth:authenticate_outgoing(Socket, Node) of
+                                ok ->
+                                    HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
+                                    dist_util:handshake_we_started(HSData);
+                                {error, _Reason} ->
+                                    gen_tcp:close(Socket),
+                                    ?shutdown(Node)
+                            end;
                         {error, _Reason} ->
                             ?shutdown(Node)
                     end;

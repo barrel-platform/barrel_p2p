@@ -26,6 +26,16 @@ init([]) ->
         modules => [mycelium_hlc]
     },
 
+    %% Distribution keys manager - handles Ed25519 authentication keys
+    DistKeys = #{
+        id => mycelium_dist_keys,
+        start => {mycelium_dist_keys, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_dist_keys]
+    },
+
     HyparviewSup = #{
         id => mycelium_hyparview_sup,
         start => {mycelium_hyparview_sup, start_link, []},
@@ -62,5 +72,5 @@ init([]) ->
         modules => [mycelium_bridge]
     },
 
-    ChildSpecs = [HLC, HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
+    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, Bridge],
     {ok, {SupFlags, ChildSpecs}}.

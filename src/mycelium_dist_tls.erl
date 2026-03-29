@@ -113,15 +113,22 @@ accept_loop(Kernel, ListenSocket) ->
                 {ok, SslSocket} ->
                     case verify_peer(SslSocket) of
                         true ->
-                            Kernel ! {accept, self(), SslSocket, ?FAMILY, tls},
-                            receive
-                                {Kernel, controller, Pid} ->
-                                    ok = ssl:controlling_process(SslSocket, Pid),
-                                    Pid ! {self(), controller};
-                                {Kernel, unsupported_protocol} ->
-                                    ssl:close(SslSocket)
-                            end,
-                            accept_loop(Kernel, ListenSocket);
+                            %% Ed25519 authentication before OTP handshake
+                            case mycelium_dist_auth:authenticate_incoming(SslSocket) of
+                                ok ->
+                                    Kernel ! {accept, self(), SslSocket, ?FAMILY, tls},
+                                    receive
+                                        {Kernel, controller, Pid} ->
+                                            ok = ssl:controlling_process(SslSocket, Pid),
+                                            Pid ! {self(), controller};
+                                        {Kernel, unsupported_protocol} ->
+                                            ssl:close(SslSocket)
+                                    end,
+                                    accept_loop(Kernel, ListenSocket);
+                                {error, _Reason} ->
+                                    ssl:close(SslSocket),
+                                    accept_loop(Kernel, ListenSocket)
+                            end;
                         false ->
                             ssl:close(SslSocket),
                             accept_loop(Kernel, ListenSocket)
@@ -154,8 +161,15 @@ do_setup(Node, Type, MyNode, LongOrShort, SetupTime) ->
                     Timeout = time_left(Timer),
                     case ssl:connect(Host, Port, connect_opts() ++ TlsOpts, Timeout) of
                         {ok, Socket} ->
-                            HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
-                            dist_util:handshake_we_started(HSData);
+                            %% Ed25519 authentication before OTP handshake
+                            case mycelium_dist_auth:authenticate_outgoing(Socket, Node) of
+                                ok ->
+                                    HSData = make_hs_data_outgoing(Socket, Node, MyNode, Timer, Type, Version),
+                                    dist_util:handshake_we_started(HSData);
+                                {error, _Reason} ->
+                                    ssl:close(Socket),
+                                    ?shutdown(Node)
+                            end;
                         {error, _Reason} ->
                             ?shutdown(Node)
                     end;

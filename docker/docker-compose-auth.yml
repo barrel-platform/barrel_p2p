@@ -1,0 +1,136 @@
+# Docker Compose for Mycelium Ed25519 authentication tests
+# Usage:
+#   docker compose -f docker/docker-compose-auth.yml up
+#
+# Tests Ed25519 mutual authentication between nodes
+
+x-erlang-node: &erlang-node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  environment:
+    ERLANG_COOKIE: mycelium_test_cookie
+    AUTH_ENABLED: "true"
+    AUTH_TRUST_MODE: tofu
+  networks:
+    - mycelium_auth_net
+
+services:
+  # Seed node - generates keypair, shares public key
+  node1:
+    <<: *erlang-node
+    hostname: node1
+    container_name: mycelium_auth_node1
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node1@node1
+      NODE_ROLE: seed
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+    volumes:
+      - auth_keys_node1:/app/data/keys
+
+  # Member nodes - will authenticate with seed via TOFU
+  node2:
+    <<: *erlang-node
+    hostname: node2
+    container_name: mycelium_auth_node2
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node2@node2
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+    volumes:
+      - auth_keys_node2:/app/data/keys
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  node3:
+    <<: *erlang-node
+    hostname: node3
+    container_name: mycelium_auth_node3
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node3@node3
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+    volumes:
+      - auth_keys_node3:/app/data/keys
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  # Test runner - executes auth CT suite
+  test_runner:
+    <<: *erlang-node
+    hostname: test_runner
+    container_name: mycelium_auth_test_runner
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: test_runner@test_runner
+      NODE_ROLE: auth_test_runner
+      TEST_NODES: "node1@node1,node2@node2,node3@node3"
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+    volumes:
+      - auth_keys_test_runner:/app/data/keys
+      - ../test_results:/app/test_results
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+
+  # Strict mode test - node that only accepts pre-configured keys
+  strict_node:
+    <<: *erlang-node
+    hostname: strict_node
+    container_name: mycelium_auth_strict_node
+    profiles: ["strict"]
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: strict@strict_node
+      NODE_ROLE: strict_seed
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: strict
+    volumes:
+      - auth_keys_strict:/app/data/keys
+      - ./auth_trusted_keys:/app/data/keys/trusted:ro
+
+  # Untrusted node - for testing rejection
+  untrusted_node:
+    <<: *erlang-node
+    hostname: untrusted_node
+    container_name: mycelium_auth_untrusted
+    profiles: ["strict"]
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: untrusted@untrusted_node
+      NODE_ROLE: member
+      CONTACT_NODE: strict@strict_node
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+    volumes:
+      - auth_keys_untrusted:/app/data/keys
+    depends_on:
+      strict_node:
+        condition: service_healthy
+
+networks:
+  mycelium_auth_net:
+    driver: bridge
+
+volumes:
+  auth_keys_node1:
+  auth_keys_node2:
+  auth_keys_node3:
+  auth_keys_test_runner:
+  auth_keys_strict:
+  auth_keys_untrusted:

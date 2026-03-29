@@ -1,0 +1,104 @@
+# Docker Compose for Mycelium multi-node integration tests
+# Usage:
+#   docker compose up          - 3-node cluster + test runner
+#   docker compose --profile 5node up  - 5-node cluster + test runner
+
+x-erlang-node: &erlang-node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  environment:
+    ERLANG_COOKIE: mycelium_test_cookie
+  networks:
+    - mycelium_net
+
+services:
+  # Seed node - first node in the cluster
+  node1:
+    <<: *erlang-node
+    hostname: node1
+    container_name: mycelium_node1
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node1@node1
+      NODE_ROLE: seed
+
+  # Member nodes - join via seed
+  node2:
+    <<: *erlang-node
+    hostname: node2
+    container_name: mycelium_node2
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node2@node2
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  node3:
+    <<: *erlang-node
+    hostname: node3
+    container_name: mycelium_node3
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node3@node3
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  # Optional 5-node profile
+  node4:
+    <<: *erlang-node
+    hostname: node4
+    container_name: mycelium_node4
+    profiles: ["5node"]
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node4@node4
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  node5:
+    <<: *erlang-node
+    hostname: node5
+    container_name: mycelium_node5
+    profiles: ["5node"]
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: node5@node5
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  # Test runner - executes CT suite
+  test_runner:
+    <<: *erlang-node
+    hostname: test_runner
+    container_name: mycelium_test_runner
+    environment:
+      ERLANG_COOKIE: mycelium_test_cookie
+      NODE_NAME: test_runner@test_runner
+      NODE_ROLE: test_runner
+      TEST_NODES: "node1@node1,node2@node2,node3@node3"
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+    volumes:
+      - ../test_results:/app/test_results
+
+networks:
+  mycelium_net:
+    driver: bridge
