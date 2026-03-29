@@ -26,6 +26,12 @@
     get_proxy/1
 ]).
 
+%% Test helpers (for integration tests)
+-export([
+    start_service_holder/1,
+    stop_service_holder/1
+]).
+
 %%====================================================================
 %% HyParView API
 %%====================================================================
@@ -142,3 +148,47 @@ global_register(Name) ->
 -spec get_proxy(atom() | binary()) -> {ok, pid()} | not_found.
 get_proxy(Name) ->
     mycelium_registry:get_proxy(Name).
+
+%%====================================================================
+%% Test Helpers
+%%====================================================================
+
+%% Start a persistent process that holds a service registration
+%% Used by integration tests to avoid RPC process lifetime issues
+-spec start_service_holder(atom() | binary()) -> {ok, pid()} | {error, term()}.
+start_service_holder(ServiceName) ->
+    Parent = self(),
+    Pid = spawn(fun() -> service_holder_init(ServiceName, Parent) end),
+    receive
+        {Pid, ok} -> {ok, Pid};
+        {Pid, {error, Reason}} -> {error, Reason}
+    after 5000 ->
+        exit(Pid, kill),
+        {error, timeout}
+    end.
+
+%% Stop a service holder process
+-spec stop_service_holder(pid()) -> ok.
+stop_service_holder(Pid) ->
+    Pid ! stop,
+    ok.
+
+%% Internal: service holder initialization
+service_holder_init(ServiceName, Parent) ->
+    case register_service(ServiceName, #{}) of
+        ok ->
+            Parent ! {self(), ok},
+            service_holder_loop(ServiceName);
+        {error, Reason} ->
+            Parent ! {self(), {error, Reason}}
+    end.
+
+%% Internal: service holder loop
+service_holder_loop(ServiceName) ->
+    receive
+        stop ->
+            unregister_service(ServiceName),
+            ok;
+        _ ->
+            service_holder_loop(ServiceName)
+    end.

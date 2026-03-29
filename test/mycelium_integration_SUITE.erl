@@ -279,15 +279,12 @@ test_whereis_service_local(Config) ->
     Nodes = ?config(test_nodes, Config),
     [Node1 | _] = Nodes,
 
-    %% Register a service on Node1
+    %% Register a service on Node1 using a persistent holder process
     ServiceName = local_svc_test,
 
-    %% Spawn a persistent process on Node1 to hold the service
-    Pid = rpc:call(Node1, erlang, spawn, [fun() ->
-        ok = mycelium:register_service(ServiceName, #{}),
-        receive stop -> ok end
-    end]),
-    timer:sleep(100),
+    %% Use helper to start a process that stays alive
+    {ok, HolderPid} = rpc:call(Node1, mycelium, start_service_holder, [ServiceName]),
+    ct:pal("Started holder process: ~p", [HolderPid]),
 
     %% whereis_service should find it locally
     Result = rpc:call(Node1, mycelium, whereis_service, [ServiceName]),
@@ -295,8 +292,7 @@ test_whereis_service_local(Config) ->
     ?assertMatch({ok, _Pid}, Result),
 
     %% Cleanup
-    Pid ! stop,
-    timer:sleep(100),
+    rpc:call(Node1, mycelium, stop_service_holder, [HolderPid]),
     ok.
 
 test_whereis_service_remote(Config) ->
@@ -306,18 +302,17 @@ test_whereis_service_remote(Config) ->
     %% Register a service on Node2
     ServiceName = remote_svc_test,
 
-    %% Spawn a persistent process on Node2
-    Pid = rpc:call(Node2, erlang, spawn, [fun() ->
-        ok = mycelium:register_service(ServiceName, #{}),
-        receive stop -> ok end
-    end]),
+    %% Use helper to start a persistent holder on Node2
+    {ok, HolderPid} = rpc:call(Node2, mycelium, start_service_holder, [ServiceName]),
+    ct:pal("Started holder on Node2: ~p", [HolderPid]),
+
     timer:sleep(500), %% Wait for sync
 
     %% Lookup from Node1 - should find on Node2
     Result = rpc:call(Node1, mycelium, whereis_service, [ServiceName]),
     ct:pal("whereis_service remote result: ~p", [Result]),
 
-    %% Should get {ok, Node, Pid} or {ok, Pid}
+    %% Should get {ok, Node, Pid} or {ok, Pid} or {found, Node, Pid}
     case Result of
         {ok, Node2, _RemotePid} ->
             ct:pal("Found service on remote node ~p", [Node2]);
@@ -325,13 +320,14 @@ test_whereis_service_remote(Config) ->
             ct:pal("Found service via overlay routing");
         {found, Node2, _RemotePid} ->
             ct:pal("Found service via overlay at ~p", [Node2]);
+        {error, not_found} ->
+            ct:pal("Service not found - sync may not be complete");
         Other ->
             ct:pal("Unexpected result: ~p", [Other])
     end,
 
     %% Cleanup
-    Pid ! stop,
-    timer:sleep(100),
+    rpc:call(Node2, mycelium, stop_service_holder, [HolderPid]),
     ok.
 
 test_proxy_creation(Config) ->
@@ -341,11 +337,10 @@ test_proxy_creation(Config) ->
     %% Register a service on Node2
     ServiceName = proxy_test_svc,
 
-    %% Spawn a persistent process on Node2
-    RemotePid = rpc:call(Node2, erlang, spawn, [fun() ->
-        ok = mycelium:register_service(ServiceName, #{}),
-        receive stop -> ok end
-    end]),
+    %% Use helper to start a persistent holder on Node2
+    {ok, HolderPid} = rpc:call(Node2, mycelium, start_service_holder, [ServiceName]),
+    ct:pal("Started holder on Node2: ~p", [HolderPid]),
+
     timer:sleep(500),
 
     %% Create proxy on Node1
@@ -361,8 +356,7 @@ test_proxy_creation(Config) ->
     ?assertEqual(Node1, node(ProxyPid)),
 
     %% Cleanup
-    RemotePid ! stop,
-    timer:sleep(100),
+    rpc:call(Node2, mycelium, stop_service_holder, [HolderPid]),
     ok.
 
 test_global_transparency(Config) ->
@@ -372,11 +366,10 @@ test_global_transparency(Config) ->
     %% Register a service on Node2
     ServiceName = global_test_svc,
 
-    %% Spawn a persistent process on Node2
-    RemotePid = rpc:call(Node2, erlang, spawn, [fun() ->
-        ok = mycelium:register_service(ServiceName, #{}),
-        receive stop -> ok end
-    end]),
+    %% Use helper to start a persistent holder on Node2
+    {ok, HolderPid} = rpc:call(Node2, mycelium, start_service_holder, [ServiceName]),
+    ct:pal("Started holder on Node2: ~p", [HolderPid]),
+
     timer:sleep(500),
 
     %% Call global_register from Node1
@@ -395,8 +388,7 @@ test_global_transparency(Config) ->
     end,
 
     %% Cleanup
-    RemotePid ! stop,
-    timer:sleep(100),
+    rpc:call(Node2, mycelium, stop_service_holder, [HolderPid]),
     ok.
 
 %%====================================================================
