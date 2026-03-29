@@ -1,0 +1,13 @@
+{application, chat, [
+    {description, "Distributed chat example using Mycelium"},
+    {vsn, "0.1.0"},
+    {registered, [chat_room_sup]},
+    {mod, {chat_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        mycelium
+    ]},
+    {env, []},
+    {modules, []}
+]}.

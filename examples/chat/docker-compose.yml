@@ -1,0 +1,61 @@
+services:
+  seed:
+    build:
+      context: ../..
+      dockerfile: examples/chat/Dockerfile
+    hostname: seed
+    environment:
+      - NODE_NAME=chat
+      - COOKIE=mycelium_chat
+      - CONTACT_NODES=
+    networks:
+      - chat_network
+    ports:
+      - "9101:9100"
+
+  node1:
+    build:
+      context: ../..
+      dockerfile: examples/chat/Dockerfile
+    hostname: node1
+    environment:
+      - NODE_NAME=chat
+      - COOKIE=mycelium_chat
+      - CONTACT_NODES=chat@seed
+    networks:
+      - chat_network
+    depends_on:
+      - seed
+
+  node2:
+    build:
+      context: ../..
+      dockerfile: examples/chat/Dockerfile
+    hostname: node2
+    environment:
+      - NODE_NAME=chat
+      - COOKIE=mycelium_chat
+      - CONTACT_NODES=chat@seed
+    networks:
+      - chat_network
+    depends_on:
+      - seed
+
+  node3:
+    build:
+      context: ../..
+      dockerfile: examples/chat/Dockerfile
+    hostname: node3
+    environment:
+      - NODE_NAME=chat
+      - COOKIE=mycelium_chat
+      - CONTACT_NODES=chat@node1,chat@node2
+    networks:
+      - chat_network
+    depends_on:
+      - node1
+      - node2
+
+networks:
+  chat_network:
+    driver: bridge

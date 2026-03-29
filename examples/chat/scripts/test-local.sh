@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# Test the chat example locally with multiple nodes
+#
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHAT_DIR="$(dirname "$SCRIPT_DIR")"
+HOSTNAME=$(hostname -s)
+
+cd "$CHAT_DIR"
+
+echo "=== Building chat application ==="
+rebar3 compile
+
+echo ""
+echo "=========================================="
+echo "  Mycelium Chat - Local Testing Guide"
+echo "=========================================="
+echo ""
+echo "Hostname: $HOSTNAME"
+echo ""
+
+echo "=== TWO-NODE TEST ==="
+echo ""
+echo "Terminal 1 - Start seed node:"
+echo "  cd $CHAT_DIR"
+echo "  ./scripts/run-demo.sh seed"
+echo ""
+echo "Terminal 2 - Join as node1:"
+echo "  cd $CHAT_DIR"
+echo "  ./scripts/run-demo.sh node 1"
+echo ""
+
+echo "=== THREE-NODE TEST ==="
+echo ""
+echo "Terminal 1 - Seed node:"
+echo "  ./scripts/run-demo.sh seed"
+echo ""
+echo "Terminal 2 - Node1:"
+echo "  ./scripts/run-demo.sh node 1"
+echo ""
+echo "Terminal 3 - Node2:"
+echo "  ./scripts/run-demo.sh node 2"
+echo ""
+echo "In node2 shell, try:"
+echo "  mycelium:active_view().           %% See connected peers"
+echo "  chat_server:list_rooms().         %% Discover rooms"
+echo "  chat_room_sup:create_room(test).  %% Create new room"
+echo "  chat_client:send(demo_room, \"Hi\"). %% Send to remote room"
+echo ""
+
+echo "=== MANUAL SHELL TESTING ==="
+echo ""
+echo "Terminal 1:"
+echo "  rebar3 shell --sname seed --setcookie chat"
+echo "  > chat_client:demo()."
+echo ""
+echo "Terminal 2:"
+echo "  rebar3 shell --sname node1 --setcookie chat"
+echo "  > mycelium:join('seed@$HOSTNAME')."
+echo "  > {ok, C} = chat_client:start()."
+echo "  > timer:sleep(500)."
+echo "  > chat_client:join(demo_room, C)."
+echo "  > chat_client:send(demo_room, \"Hello!\")."
+echo ""
+echo "Terminal 3:"
+echo "  rebar3 shell --sname node2 --setcookie chat"
+echo "  > mycelium:join('seed@$HOSTNAME')."
+echo "  > {ok, C} = chat_client:start()."
+echo "  > chat_server:list_rooms()."
+echo "  > chat_room_sup:create_room(node2_room)."
+echo ""
+
+echo "=== EXPECTED BEHAVIOR ==="
+echo ""
+echo "- Nodes join cluster via mycelium:join/1"
+echo "- Rooms discovered automatically via CRDT replication"
+echo "- Messages route through overlay to room host"
+echo "- Each node sees partial mesh (active_view)"
+echo "- All nodes see all rooms (list_rooms)"
+echo ""
