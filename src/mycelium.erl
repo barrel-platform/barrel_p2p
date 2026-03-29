@@ -2,6 +2,11 @@
 
 -include("mycelium.hrl").
 
+%% Retry configuration
+-define(DEFAULT_RETRIES, 3).
+-define(BASE_BACKOFF_MS, 100).
+-define(MAX_BACKOFF_MS, 2000).
+
 %% Public API
 -export([
     join/1,
@@ -22,8 +27,16 @@
     lookup_local/1,
     list_services/0,
     whereis_service/1,
+    whereis_service/2,
     global_register/1,
     get_proxy/1
+]).
+
+%% Service Events API
+-export([
+    subscribe_services/0,
+    subscribe_services/1,
+    unsubscribe_services/1
 ]).
 
 %% Test helpers (for integration tests)
@@ -92,10 +105,31 @@ lookup_local(Name) ->
 list_services() ->
     mycelium_registry:list_services().
 
-%% Find service with overlay routing fallback
+%% Find service with overlay routing fallback and transparent retry
 %% Checks local → remote cache → overlay routing
 -spec whereis_service(atom() | binary()) -> {ok, pid()} | {ok, node(), pid()} | {error, not_found}.
 whereis_service(Name) ->
+    whereis_service(Name, #{}).
+
+-spec whereis_service(atom() | binary(), map()) -> {ok, pid()} | {ok, node(), pid()} | {error, not_found}.
+whereis_service(Name, Opts) ->
+    Retries = maps:get(retries, Opts, ?DEFAULT_RETRIES),
+    whereis_service_retry(Name, Retries, ?BASE_BACKOFF_MS).
+
+whereis_service_retry(Name, 0, _Delay) ->
+    do_whereis_service(Name);
+whereis_service_retry(Name, Retries, Delay) ->
+    case do_whereis_service(Name) of
+        {ok, _} = Success -> Success;
+        {ok, _, _} = Success -> Success;
+        {error, not_found} ->
+            ActualDelay = min(Delay, ?MAX_BACKOFF_MS),
+            timer:sleep(ActualDelay + rand:uniform(ActualDelay div 2)),
+            whereis_service_retry(Name, Retries - 1, Delay * 2);
+        {error, _} = Error -> Error
+    end.
+
+do_whereis_service(Name) ->
     %% First try local
     case mycelium_registry:lookup_local(Name) of
         {ok, Pid} ->
@@ -148,6 +182,23 @@ global_register(Name) ->
 -spec get_proxy(atom() | binary()) -> {ok, pid()} | not_found.
 get_proxy(Name) ->
     mycelium_registry:get_proxy(Name).
+
+%%====================================================================
+%% Service Events API
+%%====================================================================
+
+%% Subscribe to service events (register, unregister, down)
+-spec subscribe_services() -> ok.
+subscribe_services() ->
+    mycelium_service_events:subscribe(self()).
+
+-spec subscribe_services(pid()) -> ok.
+subscribe_services(Pid) ->
+    mycelium_service_events:subscribe(Pid).
+
+-spec unsubscribe_services(pid()) -> ok.
+unsubscribe_services(Pid) ->
+    mycelium_service_events:unsubscribe(Pid).
 
 %%====================================================================
 %% Test Helpers

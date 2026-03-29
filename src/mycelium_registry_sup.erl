@@ -16,6 +16,15 @@ init([]) ->
         period => 10
     },
 
+    ServiceEvents = #{
+        id => mycelium_service_events,
+        start => {mycelium_service_events, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_service_events]
+    },
+
     Registry = #{
         id => mycelium_registry,
         start => {mycelium_registry, start_link, []},
@@ -52,5 +61,5 @@ init([]) ->
         modules => [mycelium_proxy_sup]
     },
 
-    ChildSpecs = [Registry, Sync, Router, ProxySup],
+    ChildSpecs = [ServiceEvents, Registry, Sync, Router, ProxySup],
     {ok, {SupFlags, ChildSpecs}}.

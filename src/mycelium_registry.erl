@@ -114,6 +114,8 @@ handle_call({register, Name, Meta}, {Pid, _}, State) ->
             Monitors = maps:put(Ref, Name, State#state.monitors),
             %% Notify sync
             mycelium_registry_sync:broadcast_update({add, Entry}),
+            %% Emit service event
+            mycelium_service_events:notify({service_registered, Name, node()}),
             {reply, ok, State#state{
                 local = Local,
                 monitors = Monitors,
@@ -134,6 +136,8 @@ handle_call({unregister, Name}, _From, State) ->
             end,
             %% Notify sync
             mycelium_registry_sync:broadcast_update({remove, Entry#service_entry.name, node()}),
+            %% Emit service event
+            mycelium_service_events:notify({service_unregistered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}};
         error ->
             {reply, ok, State}
@@ -201,12 +205,14 @@ handle_cast({remove_entry, Name, Node}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', Ref, process, _Pid, _Reason}, State) ->
+handle_info({'DOWN', Ref, process, _Pid, Reason}, State) ->
     case maps:take(Ref, State#state.monitors) of
         {Name, Monitors} ->
             case maps:take(Name, State#state.local) of
                 {_Entry, Local} ->
                     mycelium_registry_sync:broadcast_update({remove, Name, node()}),
+                    %% Emit service down event
+                    mycelium_service_events:notify({service_down, Name, node(), Reason}),
                     {noreply, State#state{local = Local, monitors = Monitors}};
                 error ->
                     {noreply, State#state{monitors = Monitors}}

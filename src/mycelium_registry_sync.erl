@@ -49,10 +49,9 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 handle_cast({broadcast, Update}, State) ->
-    %% Broadcast to all known peers
-    lists:foreach(fun(Peer) ->
-        send_to_peer(Peer, {delta, node(), [Update]})
-    end, State#state.peers),
+    %% Parallel broadcast to all known peers
+    Msg = {?SYNC_TAG, {delta, node(), [Update]}},
+    [erlang:send({?SERVER, Peer}, Msg, [nosuspend]) || Peer <- State#state.peers],
     {noreply, State};
 
 handle_cast({peer_up, Node}, State) ->
@@ -60,14 +59,9 @@ handle_cast({peer_up, Node}, State) ->
         true ->
             {noreply, State};
         false ->
-            %% Full sync: send all local services to new peer
-            LocalEntries = mycelium_registry:get_all_local(),
-            case LocalEntries of
-                [] -> ok;
-                _ -> send_to_peer(Node, {full_sync, node(), LocalEntries})
-            end,
-            Peers = [Node | State#state.peers],
-            {noreply, State#state{peers = Peers}}
+            %% Schedule async full sync
+            self() ! {do_full_sync, Node},
+            {noreply, State#state{peers = [Node | State#state.peers]}}
     end;
 
 handle_cast({peer_down, Node}, State) ->
@@ -80,6 +74,20 @@ handle_cast({peer_down, Node}, State) ->
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
+
+handle_info({do_full_sync, Node}, State) ->
+    %% Non-blocking full sync
+    case lists:member(Node, State#state.peers) of
+        true ->
+            LocalEntries = mycelium_registry:get_all_local(),
+            case LocalEntries of
+                [] -> ok;
+                _ -> send_to_peer(Node, {full_sync, node(), LocalEntries})
+            end;
+        false ->
+            ok
+    end,
+    {noreply, State};
 
 handle_info({?SYNC_TAG, {delta, FromNode, Updates}}, State) ->
     %% Apply delta updates
@@ -107,12 +115,16 @@ send_to_peer(Node, Msg) ->
     erlang:send({?SERVER, Node}, {?SYNC_TAG, Msg}, [noconnect]).
 
 apply_update(FromNode, {add, Entry}) ->
-    mycelium_registry:merge_remote(FromNode, [Entry]);
+    mycelium_registry:merge_remote(FromNode, [Entry]),
+    %% Emit remote service registered event
+    mycelium_service_events:notify({service_registered, Entry#service_entry.name, FromNode});
 apply_update(_FromNode, {remove, Name, Node}) ->
     %% Remove specific entry from remote cache
     mycelium_registry:remove_entry(Name, Node),
     %% Invalidate route cache for this service
     mycelium_router:invalidate_route(Name),
+    %% Emit remote service unregistered event
+    mycelium_service_events:notify({service_unregistered, Name, Node}),
     ok;
 apply_update(_FromNode, {service_down, Name, _Reason}) ->
     %% Service went down - invalidate all routes to it
