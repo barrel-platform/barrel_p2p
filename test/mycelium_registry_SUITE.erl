@@ -21,7 +21,15 @@
     test_whereis_service_local/1,
     test_whereis_service_retry_not_found/1,
     test_whereis_service_no_retry_on_success/1,
-    test_whereis_service_custom_retries/1
+    test_whereis_service_custom_retries/1,
+    %% Via callbacks
+    test_register_name/1,
+    test_register_name_duplicate/1,
+    test_unregister_name/1,
+    test_whereis_name/1,
+    test_send/1,
+    test_send_not_found/1,
+    test_via_gen_server/1
 ]).
 
 %%====================================================================
@@ -44,7 +52,15 @@ groups() ->
             test_whereis_service_local,
             test_whereis_service_retry_not_found,
             test_whereis_service_no_retry_on_success,
-            test_whereis_service_custom_retries
+            test_whereis_service_custom_retries,
+            %% Via callbacks
+            test_register_name,
+            test_register_name_duplicate,
+            test_unregister_name,
+            test_whereis_name,
+            test_send,
+            test_send_not_found,
+            test_via_gen_server
         ]}
     ].
 
@@ -170,4 +186,95 @@ test_whereis_service_custom_retries(_Config) ->
     ?assert(Elapsed >= 100),
     %% But not too long
     ?assert(Elapsed < 500),
+    ok.
+
+%%====================================================================
+%% Via Callback Tests
+%%====================================================================
+
+test_register_name(_Config) ->
+    %% Test register_name/2 returns 'yes' on success
+    Pid = self(),
+    ?assertEqual(yes, mycelium:register_name(via_test_name, Pid)),
+    %% Cleanup
+    mycelium:unregister_name(via_test_name),
+    ok.
+
+test_register_name_duplicate(_Config) ->
+    %% Test register_name/2 returns 'no' if already registered
+    Pid = self(),
+    ?assertEqual(yes, mycelium:register_name(via_dup_name, Pid)),
+    ?assertEqual(no, mycelium:register_name(via_dup_name, Pid)),
+    %% Cleanup
+    mycelium:unregister_name(via_dup_name),
+    ok.
+
+test_unregister_name(_Config) ->
+    %% Test unregister_name/1 removes registration
+    Pid = self(),
+    yes = mycelium:register_name(via_unreg_name, Pid),
+    ?assertEqual(ok, mycelium:unregister_name(via_unreg_name)),
+    %% Should be gone now
+    ?assertEqual(undefined, mycelium:whereis_name(via_unreg_name)),
+    ok.
+
+test_whereis_name(_Config) ->
+    %% Test whereis_name/1 returns pid or undefined
+    Pid = self(),
+    %% Not registered yet
+    ?assertEqual(undefined, mycelium:whereis_name(via_whereis_name)),
+    %% Register and verify
+    yes = mycelium:register_name(via_whereis_name, Pid),
+    ?assertEqual(Pid, mycelium:whereis_name(via_whereis_name)),
+    %% Cleanup
+    mycelium:unregister_name(via_whereis_name),
+    ok.
+
+test_send(_Config) ->
+    %% Test send/2 delivers message and returns pid
+    Parent = self(),
+    Pid = spawn(fun() ->
+        yes = mycelium:register_name(via_send_name, self()),
+        Parent ! registered,
+        receive
+            test_msg -> Parent ! {received, self()}
+        end
+    end),
+    receive registered -> ok end,
+
+    %% Send message and verify return value
+    ?assertEqual(Pid, mycelium:send(via_send_name, test_msg)),
+
+    %% Verify message was received
+    receive
+        {received, Pid} -> ok
+    after 1000 ->
+        ct:fail(message_not_received)
+    end,
+    ok.
+
+test_send_not_found(_Config) ->
+    %% Test send/2 raises badarg if name not found
+    ?assertError({badarg, {via_nonexistent_name, test_msg}},
+                 mycelium:send(via_nonexistent_name, test_msg)),
+    ok.
+
+test_via_gen_server(_Config) ->
+    %% Test {via, mycelium, Name} works with gen_server
+    %% Start a gen_server using via tuple
+    Name = via_gen_server_test,
+    {ok, Pid} = gen_server:start({via, mycelium, Name}, mycelium_test_server, [], []),
+
+    %% Verify we can call it by name
+    ?assertEqual(pong, gen_server:call({via, mycelium, Name}, ping)),
+
+    %% Verify whereis_name returns the right pid
+    ?assertEqual(Pid, mycelium:whereis_name(Name)),
+
+    %% Stop the server
+    gen_server:stop({via, mycelium, Name}),
+
+    %% Verify it's unregistered after stopping
+    timer:sleep(50),
+    ?assertEqual(undefined, mycelium:whereis_name(Name)),
     ok.
