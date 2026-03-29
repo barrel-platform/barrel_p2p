@@ -18,7 +18,7 @@ The example uses rebar3 checkouts to reference the local mycelium library:
 ```bash
 cd examples/chat
 
-# Create checkouts symlink (already done if you cloned the repo)
+# Create checkouts symlink (done automatically by run-demo.sh)
 mkdir -p _checkouts
 ln -sf ../../.. _checkouts/mycelium
 ```
@@ -27,6 +27,9 @@ ln -sf ../../.. _checkouts/mycelium
 
 ```bash
 rebar3 compile
+
+# Link mycelium in _build for rebar3 shell (done automatically by run-demo.sh)
+ln -sf ../../../_checkouts/mycelium/_build/default/lib/mycelium _build/default/lib/mycelium
 ```
 
 ### Two-Node Demo

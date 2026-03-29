@@ -29,6 +29,11 @@ if [ ! -L "_checkouts/mycelium" ]; then
     ln -sf ../../.. _checkouts/mycelium
 fi
 
+# Ensure mycelium is linked in _build for rebar3 shell
+if [ -d "_build/default/lib" ] && [ ! -e "_build/default/lib/mycelium" ]; then
+    ln -sf ../../../_checkouts/mycelium/_build/default/lib/mycelium _build/default/lib/mycelium
+fi
+
 case "${1:-}" in
     build)
         echo "Building chat application..."
