@@ -17,7 +17,11 @@
     lookup/1,
     remove/1,
     count/0,
-    list/0
+    list/0,
+    %% Listener API for destination nodes
+    listen/1,
+    unlisten/0,
+    get_listener/0
 ]).
 
 %% gen_server callbacks
@@ -28,7 +32,9 @@
 
 -record(state, {
     max_relays :: pos_integer(),
-    idle_timeout :: pos_integer()
+    idle_timeout :: pos_integer(),
+    listener :: pid() | undefined,       %% Process receiving incoming circuits
+    listener_mon :: reference() | undefined  %% Monitor ref for listener
 }).
 
 %%====================================================================
@@ -76,6 +82,25 @@ count() ->
 list() ->
     [Hop || {_, Hop} <- ets:tab2list(?TABLE)].
 
+%% @doc Register process to receive incoming circuit notifications.
+%% The listener will receive:
+%%   {circuit_ready, CircuitId} - when circuit is established
+%%   {circuit_data, CircuitId, Data} - when data arrives
+%%   {circuit_closed, CircuitId, Reason} - when circuit closes
+-spec listen(pid()) -> ok | {error, already_listening}.
+listen(Pid) ->
+    gen_server:call(?SERVER, {listen, Pid}).
+
+%% @doc Unregister as circuit listener
+-spec unlisten() -> ok.
+unlisten() ->
+    gen_server:call(?SERVER, unlisten).
+
+%% @doc Get current listener (internal use)
+-spec get_listener() -> {ok, pid()} | none.
+get_listener() ->
+    gen_server:call(?SERVER, get_listener).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -90,35 +115,73 @@ init([]) ->
 
     {ok, #state{
         max_relays = MaxRelays,
-        idle_timeout = IdleTimeout
+        idle_timeout = IdleTimeout,
+        listener = undefined,
+        listener_mon = undefined
     }}.
 
-handle_call({create, From, CircuitId, _EphPubKey}, _ReplyTo, State) ->
-    case count() >= State#state.max_relays of
-        true ->
-            {reply, {error, relay_limit_reached}, State};
-        false ->
-            Now = erlang:monotonic_time(millisecond),
-            Hop = #circuit_hop{
-                circuit_id = CircuitId,
-                prev_node = From,
-                next_node = undefined, %% Will be set on EXTEND
-                created_at = Now,
-                last_seen = Now
-            },
-            Key = circuit_key(CircuitId),
-            ets:insert(?TABLE, {Key, Hop}),
+handle_call({listen, Pid}, _From, State) ->
+    case State#state.listener of
+        undefined ->
+            MonRef = erlang:monitor(process, Pid),
+            {reply, ok, State#state{listener = Pid, listener_mon = MonRef}};
+        _OtherPid ->
+            {reply, {error, already_listening}, State}
+    end;
 
-            %% Generate our ephemeral keypair for key exchange with initiator
-            %% But since relays don't decrypt, we just acknowledge receipt
-            %% The initiator's pubkey is passed through to the destination
-            {PubKey, _PrivKey} = mycelium_crypto:generate_ephemeral_keypair(),
+handle_call(unlisten, _From, State) ->
+    case State#state.listener_mon of
+        undefined -> ok;
+        MonRef -> erlang:demonitor(MonRef, [flush])
+    end,
+    {reply, ok, State#state{listener = undefined, listener_mon = undefined}};
 
-            %% Send CREATED back to initiator through the previous hop
-            Reply = mycelium_circuit_protocol:encode_created(CircuitId, PubKey),
-            mycelium_circuit_transport:send(From, CircuitId, Reply),
+handle_call(get_listener, _From, State) ->
+    Reply = case State#state.listener of
+        undefined -> none;
+        Pid -> {ok, Pid}
+    end,
+    {reply, Reply, State};
 
-            {reply, ok, State}
+handle_call({create, From, CircuitId, EphPubKey}, _ReplyTo, State) ->
+    %% Check if we have a listener waiting for incoming circuits
+    case State#state.listener of
+        Pid when is_pid(Pid) ->
+            %% We're the destination - accept the circuit
+            case mycelium_circuit:accept(CircuitId, EphPubKey, Pid) of
+                {ok, _CircuitPid} ->
+                    {reply, ok, State};
+                {error, Reason} ->
+                    {reply, {error, Reason}, State}
+            end;
+        undefined ->
+            %% No listener - act as relay
+            case count() >= State#state.max_relays of
+                true ->
+                    {reply, {error, relay_limit_reached}, State};
+                false ->
+                    Now = erlang:monotonic_time(millisecond),
+                    Hop = #circuit_hop{
+                        circuit_id = CircuitId,
+                        prev_node = From,
+                        next_node = undefined, %% Will be set on EXTEND
+                        created_at = Now,
+                        last_seen = Now
+                    },
+                    Key = circuit_key(CircuitId),
+                    ets:insert(?TABLE, {Key, Hop}),
+
+                    %% Generate our ephemeral keypair for key exchange with initiator
+                    %% But since relays don't decrypt, we just acknowledge receipt
+                    %% The initiator's pubkey is passed through to the destination
+                    {PubKey, _PrivKey} = mycelium_crypto:generate_ephemeral_keypair(),
+
+                    %% Send CREATED back to initiator through the previous hop
+                    Reply = mycelium_circuit_protocol:encode_created(CircuitId, PubKey),
+                    mycelium_circuit_transport:send(From, CircuitId, Reply),
+
+                    {reply, ok, State}
+            end
     end;
 
 handle_call({extend, _From, CircuitId, TargetNode, EphPubKey}, _ReplyTo, State) ->
@@ -157,6 +220,11 @@ handle_info(cleanup, State) ->
     cleanup_idle_circuits(State#state.idle_timeout),
     erlang:send_after(State#state.idle_timeout, self(), cleanup),
     {noreply, State};
+
+handle_info({'DOWN', MonRef, process, _Pid, _Reason}, State)
+  when MonRef =:= State#state.listener_mon ->
+    %% Listener process died, clear it
+    {noreply, State#state{listener = undefined, listener_mon = undefined}};
 
 handle_info(_Info, State) ->
     {noreply, State}.

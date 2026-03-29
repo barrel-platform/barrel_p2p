@@ -46,7 +46,11 @@
     circuit_send/2,
     circuit_close/1,
     circuit_info/1,
-    list_circuits/0
+    list_circuits/0,
+    %% Destination API
+    circuit_listen/0,
+    circuit_listen/1,
+    circuit_unlisten/0
 ]).
 
 %% Via callbacks for {via, mycelium, Name} registration
@@ -317,6 +321,25 @@ list_circuits() ->
                 end
             end, ets:tab2list(mycelium_circuits))
     end.
+
+%% @doc Listen for incoming circuits (registers calling process)
+%% The calling process will receive:
+%%   {circuit_ready, CircuitId} - when an incoming circuit is established
+%%   {circuit_data, CircuitId, Data} - when data arrives on a circuit
+%%   {circuit_closed, CircuitId, Reason} - when a circuit closes
+-spec circuit_listen() -> ok | {error, already_listening}.
+circuit_listen() ->
+    circuit_listen(self()).
+
+%% @doc Listen for incoming circuits (registers specified process)
+-spec circuit_listen(pid()) -> ok | {error, already_listening}.
+circuit_listen(Pid) ->
+    mycelium_circuit_relay:listen(Pid).
+
+%% @doc Stop listening for incoming circuits
+-spec circuit_unlisten() -> ok.
+circuit_unlisten() ->
+    mycelium_circuit_relay:unlisten().
 
 %%====================================================================
 %% Test Helpers
