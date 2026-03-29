@@ -17,6 +17,21 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% Test exports - internal functions exposed for unit testing
+-ifdef(TEST).
+-export([
+    record_churn_event/2,
+    maybe_reset_churn_window/2,
+    record_peer_failure/2,
+    do_cleanup_passive_view/1,
+    find_eligible_passive_peer/2,
+    is_backoff_expired/2,
+    last_seen_cmp/2,
+    make_peer/1,
+    add_to_passive/3
+]).
+-endif.
+
 -define(SERVER, ?MODULE).
 
 %%====================================================================
