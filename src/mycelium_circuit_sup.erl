@@ -69,6 +69,16 @@ init([]) ->
         auth_enabled => application:get_env(mycelium, auth_enabled, true)
     },
 
+    %% Metrics collector - start first
+    Metrics = #{
+        id => mycelium_circuit_metrics,
+        start => {mycelium_circuit_metrics, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_circuit_metrics]
+    },
+
     %% Transport - must start before relay as relay uses transport
     Transport = #{
         id => mycelium_circuit_transport_tcp,
@@ -99,7 +109,7 @@ init([]) ->
         modules => [?MODULE]
     },
 
-    ChildSpecs = [Transport, Relay, CircuitDynSup],
+    ChildSpecs = [Metrics, Transport, Relay, CircuitDynSup],
     {ok, {SupFlags, ChildSpecs}};
 
 %% Dynamic supervisor for circuit processes

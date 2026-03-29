@@ -242,6 +242,9 @@ init({initiator, CircuitId, Target, Hops, TTL, Owner}) ->
     Now = erlang:monotonic_time(millisecond),
     ExpiresAt = Now + TTL,
 
+    %% Record metrics
+    mycelium_circuit_metrics:circuit_created(initiator),
+
     %% Generate ephemeral keypair for E2E encryption with destination
     {PubKey, PrivKey} = mycelium_crypto:generate_ephemeral_keypair(),
 
@@ -284,6 +287,10 @@ init({initiator, CircuitId, Target, Hops, TTL, Owner}) ->
 init({destination, CircuitId, CryptoSession, TTL, Owner}) ->
     Now = erlang:monotonic_time(millisecond),
     ExpiresAt = Now + TTL,
+
+    %% Record metrics (destination circuits are immediately ready)
+    mycelium_circuit_metrics:circuit_created(destination),
+    mycelium_circuit_metrics:circuit_established(destination, 0),
 
     %% Register circuit in local registry
     register_circuit(CircuitId, self()),
@@ -348,10 +355,12 @@ building(cast, {extended, EphPubKey}, Data) ->
 
 building(cast, {destroy, Reason}, Data) ->
     cancel_timer(Data#data.establish_timer),
+    mycelium_circuit_metrics:circuit_failed({destroyed, Reason}),
     Data#data.owner ! {circuit_failed, Data#data.id, {destroyed, Reason}},
     {stop, normal};
 
 building(info, establish_timeout, Data) ->
+    mycelium_circuit_metrics:circuit_failed(timeout),
     Data#data.owner ! {circuit_failed, Data#data.id, timeout},
     %% Send destroy to cleanup partial circuit
     send_destroy(Data, 1),
@@ -359,6 +368,7 @@ building(info, establish_timeout, Data) ->
 
 building(info, {transport_down, _Node, Reason}, Data) ->
     cancel_timer(Data#data.establish_timer),
+    mycelium_circuit_metrics:circuit_failed({transport_down, Reason}),
     Data#data.owner ! {circuit_failed, Data#data.id, {transport_down, Reason}},
     {stop, normal};
 
@@ -371,6 +381,7 @@ building({call, From}, {send, _Payload}, _Data) ->
 
 building(cast, close, Data) ->
     cancel_timer(Data#data.establish_timer),
+    mycelium_circuit_metrics:circuit_failed(local_close),
     send_destroy(Data, 0),
     {stop, normal}.
 
@@ -383,6 +394,7 @@ ready({call, From}, {send, Payload}, Data) ->
         {ok, Encrypted, NewCrypto} ->
             DataMsg = mycelium_circuit_protocol:encode_data(Data#data.id, Encrypted),
             send_forward(Data, DataMsg),
+            mycelium_circuit_metrics:data_sent(byte_size(Payload)),
             {keep_state, Data#data{crypto = NewCrypto}, [{reply, From, ok}]};
         {error, Reason} ->
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
@@ -391,21 +403,25 @@ ready({call, From}, {send, Payload}, Data) ->
 ready(cast, {data, EncryptedPayload}, Data) ->
     case mycelium_crypto:decrypt(EncryptedPayload, Data#data.crypto, <<>>) of
         {ok, Plaintext, NewCrypto} ->
+            mycelium_circuit_metrics:data_received(byte_size(Plaintext)),
             Data#data.owner ! {circuit_data, Data#data.id, Plaintext},
             {keep_state, Data#data{crypto = NewCrypto}};
         {error, _Reason} ->
             %% Decryption failure - destroy circuit
             send_destroy(Data, 2),
+            mycelium_circuit_metrics:circuit_closed(decrypt_failed),
             Data#data.owner ! {circuit_closed, Data#data.id, decrypt_failed},
             {stop, normal}
     end;
 
 ready(cast, {destroy, Reason}, Data) ->
+    mycelium_circuit_metrics:circuit_closed({remote, Reason}),
     Data#data.owner ! {circuit_closed, Data#data.id, {remote, Reason}},
     {stop, normal};
 
 ready(cast, close, Data) ->
     send_destroy(Data, 0),
+    mycelium_circuit_metrics:circuit_closed(local),
     Data#data.owner ! {circuit_closed, Data#data.id, local},
     {stop, normal};
 
@@ -415,12 +431,14 @@ ready({call, From}, get_info, Data) ->
 
 ready(info, expired, Data) ->
     send_destroy(Data, 1),
+    mycelium_circuit_metrics:circuit_closed(expired),
     Data#data.owner ! {circuit_closed, Data#data.id, expired},
     {stop, normal};
 
 ready(info, {transport_down, _Node, Reason}, Data) ->
     %% Transport connection failed - circuit is broken
     %% No need to send DESTROY (transport is down)
+    mycelium_circuit_metrics:circuit_closed({transport_down, Reason}),
     Data#data.owner ! {circuit_closed, Data#data.id, {transport_down, Reason}},
     {stop, normal}.
 
@@ -472,6 +490,10 @@ finalize_circuit(EphPubKey, Data) ->
     Now = erlang:monotonic_time(millisecond),
     TimeRemaining = Data#data.expires_at - Now,
     erlang:send_after(TimeRemaining, self(), expired),
+
+    %% Record establishment latency
+    LatencyMs = Now - Data#data.created_at,
+    mycelium_circuit_metrics:circuit_established(initiator, LatencyMs),
 
     %% Notify owner
     Data#data.owner ! {circuit_ready, Data#data.id},
