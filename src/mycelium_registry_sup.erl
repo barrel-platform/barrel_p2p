@@ -43,5 +43,14 @@ init([]) ->
         modules => [mycelium_router]
     },
 
-    ChildSpecs = [Registry, Sync, Router],
+    ProxySup = #{
+        id => mycelium_proxy_sup,
+        start => {mycelium_proxy_sup, start_link, []},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [mycelium_proxy_sup]
+    },
+
+    ChildSpecs = [Registry, Sync, Router, ProxySup],
     {ok, {SupFlags, ChildSpecs}}.

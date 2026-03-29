@@ -21,7 +21,9 @@
     lookup/1,
     lookup_local/1,
     list_services/0,
-    whereis_service/1
+    whereis_service/1,
+    global_register/1,
+    get_proxy/1
 ]).
 
 %%====================================================================
@@ -103,3 +105,40 @@ whereis_service(Name) ->
                     mycelium_registry:overlay_lookup(Name)
             end
     end.
+
+%% Register a service with global for transparency
+%% Creates a local proxy and registers it with global:register_name
+-spec global_register(atom() | binary()) -> {ok, pid()} | {error, term()}.
+global_register(Name) ->
+    case whereis_service(Name) of
+        {ok, Pid} when node(Pid) =:= node() ->
+            %% Local service - register directly with global
+            case global:register_name(Name, Pid) of
+                yes -> {ok, Pid};
+                no -> {error, already_registered}
+            end;
+        {ok, TargetNode, _Pid} ->
+            %% Remote service - create proxy and register
+            case mycelium_registry:ensure_proxy(Name, TargetNode) of
+                {ok, Proxy} ->
+                    case global:register_name(Name, Proxy) of
+                        yes -> {ok, Proxy};
+                        no -> {error, already_registered}
+                    end;
+                {error, _} = Error ->
+                    Error
+            end;
+        {ok, Pid} ->
+            %% Local pid returned from overlay lookup
+            case global:register_name(Name, Pid) of
+                yes -> {ok, Pid};
+                no -> {error, already_registered}
+            end;
+        {error, not_found} ->
+            {error, not_found}
+    end.
+
+%% Get existing proxy for a service
+-spec get_proxy(atom() | binary()) -> {ok, pid()} | not_found.
+get_proxy(Name) ->
+    mycelium_registry:get_proxy(Name).

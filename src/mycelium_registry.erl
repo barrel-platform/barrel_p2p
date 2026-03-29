@@ -9,6 +9,7 @@
 -export([lookup/1, lookup_local/1, list_services/0]).
 -export([get_all_local/0]).
 -export([overlay_lookup/1]).
+-export([ensure_proxy/2, get_proxy/1]).
 
 %% Internal API (used by sync)
 -export([merge_remote/2, remove_node_entries/1, remove_entry/2]).
@@ -64,6 +65,16 @@ get_all_local() ->
 -spec overlay_lookup(atom() | binary()) -> {ok, node(), pid()} | {error, not_found}.
 overlay_lookup(Name) ->
     mycelium_router:find_service(Name).
+
+%% Ensure a proxy exists for a remote service
+-spec ensure_proxy(atom() | binary(), node()) -> {ok, pid()} | {error, term()}.
+ensure_proxy(Name, TargetNode) ->
+    mycelium_proxy_sup:start_proxy(Name, TargetNode).
+
+%% Get existing proxy for a service
+-spec get_proxy(atom() | binary()) -> {ok, pid()} | not_found.
+get_proxy(Name) ->
+    mycelium_proxy_sup:get_proxy(Name).
 
 %% Internal API
 -spec merge_remote(node(), [#service_entry{}]) -> ok.
