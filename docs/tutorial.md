@@ -10,7 +10,7 @@ Traditional Erlang distribution creates a fully connected mesh - every node conn
 - Node joins/leaves cause O(N) connection changes
 - Network partitions affect many connections
 
-Mycelium solves this with partial membership. Each node maintains only log(N) connections while still being able to reach any node through overlay routing.
+Mycelium solves this with partial membership. Each node maintains only log(N) connections while still being able to reach any node through overlay routing. For sensitive communication, circuit routing provides end-to-end encrypted channels through multiple relay hops.
 
 ## Understanding Cluster Membership
 
@@ -111,6 +111,79 @@ receive
         io:format("Service ~p on ~p went down: ~p~n", [Name, Node, Reason])
 end.
 ```
+
+## Secure Communication with Circuits
+
+For sensitive data, circuit routing creates encrypted multi-hop channels where intermediate nodes cannot read the traffic.
+
+### Creating Circuits
+
+```erlang
+%% Create a circuit to target node (default: 2 relay hops)
+{ok, CircuitId} = mycelium:circuit_create('target@host').
+
+%% Wait for circuit to establish
+receive
+    {circuit_ready, CircuitId} ->
+        io:format("Circuit ready~n");
+    {circuit_failed, CircuitId, Reason} ->
+        io:format("Circuit failed: ~p~n", [Reason])
+after 30000 ->
+    io:format("Timeout~n")
+end.
+```
+
+### Sending and Receiving Data
+
+```erlang
+%% Send encrypted data
+ok = mycelium:circuit_send(CircuitId, <<"secret message">>).
+
+%% Receive data (as initiator)
+receive
+    {circuit_data, CircuitId, Data} ->
+        io:format("Received: ~p~n", [Data])
+end.
+
+%% Close when done
+mycelium:circuit_close(CircuitId).
+```
+
+### Accepting Incoming Circuits
+
+To receive circuit connections, register as a listener:
+
+```erlang
+%% Register as circuit listener
+ok = mycelium:circuit_listen().
+
+%% Handle incoming circuits
+loop() ->
+    receive
+        {circuit_ready, CircuitId} ->
+            io:format("New circuit: ~p~n", [CircuitId]),
+            loop();
+        {circuit_data, CircuitId, Data} ->
+            %% Echo back
+            mycelium:circuit_send(CircuitId, Data),
+            loop();
+        {circuit_closed, CircuitId, Reason} ->
+            io:format("Circuit closed: ~p~n", [Reason]),
+            loop()
+    end.
+```
+
+### When to Use Circuits
+
+| Scenario | Use Circuits? |
+|----------|---------------|
+| Private messages between users | Yes |
+| Sensitive configuration data | Yes |
+| High-volume broadcast | No (use Plumtree) |
+| Service discovery | No (use registry) |
+| Real-time gaming | No (latency overhead) |
+
+See [Circuit Routing](circuits.md) for the full API reference and advanced patterns.
 
 ## Building a Distributed Chat
 
@@ -534,5 +607,6 @@ try_service(Name, Request) ->
 
 ## Next Steps
 
+- [Circuit Routing](circuits.md) - Multi-hop encrypted communication
 - [Internals](internals.md) - Deep dive into protocols and architecture
 - [Partisan Comparison](partisan-comparison.md) - Understand the differences
