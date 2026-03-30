@@ -321,20 +321,30 @@ Dot = {node(), hlc:now(HLC)}
 
 Mycelium uses Ed25519 public-key cryptography to authenticate peer connections. See [Authentication](authentication.md) for detailed provisioning and key management.
 
+### Key Identity
+
+Peers are identified by their **key fingerprint** (SHA-256 hash of the public key), not by node name. This allows:
+- Same keypair across hostname changes
+- Key migration between machines
+- Cryptographic identity verification
+
 ### Key Storage
 
 ```erlang
-%% Keys stored by mycelium_dist_keys
+%% Keys stored by mycelium_dist_keys (keyed by fingerprint)
 -record(peer_key, {
-    node        :: node(),
-    public_key  :: binary(),       %% 32 bytes
+    fingerprint :: binary(),       %% SHA-256 hash of public_key (32 bytes)
+    public_key  :: binary(),       %% 32 bytes Ed25519 public key
     added_at    :: integer(),      %% Timestamp
     last_seen   :: integer(),      %% Last connection
     trust_level :: permanent | tofu
 }).
 ```
 
-Keys are persisted to disk in `data/keys/trusted/<node>.pub`.
+Keys are persisted to disk in `data/keys/trusted/<fingerprint-prefix>.pub` using format:
+```
+mycelium-ed25519 <base64-encoded-public-key>
+```
 
 ### Trust Modes
 
@@ -377,13 +387,17 @@ Node A (initiator)                    Node B (acceptor)
 
 ```erlang
 %% Store a peer's key (for strict mode)
-mycelium_dist_keys:store_key('peer@host', PubKey).
+mycelium_dist_keys:store_key(PubKey).
+
+%% Compute fingerprint for identification
+Fp = mycelium_dist_keys:fingerprint(PubKey).
+FpHex = mycelium_dist_keys:fingerprint_hex(PubKey).
 
 %% List trusted peers
 mycelium_dist_keys:list_trusted().
 
-%% Check if peer is trusted
-mycelium_dist_keys:is_trusted('peer@host', PubKey).
+%% Check if key is trusted
+mycelium_dist_keys:is_key_trusted(PubKey).
 
 %% Get this node's public key
 {ok, MyPubKey} = mycelium_dist_auth:get_public_key().
@@ -506,3 +520,130 @@ Key metrics to monitor:
 - Shuffle success rate
 - Service lookup latency
 - Route cache hit rate
+
+## Circuit Routing Architecture
+
+Circuit routing provides multi-hop encrypted channels. See [Circuit Routing](circuits.md) for usage; this section covers internals.
+
+### Supervision Structure
+
+```
+mycelium_circuit_sup (one_for_one)
+│
+├── mycelium_circuit_metrics (worker)
+│   └── ETS-based metrics collection
+│
+├── mycelium_circuit_relay (gen_server)
+│   └── Manages relay hop state
+│
+├── mycelium_circuit_transport (supervisor)
+│   └── Connection pool to peers
+│
+└── circuit processes (dynamic)
+    └── mycelium_circuit (gen_statem)
+        └── Individual circuit state machine
+```
+
+### Circuit State Machine
+
+Each circuit is managed by a `gen_statem` process with three states:
+
+```
+                    ┌─────────────────┐
+                    │    building     │
+     CREATE sent    │                 │
+     ────────────►  │  Waiting for    │
+                    │  CREATED/       │
+                    │  EXTENDED       │
+                    └────────┬────────┘
+                             │ EXTENDED received
+                             │ (or CREATED for direct)
+                             ▼
+                    ┌─────────────────┐
+                    │     ready       │
+                    │                 │
+                    │  Encrypt/send   │◄── DATA
+                    │  Decrypt/recv   │
+                    │                 │
+                    └────────┬────────┘
+                             │ close() or DESTROY
+                             ▼
+                    ┌─────────────────┐
+                    │    closing      │
+                    │                 │
+                    │  Cleanup        │
+                    └─────────────────┘
+```
+
+### Protocol Messages
+
+| Message | Format | Purpose |
+|---------|--------|---------|
+| CREATE | `{create, circuit_id, eph_pub_key}` | Establish circuit hop |
+| CREATED | `{created, circuit_id, eph_pub_key}` | Acknowledge, return key |
+| EXTEND | `{extend, circuit_id, target, eph_pub_key}` | Extend to next hop |
+| EXTENDED | `{extended, circuit_id, eph_pub_key}` | Extension complete |
+| DATA | `{data, circuit_id, encrypted_payload}` | Application data |
+| DESTROY | `{destroy, circuit_id, reason}` | Tear down circuit |
+
+DESTROY reason codes:
+- `0` - Normal close
+- `1` - Timeout/expired
+- `2` - Decryption failure
+
+### Relay Operation
+
+`mycelium_circuit_relay` maintains hop state in ETS:
+
+```erlang
+-record(circuit_hop, {
+    circuit_id   :: #circuit_id{},
+    prev_node    :: node(),      %% Backward direction
+    next_node    :: node(),      %% Forward direction
+    created_at   :: integer(),
+    last_active  :: integer()
+}).
+```
+
+When a DATA message arrives:
+1. Lookup hop state by circuit_id
+2. Forward to next_node (if forward) or prev_node (if backward)
+3. Update last_active timestamp
+4. No decryption (relay sees opaque blob)
+
+### Encryption
+
+Circuit encryption uses X25519 for key exchange and ChaCha20-Poly1305 for AEAD:
+
+```erlang
+-record(crypto_session, {
+    send_key     :: binary(),    %% 32 bytes
+    recv_key     :: binary(),    %% 32 bytes
+    send_nonce   :: integer(),   %% Counter
+    recv_nonce   :: integer()
+}).
+```
+
+Key derivation:
+```
+shared_secret = X25519(our_private, their_public)
+keys = HKDF-SHA256(shared_secret, initiator_pub || dest_pub)
+initiator_send_key = keys[0:32]
+dest_send_key = keys[32:64]
+```
+
+### Metrics Internals
+
+`mycelium_circuit_metrics` uses two ETS tables:
+
+1. **Counters table** (write_concurrency):
+   - `circuits_created`, `circuits_established`, etc.
+   - Per-role breakdowns: `{circuits_created, initiator}`
+   - Latency histogram buckets
+
+2. **Latency samples** (ordered_set):
+   - Ring buffer of recent samples (max 1000)
+   - Used for percentile calculations
+   - Keyed by `{timestamp, ref}` for ordering
+
+Metrics are lock-free using `ets:update_counter/3`

@@ -9,6 +9,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **HyParView Protocol** - Scalable partial membership with O(log n) connections per node
 - **Service Registry** - Distributed service discovery using OR-Map CRDTs
 - **Plumtree Broadcast** - Efficient epidemic broadcast with O(n) message complexity
+- **Circuit Routing** - Multi-hop encrypted channels with end-to-end privacy
 - **Hybrid Logical Clocks** - Causally consistent timestamps for conflict resolution
 - **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
 - **Pluggable Transport** - TCP and TLS distribution carriers
@@ -35,6 +36,10 @@ mycelium:subscribe().
 
 %% View connected peers
 mycelium:active_view().
+
+%% Create a secure circuit to another node
+{ok, CircuitId} = mycelium:circuit_create('target@host').
+mycelium:circuit_send(CircuitId, <<"encrypted data">>).
 ```
 
 ## Installation
@@ -114,6 +119,7 @@ Configure in your `sys.config`:
 
 - [Getting Started](docs/getting-started.md) - Installation and first steps
 - [Building P2P Applications](docs/tutorial.md) - Tutorial with worked examples
+- [Circuit Routing](docs/circuits.md) - Multi-hop encrypted communication
 - [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
 - [Comparison with Partisan](docs/partisan-comparison.md) - When to use which
 - [Internals](docs/internals.md) - Architecture and protocol details

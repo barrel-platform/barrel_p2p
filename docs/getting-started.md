@@ -62,6 +62,17 @@ Create or update your `config/sys.config`:
 | `auth_enabled` | true | Enable Ed25519 peer authentication |
 | `auth_trust_mode` | tofu | `tofu` (trust on first use) or `strict` (pre-shared keys only) |
 
+### Circuit Routing Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `circuit_default_hops` | 2 | Default number of intermediate relay hops |
+| `circuit_default_ttl` | 3600000 | Default circuit lifetime in ms (1 hour) |
+| `circuit_relay_max` | 500 | Maximum circuits this node will relay |
+| `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
+| `circuit_listen_port` | 0 | Port for circuit transport (0 = OS assigned) |
+| `circuit_pool_size` | 3 | Connection pool size per destination |
+
 ## Starting Your First Node
 
 ### Option 1: Interactive Shell
@@ -202,22 +213,27 @@ Common issues:
 1. **Key mismatch error**: A node's key changed (regenerated or MITM attack)
    ```erlang
    %% Check what key is stored
-   mycelium_dist_keys:lookup_key('problem@node').
+   %% Keys are identified by fingerprint, not node name
+   %% Get the fingerprint of the problem key
+   Fp = mycelium_dist_keys:fingerprint(ProblemPubKey).
+   mycelium_dist_keys:lookup_key(Fp).
 
    %% Delete and re-trust if key was legitimately rotated
-   mycelium_dist_keys:delete_key('problem@node').
+   mycelium_dist_keys:delete_key(Fp).
    ```
 
 2. **Untrusted key in strict mode**: Node not pre-registered
    ```erlang
-   %% Register the peer's public key
+   %% Register the peer's public key (identity is based on key, not node name)
    PeerPubKey = <<...>>.  %% Get from peer
-   mycelium_dist_keys:store_key('newnode@host', PeerPubKey).
+   mycelium_dist_keys:store_key(PeerPubKey).
    ```
 
 3. **View trusted keys**:
    ```erlang
+   %% Keys are identified by fingerprint
    mycelium_dist_keys:list_trusted().
+   %% Returns list of #peer_key{fingerprint, public_key, ...}
    ```
 
 See [Authentication](authentication.md) for details on key provisioning and strict mode setup.
@@ -225,5 +241,6 @@ See [Authentication](authentication.md) for details on key provisioning and stri
 ## Next Steps
 
 - [Tutorial: Building P2P Applications](tutorial.md) - Build a distributed chat system
+- [Circuit Routing](circuits.md) - Multi-hop encrypted communication
 - [Authentication](authentication.md) - Key management and trust modes
 - [Internals](internals.md) - Understand the protocols and architecture
