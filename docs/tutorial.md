@@ -66,7 +66,8 @@ Registrations are replicated across the cluster using a CRDT (Conflict-free Repl
 ```erlang
 %% Find all instances
 {ok, Entries} = mycelium:lookup(user_service).
-%% Entries = [{user_service, Pid, Node, Meta}, ...]
+%% Entries is a list of #service_entry{} records with fields:
+%%   name, pid, node, meta
 
 %% Find any instance (prefers local)
 {ok, Pid} = mycelium:whereis_service(user_service).
@@ -223,7 +224,8 @@ The chat server (`examples/chat/src/chat_server.erl`):
 -behaviour(gen_server).
 
 %% API
--export([start_link/1, send/2, join_room/2, leave_room/1, list_rooms/0]).
+-export([start_link/1]).
+-export([send/2, join_room/2, leave_room/1, list_rooms/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -279,12 +281,21 @@ find_room(Room) ->
 init(Room) ->
     process_flag(trap_exit, true),
     ServiceName = {chat_room, Room},
-    ok = mycelium:register_service(ServiceName, #{created => erlang:timestamp()}),
-    {ok, #state{room = Room}}.
+    case mycelium:register_service(ServiceName, #{created => erlang:timestamp()}) of
+        ok ->
+            {ok, #state{room = Room}};
+        {error, Reason} ->
+            {stop, Reason}
+    end.
 
 handle_call({join, Pid}, _From, State = #state{members = Members}) ->
-    Ref = monitor(process, Pid),
-    {reply, ok, State#state{members = [{Pid, Ref} | Members]}};
+    case lists:keyfind(Pid, 1, Members) of
+        false ->
+            Ref = monitor(process, Pid),
+            {reply, ok, State#state{members = [{Pid, Ref} | Members]}};
+        _ ->
+            {reply, {error, already_joined}, State}
+    end;
 
 handle_call({leave, Pid}, _From, State = #state{members = Members}) ->
     case lists:keyfind(Pid, 1, Members) of
@@ -296,18 +307,23 @@ handle_call({leave, Pid}, _From, State = #state{members = Members}) ->
     end;
 
 handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+    {reply, {error, unknown_request}, State}.
 
 handle_cast({message, FromNode, Text}, State = #state{room = Room, members = Members}) ->
     Message = {chat_message, Room, FromNode, Text, erlang:timestamp()},
-    [Pid ! Message || {Pid, _Ref} <- Members],
+    lists:foreach(fun({Pid, _Ref}) -> Pid ! Message end, Members),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info({'DOWN', Ref, process, Pid, _Reason}, State = #state{members = Members}) ->
-    {noreply, State#state{members = lists:keydelete(Pid, 1, Members)}};
+    case lists:keyfind(Ref, 2, Members) of
+        {Pid, Ref} ->
+            {noreply, State#state{members = lists:keydelete(Pid, 1, Members)}};
+        false ->
+            {noreply, State}
+    end;
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -325,7 +341,7 @@ The room supervisor (`examples/chat/src/chat_room_sup.erl`):
 -module(chat_room_sup).
 -behaviour(supervisor).
 
--export([start_link/0, create_room/1]).
+-export([start_link/0, create_room/1, stop_room/1]).
 -export([init/1]).
 
 start_link() ->
@@ -334,6 +350,9 @@ start_link() ->
 create_room(Room) ->
     supervisor:start_child(?MODULE, [Room]).
 
+stop_room(Pid) ->
+    supervisor:terminate_child(?MODULE, Pid).
+
 init([]) ->
     ChildSpec = #{
         id => chat_server,
@@ -341,7 +360,7 @@ init([]) ->
         restart => temporary,
         type => worker
     },
-    {ok, {#{strategy => simple_one_for_one}, [ChildSpec]}}.
+    {ok, {#{strategy => simple_one_for_one, intensity => 5, period => 10}, [ChildSpec]}}.
 ```
 
 ### Chat Client
@@ -351,18 +370,30 @@ The client helper (`examples/chat/src/chat_client.erl`):
 ```erlang
 -module(chat_client).
 
--export([start/0, create_room/1, join/1, send/2, rooms/0]).
+-export([start/0, stop/1]).
+-export([create_room/1, join/2, leave/2, send/2, rooms/0]).
+-export([demo/0]).
 
+%% Start a chat client that listens for messages
 start() ->
-    %% Subscribe to service events to discover new rooms
-    mycelium:subscribe_services(),
-    spawn_link(fun() -> listener_loop() end).
+    Pid = spawn_link(fun() ->
+        mycelium:subscribe_services(),
+        listener_loop()
+    end),
+    {ok, Pid}.
+
+stop(Pid) ->
+    Pid ! stop,
+    ok.
 
 create_room(Name) ->
     chat_room_sup:create_room(Name).
 
-join(Room) ->
-    chat_server:join_room(Room, self()).
+join(Room, ListenerPid) ->
+    chat_server:join_room(Room, ListenerPid).
+
+leave(Room, _ListenerPid) ->
+    chat_server:leave_room(Room).
 
 send(Room, Message) ->
     chat_server:send(Room, Message).
@@ -372,12 +403,14 @@ rooms() ->
 
 listener_loop() ->
     receive
-        {chat_message, Room, _From, Text, _Time} ->
-            io:format("[~p] ~s~n", [Room, Text]),
+        {chat_message, Room, FromNode, Text, _Timestamp} ->
+            io:format("[~p] <~p> ~s~n", [Room, FromNode, Text]),
             listener_loop();
         {mycelium_service_event, {service_registered, {chat_room, Room}, Node}} ->
-            io:format("New room '~p' available on ~p~n", [Room, Node]),
+            io:format("*** Room '~p' available on ~p~n", [Room, Node]),
             listener_loop();
+        stop ->
+            ok;
         _Other ->
             listener_loop()
     end.
@@ -546,6 +579,7 @@ Stop cluster:
    ```erlang
    case mycelium:whereis_service(needed_service) of
        {ok, Pid} -> do_work(Pid);
+       {ok, _Node, Pid} -> do_work(Pid);  %% Remote service
        {error, not_found} -> queue_for_later()
    end.
    ```
@@ -569,13 +603,19 @@ Stop cluster:
 Run multiple instances of a service and load balance:
 
 ```erlang
+-include_lib("mycelium/include/mycelium.hrl").
+
 %% Find all workers and pick one
 {ok, Entries} = mycelium:lookup(worker_service),
-{_, Pid, _, Meta} = pick_least_loaded(Entries),
-gen_server:call(Pid, work).
+Entry = pick_least_loaded(Entries),
+gen_server:call(Entry#service_entry.pid, work).
 
 pick_least_loaded(Entries) ->
-    lists:min([{maps:get(load, Meta, 0), E} || E = {_, _, _, Meta} <- Entries]).
+    Sorted = lists:sort(fun(A, B) ->
+        maps:get(load, A#service_entry.meta, 0) =<
+        maps:get(load, B#service_entry.meta, 0)
+    end, Entries),
+    hd(Sorted).
 ```
 
 ### Service Migration
@@ -597,11 +637,16 @@ Handle partial cluster failures:
 try_service(Name, Request) ->
     case mycelium:whereis_service(Name, #{retries => 3}) of
         {ok, Pid} ->
-            try gen_server:call(Pid, Request, 5000)
-            catch exit:{timeout, _} -> {error, timeout}
-            end;
+            call_service(Pid, Request);
+        {ok, _Node, Pid} ->
+            call_service(Pid, Request);
         {error, not_found} ->
             {error, service_unavailable}
+    end.
+
+call_service(Pid, Request) ->
+    try gen_server:call(Pid, Request, 5000)
+    catch exit:{timeout, _} -> {error, timeout}
     end.
 ```
 
