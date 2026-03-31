@@ -79,6 +79,16 @@ init([]) ->
         modules => [mycelium_circuit_metrics]
     },
 
+    %% Reachability cache for direct connection optimization
+    Reachability = #{
+        id => mycelium_circuit_reachability,
+        start => {mycelium_circuit_reachability, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_circuit_reachability]
+    },
+
     %% Transport - must start before relay as relay uses transport
     Transport = #{
         id => mycelium_circuit_transport_tcp,
@@ -109,7 +119,7 @@ init([]) ->
         modules => [?MODULE]
     },
 
-    ChildSpecs = [Metrics, Transport, Relay, CircuitDynSup],
+    ChildSpecs = [Metrics, Reachability, Transport, Relay, CircuitDynSup],
     {ok, {SupFlags, ChildSpecs}};
 
 %% Dynamic supervisor for circuit processes

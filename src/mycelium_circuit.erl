@@ -507,14 +507,44 @@ finalize_circuit(EphPubKey, Data) ->
 select_hops(_Target, NumHops) when NumHops =< 0 ->
     {ok, []};
 select_hops(Target, NumHops) ->
-    %% Prefer direct route if target is a direct neighbor
-    ActiveView = mycelium_hyparview:active_view(),
-    case lists:member(Target, ActiveView) of
+    case can_connect_direct(Target) of
         true ->
-            %% Target is a direct neighbor, no intermediate hops needed
             {ok, []};
         false ->
+            ActiveView = mycelium_hyparview:active_view(),
             select_intermediate_hops(Target, NumHops, ActiveView)
+    end.
+
+%% @doc Check if we can connect directly to target.
+%% Returns true if:
+%% - Target is in active view (have HyParView connection)
+%% - Target is in nodes() (have Erlang distribution connection)
+%% - Target is reachable via TCP probe (cached result)
+can_connect_direct(Target) ->
+    %% 1. Already in active view (direct HyParView neighbor)
+    case lists:member(Target, mycelium_hyparview:active_view()) of
+        true ->
+            true;
+        false ->
+            %% 2. Already have Erlang distribution connection
+            case lists:member(Target, nodes()) of
+                true ->
+                    true;
+                false ->
+                    %% 3. Check reachability cache or probe
+                    check_direct_reachability(Target)
+            end
+    end.
+
+check_direct_reachability(Target) ->
+    case mycelium_circuit_reachability:is_reachable(Target) of
+        true -> true;
+        false -> false;
+        unknown ->
+            %% Probe in background, return false for now (use relay)
+            %% Next circuit to this target may use direct if probe succeeds
+            mycelium_circuit_reachability:probe_async(Target),
+            false
     end.
 
 select_intermediate_hops(Target, NumHops, ActiveView) ->

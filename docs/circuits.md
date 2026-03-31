@@ -20,6 +20,22 @@ A circuit is an encrypted tunnel from an initiator node to a destination node, o
 | High-throughput bulk transfer | No (use direct connections) |
 | Real-time low-latency messaging | No (circuit setup adds latency) |
 
+### Direct Connection Optimization
+
+When creating a circuit, Mycelium automatically checks if the target is directly reachable:
+
+1. **Active view check**: If target is in HyParView active view, use direct connection
+2. **Erlang nodes check**: If target is in `nodes()`, use direct connection
+3. **TCP probe**: If not a neighbor, probe target's circuit port with a quick TCP connect
+
+If direct connection is possible, the circuit uses zero relay hops (direct path), reducing latency and network overhead. If direct fails, it falls back to relay routing.
+
+Probe results are cached to avoid repeated connection attempts:
+- Successful probes cached for 5 minutes (configurable)
+- Failed probes cached for 1 minute (configurable)
+
+Disable probing with `{circuit_probe_direct, false}` in config.
+
 ## Quick Start
 
 ### Creating a Circuit
@@ -191,7 +207,13 @@ Configure circuit routing in your `sys.config`:
 
     %% Transport
     {circuit_listen_port, 4370},      %% Port for circuit connections (0 = auto)
-    {circuit_pool_size, 3}            %% Connection pool size per peer
+    {circuit_pool_size, 3},           %% Connection pool size per peer
+
+    %% Direct connection optimization
+    {circuit_probe_direct, true},     %% Enable direct connection probing
+    {circuit_probe_timeout, 500},     %% TCP probe timeout in ms
+    {circuit_reachability_cache_ttl, 300000},    %% Cache TTL for successful probes (5 min)
+    {circuit_reachability_negative_ttl, 60000}   %% Cache TTL for failed probes (1 min)
 ]}
 ```
 
@@ -205,6 +227,10 @@ Configure circuit routing in your `sys.config`:
 | `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
 | `circuit_listen_port` | 0 | Port for circuit transport (0 = OS assigned) |
 | `circuit_pool_size` | 3 | Connection pool size per destination |
+| `circuit_probe_direct` | true | Enable direct connection probing |
+| `circuit_probe_timeout` | 500 | TCP probe timeout in ms |
+| `circuit_reachability_cache_ttl` | 300000 | Cache TTL for successful probes in ms (5 min) |
+| `circuit_reachability_negative_ttl` | 60000 | Cache TTL for failed probes in ms (1 min) |
 
 ## Metrics and Monitoring
 
