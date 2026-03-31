@@ -20,6 +20,120 @@ A circuit is an encrypted tunnel from an initiator node to a destination node, o
 | High-throughput bulk transfer | No (use direct connections) |
 | Real-time low-latency messaging | No (circuit setup adds latency) |
 
+### Connection Path Selection
+
+Mycelium automatically selects the best path to reach a target, considering NAT traversal and direct reachability:
+
+```
+                        ┌─────────────────────────────────────────┐
+                        │         Path Selection Flow             │
+                        └─────────────────────────────────────────┘
+
+┌─────────┐     ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
+│ Circuit │────►│ Direct Reachable?│─Yes─►│  Direct Path    │────►│ 0-hop Circuit│
+│ Create  │     │ (Active/Nodes)   │     │  (No Relay)     │     │ (Encrypted)  │
+└─────────┘     └──────────────────┘     └─────────────────┘     └──────────────┘
+                        │ No
+                        ▼
+                ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
+                │ NAT Compatible?  │─Yes─►│  Hole Punch     │─OK─►│ Direct UDP   │
+                │ (Cache lookup)   │     │  Attempt        │     │ Connection   │
+                └──────────────────┘     └─────────────────┘     └──────────────┘
+                        │ No                     │ Fail
+                        ▼                        ▼
+                ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
+                │  Select Relays   │────►│  Multi-hop      │────►│ Relay Circuit│
+                │  from HyParView  │     │  Circuit        │     │ (N hops)     │
+                └──────────────────┘     └─────────────────┘     └──────────────┘
+```
+
+#### Step 1: Direct Reachability Check
+
+First, Mycelium checks if the target is directly reachable without NAT traversal:
+
+| Check | Method | Result if True |
+|-------|--------|----------------|
+| Active view | Target in HyParView active view | Direct path |
+| Erlang nodes | Target in `nodes()` | Direct path |
+| TCP probe | Quick connect to circuit port | Direct path |
+
+```erlang
+%% Direct path results in 0-hop circuit (still encrypted)
+{ok, CircuitId} = mycelium:circuit_create('target@host').
+%% If target is reachable, circuit uses direct connection
+```
+
+#### Step 2: NAT Compatibility Check
+
+If direct connection fails, check NAT compatibility:
+
+```
+┌─────────────┐                              ┌─────────────┐
+│   Node A    │                              │   Node B    │
+│ NAT: port   │                              │ NAT: full   │
+│ restricted  │                              │    cone     │
+└──────┬──────┘                              └──────┬──────┘
+       │                                            │
+       │         ┌──────────────────┐              │
+       └────────►│  NAT Cache       │◄─────────────┘
+                 │  Lookup Types    │
+                 └────────┬─────────┘
+                          │
+                          ▼
+                 ┌──────────────────┐
+                 │ is_viable(       │
+                 │   port_restricted│────► true (can punch)
+                 │   full_cone)     │
+                 └──────────────────┘
+```
+
+NAT info is exchanged via the hello protocol and cached:
+
+```erlang
+%% Check if hole punch is viable
+case mycelium_nat_cache:get_peer_nat(Target) of
+    {ok, #nat_info{nat_type = PeerNat}} ->
+        LocalNat = mycelium_nat:get_nat_type(),
+        mycelium_hole_punch:is_viable(LocalNat, PeerNat);
+    {error, _} ->
+        unknown  %% Try hole punch anyway
+end.
+```
+
+#### Step 3: Hole Punch or Relay
+
+Based on NAT compatibility:
+
+**Compatible NATs (hole punch viable):**
+```
+┌─────────────┐                              ┌─────────────┐
+│   Node A    │                              │   Node B    │
+│  Internal:  │         ┌────────┐           │  Internal:  │
+│ 192.168.1.10│◄────────│  NAT   │◄──────────│ 10.0.0.20   │
+│  External:  │────────►│Gateway │──────────►│  External:  │
+│ 203.0.113.5 │         └────────┘           │198.51.100.8 │
+└──────┬──────┘              │               └──────┬──────┘
+       │                     │                      │
+       │    UDP Hole Punch   │                      │
+       │◄═══════════════════════════════════════════│
+       │═══════════════════════════════════════════►│
+       │         Direct UDP Connection              │
+```
+
+**Incompatible NATs (relay required):**
+```
+┌─────────────┐                              ┌─────────────┐
+│   Node A    │                              │   Node B    │
+│ NAT:symmetric│                             │ NAT:symmetric│
+└──────┬──────┘                              └──────┬──────┘
+       │                                            │
+       │    ┌─────────┐    ┌─────────┐             │
+       │───►│ Relay 1 │───►│ Relay 2 │─────────────│
+       │◄───│         │◄───│         │◄────────────│
+       │    └─────────┘    └─────────┘             │
+       │           Encrypted Relay Path            │
+```
+
 ### Direct Connection Optimization
 
 When creating a circuit, Mycelium automatically checks if the target is directly reachable:
@@ -27,6 +141,7 @@ When creating a circuit, Mycelium automatically checks if the target is directly
 1. **Active view check**: If target is in HyParView active view, use direct connection
 2. **Erlang nodes check**: If target is in `nodes()`, use direct connection
 3. **TCP probe**: If not a neighbor, probe target's circuit port with a quick TCP connect
+4. **NAT hole punch**: If TCP fails but NATs are compatible, attempt UDP hole punch
 
 If direct connection is possible, the circuit uses zero relay hops (direct path), reducing latency and network overhead. If direct fails, it falls back to relay routing.
 
@@ -35,6 +150,28 @@ Probe results are cached to avoid repeated connection attempts:
 - Failed probes cached for 1 minute (configurable)
 
 Disable probing with `{circuit_probe_direct, false}` in config.
+
+### Same-NAT Optimization
+
+When two nodes are behind the same NAT gateway (same external IP), they can communicate directly on the local network:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    NAT Gateway                          │
+│                External: 203.0.113.1                    │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │              Local Network                       │   │
+│  │                                                  │   │
+│  │  ┌─────────┐         Direct         ┌─────────┐ │   │
+│  │  │ Node A  │◄═══════════════════════│ Node B  │ │   │
+│  │  │Internal:│      Local Traffic     │Internal:│ │   │
+│  │  │.168.1.10│                        │.168.1.20│ │   │
+│  │  └─────────┘                        └─────────┘ │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+Mycelium detects same-NAT scenarios by comparing external addresses and prefers host candidates for local network communication.
 
 ## Quick Start
 
@@ -213,7 +350,16 @@ Configure circuit routing in your `sys.config`:
     {circuit_probe_direct, true},     %% Enable direct connection probing
     {circuit_probe_timeout, 500},     %% TCP probe timeout in ms
     {circuit_reachability_cache_ttl, 300000},    %% Cache TTL for successful probes (5 min)
-    {circuit_reachability_negative_ttl, 60000}   %% Cache TTL for failed probes (1 min)
+    {circuit_reachability_negative_ttl, 60000},  %% Cache TTL for failed probes (1 min)
+
+    %% NAT traversal (see docs/nat-traversal.md for details)
+    {nat_enabled, true},              %% Enable NAT discovery
+    {stun_servers, [                  %% STUN servers for NAT type detection
+        {"stun.l.google.com", 19302}
+    ]},
+    {hole_punch_enabled, true},       %% Enable UDP hole punching
+    {hole_punch_timeout, 10000},      %% Hole punch timeout in ms
+    {upnp_enabled, true}              %% Enable UPnP/NAT-PMP port mapping
 ]}
 ```
 
@@ -231,6 +377,11 @@ Configure circuit routing in your `sys.config`:
 | `circuit_probe_timeout` | 500 | TCP probe timeout in ms |
 | `circuit_reachability_cache_ttl` | 300000 | Cache TTL for successful probes in ms (5 min) |
 | `circuit_reachability_negative_ttl` | 60000 | Cache TTL for failed probes in ms (1 min) |
+| `nat_enabled` | true | Enable NAT type discovery via STUN |
+| `stun_servers` | Google STUN | List of `{Host, Port}` STUN servers |
+| `hole_punch_enabled` | true | Enable UDP hole punching |
+| `hole_punch_timeout` | 10000 | Hole punch timeout in ms |
+| `upnp_enabled` | true | Enable UPnP/NAT-PMP port mapping |
 
 ## Metrics and Monitoring
 
@@ -503,4 +654,15 @@ RelayCount = mycelium_circuit_relay:count().
 
 %% Get metrics
 Metrics = mycelium_circuit_metrics:get_metrics().
+
+%% Check NAT status
+NatType = mycelium_nat:get_nat_type().
+{ok, ExtAddr, ExtPort} = mycelium_nat:get_external_address().
 ```
+
+## See Also
+
+- [NAT Traversal](nat-traversal.md) - NAT discovery, hole punching, and relay fallback
+- [Authentication](authentication.md) - Ed25519 peer authentication
+- [Getting Started](getting-started.md) - Initial setup and configuration
+- [Internals](internals.md) - HyParView membership protocol
