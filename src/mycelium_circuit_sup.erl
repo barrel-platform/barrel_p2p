@@ -89,6 +89,26 @@ init([]) ->
         modules => [mycelium_circuit_reachability]
     },
 
+    %% NAT cache - stores local and peer NAT info
+    NatCache = #{
+        id => mycelium_nat_cache,
+        start => {mycelium_nat_cache, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_nat_cache]
+    },
+
+    %% NAT discovery - STUN detection and UPnP/NAT-PMP mapping
+    Nat = #{
+        id => mycelium_nat,
+        start => {mycelium_nat, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_nat]
+    },
+
     %% Transport - must start before relay as relay uses transport
     Transport = #{
         id => mycelium_circuit_transport_tcp,
@@ -109,6 +129,16 @@ init([]) ->
         modules => [mycelium_circuit_relay]
     },
 
+    %% UDP hole punching for NAT traversal
+    HolePunch = #{
+        id => mycelium_hole_punch,
+        start => {mycelium_hole_punch, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_hole_punch]
+    },
+
     %% Dynamic supervisor for circuit processes
     CircuitDynSup = #{
         id => circuit_dynamic_sup,
@@ -119,7 +149,7 @@ init([]) ->
         modules => [?MODULE]
     },
 
-    ChildSpecs = [Metrics, Reachability, Transport, Relay, CircuitDynSup],
+    ChildSpecs = [Metrics, Reachability, NatCache, Nat, Transport, HolePunch, Relay, CircuitDynSup],
     {ok, {SupFlags, ChildSpecs}};
 
 %% Dynamic supervisor for circuit processes
