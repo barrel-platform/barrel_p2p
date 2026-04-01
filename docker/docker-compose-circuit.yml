@@ -1,0 +1,187 @@
+# Docker Compose for Mycelium circuit and distribution carrier tests
+# Usage:
+#   docker compose -f docker/docker-compose-circuit.yml up
+#
+# Network Topology:
+#   network_a (172.30.0.0/24) - isolated network with node1
+#   network_b (172.31.0.0/24) - isolated network with node4
+#   network_relay (172.32.0.0/24) - relay network connecting both
+#
+# node1 and node4 cannot reach each other directly; must use relays
+
+x-erlang-node: &erlang-node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  environment:
+    ERLANG_COOKIE: mycelium_circuit
+    DIST_COOKIE: mycelium_circuit
+    AUTH_ENABLED: "true"
+    AUTH_TRUST_MODE: tofu
+    ENCRYPTION_ENABLED: "true"
+
+services:
+  # Node1 - Initiator node on network_a (isolated from node4)
+  node1:
+    <<: *erlang-node
+    hostname: node1
+    container_name: mycelium_circuit_node1
+    environment:
+      ERLANG_COOKIE: mycelium_circuit
+      DIST_COOKIE: mycelium_circuit
+      NODE_NAME: node1@node1
+      NODE_ROLE: seed
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+      ENCRYPTION_ENABLED: "true"
+      COOKIE_ONLY_NODES: "'test_runner@*'"
+    volumes:
+      - circuit_keys_node1:/app/data/keys
+    networks:
+      network_a:
+        ipv4_address: 172.30.0.11
+      network_relay:
+        ipv4_address: 172.32.0.11
+
+  # Node2 - Relay node on network_relay
+  node2:
+    <<: *erlang-node
+    hostname: node2
+    container_name: mycelium_circuit_node2
+    environment:
+      ERLANG_COOKIE: mycelium_circuit
+      DIST_COOKIE: mycelium_circuit
+      NODE_NAME: node2@node2
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+      ENCRYPTION_ENABLED: "true"
+      COOKIE_ONLY_NODES: "'test_runner@*'"
+    volumes:
+      - circuit_keys_node2:/app/data/keys
+    networks:
+      network_relay:
+        ipv4_address: 172.32.0.12
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  # Node3 - Second relay node on network_relay
+  node3:
+    <<: *erlang-node
+    hostname: node3
+    container_name: mycelium_circuit_node3
+    environment:
+      ERLANG_COOKIE: mycelium_circuit
+      DIST_COOKIE: mycelium_circuit
+      NODE_NAME: node3@node3
+      NODE_ROLE: member
+      CONTACT_NODE: node1@node1
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+      ENCRYPTION_ENABLED: "true"
+      COOKIE_ONLY_NODES: "'test_runner@*'"
+    volumes:
+      - circuit_keys_node3:/app/data/keys
+    networks:
+      network_relay:
+        ipv4_address: 172.32.0.13
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  # Node4 - Destination node on network_b (isolated from node1)
+  node4:
+    <<: *erlang-node
+    hostname: node4
+    container_name: mycelium_circuit_node4
+    environment:
+      ERLANG_COOKIE: mycelium_circuit
+      DIST_COOKIE: mycelium_circuit
+      NODE_NAME: node4@node4
+      NODE_ROLE: member
+      CONTACT_NODE: node2@node2
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+      ENCRYPTION_ENABLED: "true"
+      COOKIE_ONLY_NODES: "'test_runner@*'"
+    volumes:
+      - circuit_keys_node4:/app/data/keys
+    networks:
+      network_b:
+        ipv4_address: 172.31.0.14
+      network_relay:
+        ipv4_address: 172.32.0.14
+    depends_on:
+      node2:
+        condition: service_healthy
+
+  # Test runner - connects to all networks for test orchestration
+  test_runner:
+    <<: *erlang-node
+    hostname: test_runner
+    container_name: mycelium_circuit_test_runner
+    environment:
+      ERLANG_COOKIE: mycelium_circuit
+      DIST_COOKIE: mycelium_circuit
+      NODE_NAME: test_runner@test_runner
+      NODE_ROLE: circuit_test_runner
+      TEST_NODES: "node1@node1,node2@node2,node3@node3,node4@node4"
+      AUTH_ENABLED: "true"
+      AUTH_TRUST_MODE: tofu
+      ENCRYPTION_ENABLED: "true"
+    volumes:
+      - circuit_keys_test_runner:/app/data/keys
+      - ../test_results:/app/test_results
+    networks:
+      network_a:
+        ipv4_address: 172.30.0.100
+      network_b:
+        ipv4_address: 172.31.0.100
+      network_relay:
+        ipv4_address: 172.32.0.100
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+      node4:
+        condition: service_healthy
+
+networks:
+  # Network A - isolated, contains node1
+  network_a:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+
+  # Network B - isolated, contains node4
+  network_b:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/24
+          gateway: 172.31.0.1
+
+  # Relay network - connects relay nodes
+  network_relay:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.32.0.0/24
+          gateway: 172.32.0.1
+
+volumes:
+  circuit_keys_node1:
+  circuit_keys_node2:
+  circuit_keys_node3:
+  circuit_keys_node4:
+  circuit_keys_test_runner:

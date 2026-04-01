@@ -45,6 +45,7 @@ COPY --from=builder /app/test /app/test
 COPY docker/scripts/ /app/scripts/
 COPY docker/test.config /app/docker/test.config
 COPY docker/auth-test.config /app/docker/auth-test.config
+COPY docker/circuit-test.config /app/docker/circuit-test.config
 RUN chmod +x /app/scripts/*.sh
 
 # Create data directory for keys

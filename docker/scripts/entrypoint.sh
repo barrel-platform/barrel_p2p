@@ -128,6 +128,9 @@ start_node() {
     echo "Cookie only nodes: ${COOKIE_ONLY_NODES:-none}"
     echo "Dist cookie: ${DIST_COOKIE:-default}"
 
+    # Circuit transport config - fixed port for Docker networking
+    local circuit_config="-mycelium circuit_listen_port 4370 -mycelium circuit_port_offset 0"
+
     exec erl \
         -sname "$short_name" \
         -setcookie "$ERLANG_COOKIE" \
@@ -137,6 +140,7 @@ start_node() {
         $encryption_config \
         $whitelist_config \
         $dist_cookie_config \
+        $circuit_config \
         -eval "$startup_eval" \
         -noshell
 }
@@ -261,6 +265,79 @@ run_auth_tests() {
     exit $exit_code
 }
 
+# Run circuit tests
+run_circuit_tests() {
+    echo "Starting circuit test runner"
+    echo "Test nodes: $TEST_NODES"
+
+    # Setup auth keys for test runner
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        setup_auth_keys
+    fi
+
+    # Wait for all test nodes to be reachable
+    for node in $(echo "$TEST_NODES" | tr ',' ' '); do
+        host=$(echo "$node" | cut -d'@' -f2)
+        wait_for_node "$host"
+    done
+
+    # Give nodes extra time to form cluster and establish circuits
+    echo "Waiting for cluster to form and stabilize..."
+    sleep 20
+
+    # Create test results directory
+    mkdir -p /app/test_results
+
+    # Build auth config for test runner
+    local auth_config=""
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        auth_config="-mycelium auth_enabled true -mycelium auth_key_dir '\"/app/data/keys\"' -mycelium auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
+    fi
+
+    # Build encryption config
+    local encryption_config=""
+    if [ "$ENCRYPTION_ENABLED" = "true" ]; then
+        encryption_config="-mycelium encryption_enabled true"
+    fi
+
+    # Run CT suite
+    echo "Running circuit tests..."
+    cd /app
+
+    erl \
+        -sname test_runner \
+        -hidden \
+        -setcookie "$ERLANG_COOKIE" \
+        -pa /app/_build/test/lib/*/ebin \
+        -config /app/docker/circuit-test.config \
+        $auth_config \
+        $encryption_config \
+        -noshell \
+        -eval "
+            os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
+            case ct:run_test([
+                {suite, mycelium_docker_circuit_SUITE},
+                {dir, \"/app/test\"},
+                {logdir, \"/app/test_results\"},
+                {config, \"/app/docker/circuit-test.config\"}
+            ]) of
+                {Ok, 0, {_UserSkip, _AutoSkip}} ->
+                    io:format(\"~n~nCircuit tests: ~p passed, 0 failed~n\", [Ok]),
+                    init:stop(0);
+                {_Ok, Failed, _} when Failed > 0 ->
+                    io:format(\"~n~nFailed circuit tests: ~p~n\", [Failed]),
+                    init:stop(1);
+                Error ->
+                    io:format(\"~n~nCircuit test error: ~p~n\", [Error]),
+                    init:stop(1)
+            end.
+        "
+
+    exit_code=$?
+    echo "Circuit tests completed with exit code: $exit_code"
+    exit $exit_code
+}
+
 # Main
 case "$NODE_ROLE" in
     seed)
@@ -284,9 +361,12 @@ case "$NODE_ROLE" in
     auth_test_runner)
         run_auth_tests
         ;;
+    circuit_test_runner)
+        run_circuit_tests
+        ;;
     *)
         echo "Unknown role: $NODE_ROLE"
-        echo "Use: seed, member, test_runner, auth_test_runner, or strict_seed"
+        echo "Use: seed, member, test_runner, auth_test_runner, circuit_test_runner, or strict_seed"
         exit 1
         ;;
 esac

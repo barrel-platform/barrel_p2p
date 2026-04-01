@@ -3,7 +3,7 @@
 %% Test helper utilities for NAT traversal tests
 %% Provides mock setup and test data creation functions
 
--include("mycelium.hrl").
+-include_lib("mycelium/include/mycelium.hrl").
 
 -export([
     setup_estun_mocks/1,
