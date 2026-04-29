@@ -512,7 +512,76 @@ select_hops(Target, NumHops) ->
             {ok, []};
         false ->
             ActiveView = mycelium_hyparview:active_view(),
-            select_intermediate_hops(Target, NumHops, ActiveView)
+            case select_intermediate_hops(Target, NumHops, ActiveView) of
+                {ok, _} = Ok ->
+                    Ok;
+                {error, not_enough_peers} = Err ->
+                    %% Last-resort fallback: if a masque relay URI is
+                    %% configured, tunnel the dist connection through
+                    %% it and treat the result as a direct circuit
+                    %% (the relay does the firewall traversal). The
+                    %% relay never sees plaintext circuit traffic; it
+                    %% only forwards UDP datagrams that carry QUIC.
+                    try_masque_relay(Target, Err)
+            end
+    end.
+
+%% @private
+try_masque_relay(Target, FallbackError) ->
+    case application:get_env(mycelium, circuit_relay_uri, undefined) of
+        undefined ->
+            FallbackError;
+        Uri ->
+            case open_masque_dist(Target, Uri) of
+                ok -> {ok, []};
+                {error, _} -> FallbackError
+            end
+    end.
+
+%% @private
+%% Open a masque-tunneled dist connection to `Target' if not already
+%% up. Returns ok on success and `{error, _}' if discovery, the
+%% tunnel, or the dist handshake fails.
+open_masque_dist(Target, Uri) ->
+    case lists:member(Target, nodes()) of
+        true ->
+            ok;
+        false ->
+            case resolve_target(Target) of
+                {ok, Endpoint} ->
+                    Opts = application:get_env(mycelium, circuit_relay_opts, #{}),
+                    case mycelium_circuit_relay_masque:wire_to_node(
+                           Target, Uri, Endpoint, Opts) of
+                        {ok, _Handle} ->
+                            case net_kernel:connect_node(Target) of
+                                true -> ok;
+                                _ -> {error, dist_handshake_failed}
+                            end;
+                        {error, _} = Err ->
+                            Err
+                    end;
+                {error, _} = Err ->
+                    Err
+            end
+    end.
+
+%% @private
+resolve_target(Target) ->
+    case extract_host(Target) of
+        {ok, Host} ->
+            case mycelium_quic_discovery:lookup(Target, Host) of
+                {ok, {Addr, Port}} -> {ok, {Addr, Port}};
+                {error, _} = Err -> Err
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% @private
+extract_host(Node) ->
+    case string:split(atom_to_list(Node), "@") of
+        [_, Host] when Host =/= "" -> {ok, Host};
+        _ -> {error, invalid_node_name}
     end.
 
 %% @doc Check if we can connect directly to target.

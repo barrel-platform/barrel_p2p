@@ -5,21 +5,22 @@
 %%
 %% Given a masque proxy URI and a target `{Host, Port}', this module
 %% opens a CONNECT-UDP tunnel and returns an adapter map that can be
-%% passed straight to `quic:connect(_, _, #{socket_backend => adapter,
-%% socket_adapter => Adapter}, _)'. Outbound packets sent on that QUIC
-%% connection are tunneled through the proxy via `masque:send/2', and
-%% inbound `{masque_data, _, _}' messages are reshaped into
-%% `{udp, SocketRef, PeerIP, PeerPort, Data}' for the QUIC connection
-%% to consume.
+%% passed to `quic:connect/4' or registered with
+%% `quic_dist:set_connect_options/2' so the next dist `setup/5' to a
+%% peer rides the tunnel.
 %%
-%% Currently used as the building block for a future "circuit dist
-%% over masque relay" path. The mycelium-side wiring that elects this
-%% transport over a hop chain is intentionally not part of this module
-%% — see docs/features.md.
+%% The QUIC connection pid is unknown at adapter-construction time
+%% (the dist setup path spawns it inside `quic:connect/4'). The bridge
+%% process learns it from the first outbound `send_fun' call - the
+%% closure captures `self()' of its caller, which is the connection
+%% process - and forwards inbound `{masque_data, _, _}' messages to
+%% that pid as `{udp, SocketRef, PeerIP, PeerPort, Data}'.
 
 -export([
+    open/2,
     open/3,
-    open/4,
+    wire_to_node/3,
+    wire_to_node/4,
     close/1
 ]).
 
@@ -31,43 +32,34 @@
 -record(handle, {
     bridge :: pid(),
     socket_ref :: reference(),
-    session :: pid()
+    session :: pid(),
+    node :: node() | undefined
 }).
 
 -opaque handle() :: #handle{}.
 
-%% @equiv open(ProxyURI, Target, Connection, #{})
--spec open(proxy_uri(), target(), pid()) ->
+%% @equiv open(ProxyURI, Target, #{})
+-spec open(proxy_uri(), target()) ->
     {ok, handle(), Adapter :: map()} | {error, term()}.
-open(ProxyURI, Target, Connection) ->
-    open(ProxyURI, Target, Connection, #{}).
+open(ProxyURI, Target) ->
+    open(ProxyURI, Target, #{}).
 
 %% @doc Open a CONNECT-UDP tunnel to `Target' through `ProxyURI' and
-%% return both the handle (for later `close/1') and the adapter map
-%% to pass into `quic:connect/4'.
-%%
-%% `Connection' is the pid of the QUIC connection process that should
-%% receive `{udp, SocketRef, PeerIP, PeerPort, Data}' messages for
-%% inbound packets. The same `socket_ref' is embedded in the returned
-%% adapter map so the QUIC stack stores it as `#state.socket'.
-%%
-%% `Opts' is forwarded to `masque:connect/3' (auth headers, transport
-%% list, verify/cacerts, etc.).
--spec open(proxy_uri(), target(), pid(), masque:connect_opts()) ->
+%% return a handle plus an adapter map ready to feed
+%% `quic:connect/4' (under `socket_adapter') or
+%% `quic_dist:set_connect_options/2'.
+-spec open(proxy_uri(), target(), masque:connect_opts()) ->
     {ok, handle(), Adapter :: map()} | {error, term()}.
-open(ProxyURI, Target, Connection, Opts0) ->
+open(ProxyURI, Target, Opts0) ->
     SocketRef = make_ref(),
-    Self = self(),
-    %% The bridge owns the masque session so its `{masque_data, _, _}'
-    %% messages land on a process whose only job is reshaping them.
-    Bridge = spawn_link(fun() -> bridge_init(Self, Connection, SocketRef, Target) end),
+    Bridge = spawn_link(fun() -> bridge_init(SocketRef, Target) end),
     Opts = Opts0#{owner => Bridge, protocol => udp},
     case masque:connect(ProxyURI, Target, Opts) of
         {ok, Sess} ->
             Bridge ! {session, Sess},
             Handle = #handle{bridge = Bridge, socket_ref = SocketRef, session = Sess},
             Adapter = #{
-                send_fun => make_send_fun(Sess),
+                send_fun => make_send_fun(Sess, Bridge),
                 close_fun => make_close_fun(Bridge),
                 socket_ref => SocketRef,
                 local => {{127, 0, 0, 1}, 0}
@@ -78,9 +70,39 @@ open(ProxyURI, Target, Connection, Opts0) ->
             Err
     end.
 
-%% @doc Tear down the tunnel and the bridge process.
+%% @equiv wire_to_node(Node, ProxyURI, Target, #{})
+-spec wire_to_node(node(), proxy_uri(), target()) ->
+    {ok, handle()} | {error, term()}.
+wire_to_node(Node, ProxyURI, Target) ->
+    wire_to_node(Node, ProxyURI, Target, #{}).
+
+%% @doc Open a CONNECT-UDP tunnel and pre-register it with `quic_dist'
+%% so the next `setup/5' to `Node' rides the tunnel. The caller still
+%% has to trigger the dist handshake (typically via
+%% `net_kernel:connect_node/1' or by sending a message that touches
+%% the node).
+-spec wire_to_node(node(), proxy_uri(), target(), masque:connect_opts()) ->
+    {ok, handle()} | {error, term()}.
+wire_to_node(Node, ProxyURI, Target, Opts) ->
+    case open(ProxyURI, Target, Opts) of
+        {ok, Handle, Adapter} ->
+            ok = quic_dist:set_connect_options(Node, #{
+                socket_backend => adapter,
+                socket_adapter => Adapter
+            }),
+            {ok, Handle#handle{node = Node}};
+        {error, _} = Err ->
+            Err
+    end.
+
+%% @doc Tear down the tunnel and the bridge process. Also clears any
+%% pending dist connect override registered via `wire_to_node/3,4'.
 -spec close(handle()) -> ok.
-close(#handle{bridge = Bridge}) ->
+close(#handle{bridge = Bridge, node = Node}) ->
+    case Node of
+        undefined -> ok;
+        _ -> quic_dist:clear_connect_options(Node)
+    end,
     Bridge ! stop,
     ok.
 
@@ -88,46 +110,53 @@ close(#handle{bridge = Bridge}) ->
 %% Internal: bridge process
 %%====================================================================
 
-%% Owns the masque session, reshapes inbound packets and forwards them
-%% to the QUIC connection. The bridge starts before the session pid is
-%% known so the spawn is synchronous; the parent feeds the session pid
-%% in via `{session, Pid}' once `masque:connect/3' returns.
-bridge_init(_Parent, Connection, SocketRef, {_PeerHost, PeerPort}) ->
+bridge_init(SocketRef, {_PeerHost, PeerPort}) ->
     PeerIP = peer_ip(),
     receive
         {session, Sess} ->
             erlang:monitor(process, Sess),
-            erlang:monitor(process, Connection),
-            bridge_loop(Sess, Connection, SocketRef, PeerIP, PeerPort);
+            bridge_loop(Sess, undefined, undefined, SocketRef, PeerIP, PeerPort);
         stop ->
             ok
     after 30000 ->
         ok
     end.
 
-bridge_loop(Sess, Connection, SocketRef, PeerIP, PeerPort) ->
+bridge_loop(Sess, Connection, MRef, SocketRef, PeerIP, PeerPort) ->
     receive
-        {masque_data, Sess, Data} ->
+        {sender, Pid} when is_pid(Pid), Connection =:= undefined ->
+            NewMRef = erlang:monitor(process, Pid),
+            bridge_loop(Sess, Pid, NewMRef, SocketRef, PeerIP, PeerPort);
+        {sender, _Pid} ->
+            bridge_loop(Sess, Connection, MRef, SocketRef, PeerIP, PeerPort);
+        {masque_data, Sess, Data} when is_pid(Connection) ->
             Connection ! {udp, SocketRef, PeerIP, PeerPort, Data},
-            bridge_loop(Sess, Connection, SocketRef, PeerIP, PeerPort);
+            bridge_loop(Sess, Connection, MRef, SocketRef, PeerIP, PeerPort);
+        {masque_data, Sess, _Data} ->
+            %% Drop until the QUIC connection has identified itself.
+            bridge_loop(Sess, Connection, MRef, SocketRef, PeerIP, PeerPort);
         {'DOWN', _, process, Sess, _Reason} ->
             ok;
-        {'DOWN', _, process, Connection, _Reason} ->
+        {'DOWN', MRef, process, Connection, _Reason} ->
             catch masque:close(Sess),
             ok;
         stop ->
             catch masque:close(Sess),
             ok;
         _Other ->
-            bridge_loop(Sess, Connection, SocketRef, PeerIP, PeerPort)
+            bridge_loop(Sess, Connection, MRef, SocketRef, PeerIP, PeerPort)
     end.
 
 %%====================================================================
 %% Internal: closures
 %%====================================================================
 
-make_send_fun(Sess) ->
+%% Capture self() of the caller (the QUIC connection process) so the
+%% bridge can target inbound packets at it. Sending the registration
+%% on every send is cheap and idempotent.
+make_send_fun(Sess, Bridge) ->
     fun(_IP, _Port, Packet) ->
+        Bridge ! {sender, self()},
         case masque:send(Sess, Packet) of
             ok -> ok;
             {error, _} = Err -> Err
@@ -141,7 +170,7 @@ make_close_fun(Bridge) ->
     end.
 
 %% The peer IP we hand the QUIC connection in inbound `{udp, _, IP,
-%% Port, _}' messages is symbolic — masque obscures the real source
+%% Port, _}' messages is symbolic - masque obscures the real source
 %% address. Use a fixed loopback so the QUIC connection's
 %% `#state.remote_addr' check accepts the packets.
 peer_ip() ->
