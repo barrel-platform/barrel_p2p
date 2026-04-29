@@ -168,73 +168,33 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 do_probe(Node) ->
-    case get_peer_address(Node) of
-        {ok, Host, Port} ->
+    %% Reachability now means: can the QUIC dist channel be opened?
+    %% If the node is already in nodes(), no work needed. Otherwise we
+    %% try net_kernel:connect_node/1 with a short bounded timeout.
+    case lists:member(Node, nodes()) of
+        true ->
+            true;
+        false ->
             Timeout = get_probe_timeout(),
-            case gen_tcp:connect(Host, Port, [binary], Timeout) of
-                {ok, Sock} ->
-                    gen_tcp:close(Sock),
-                    true;
-                {error, _} ->
-                    false
-            end;
-        {error, _} ->
-            false
+            try_connect_node(Node, Timeout)
     end.
 
-get_peer_address(Node) ->
-    %% Try to get the circuit port for the node
-    case mycelium_circuit_transport_tcp:get_peer_port(Node) of
-        {ok, Port} ->
-            case get_node_host(Node) of
-                {ok, Host} -> {ok, Host, Port};
-                Error -> Error
-            end;
-        {error, _} ->
-            %% Try HyParView peer info
-            case mycelium_hyparview:get_peer(Node) of
-                {ok, Peer} when Peer#peer.port =/= undefined ->
-                    Offset = application:get_env(mycelium, circuit_port_offset, 1),
-                    CircuitPort = Peer#peer.port + Offset,
-                    case Peer#peer.address of
-                        undefined ->
-                            case get_node_host(Node) of
-                                {ok, Host} -> {ok, Host, CircuitPort};
-                                Error -> Error
-                            end;
-                        Address ->
-                            {ok, Address, CircuitPort}
-                    end;
-                _ ->
-                    %% Fallback: get host from node name, use default port
-                    case get_node_host(Node) of
-                        {ok, Host} ->
-                            DefaultPort = application:get_env(mycelium, circuit_listen_port, 4370),
-                            {ok, Host, DefaultPort};
-                        Error ->
-                            Error
-                    end
-            end
-    end.
-
-get_node_host(Node) ->
-    NodeStr = atom_to_list(Node),
-    case string:split(NodeStr, "@") of
-        [_, Host] ->
-            case inet:parse_address(Host) of
-                {ok, Addr} -> {ok, Addr};
-                {error, _} ->
-                    case inet:getaddr(Host, inet) of
-                        {ok, Addr} -> {ok, Addr};
-                        {error, _} ->
-                            case inet:getaddr(Host, inet6) of
-                                {ok, Addr} -> {ok, Addr};
-                                Error -> Error
-                            end
-                    end
-            end;
-        _ ->
-            {error, invalid_node_name}
+try_connect_node(Node, Timeout) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Pid, MRef} =
+        spawn_monitor(fun() ->
+                          Parent ! {Tag, net_kernel:connect_node(Node)}
+                      end),
+    receive
+        {Tag, true}      -> erlang:demonitor(MRef, [flush]), true;
+        {Tag, false}     -> erlang:demonitor(MRef, [flush]), false;
+        {Tag, ignored}   -> erlang:demonitor(MRef, [flush]), false;
+        {'DOWN', MRef, process, Pid, _Reason} -> false
+    after Timeout ->
+        erlang:demonitor(MRef, [flush]),
+        exit(Pid, kill),
+        false
     end.
 
 cache_result(Node, Reachable) ->

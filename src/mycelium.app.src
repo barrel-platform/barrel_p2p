@@ -13,7 +13,9 @@
     {mod, {mycelium_app, []}},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        quic,
+        masque
     ]},
     {env, [
         {active_size, 5},
@@ -37,7 +39,12 @@
         {circuit_heartbeat_interval, 10000}, %% 10s - send PING
         {circuit_dead_interval, 30000},     %% 30s - no PONG = dead
         {circuit_port_offset, 1},           %% Offset from dist port for circuit port
-        {circuit_transport, mycelium_circuit_transport_tcp}  %% Transport module
+        {circuit_transport, mycelium_circuit_transport_quic}, %% Transport module
+        %% Optional masque proxy URI for relay fallback (Phase 1B).
+        %% When set, circuits with no viable peer hops can route through
+        %% this proxy via CONNECT-UDP.
+        {circuit_relay_uri, undefined},
+        {circuit_relay_opts, #{}}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

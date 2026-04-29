@@ -61,6 +61,8 @@ init([]) ->
     ets:new(mycelium_circuits, [named_table, public, {read_concurrency, true}]),
 
     %% Transport configuration
+    TransportMod = application:get_env(
+        mycelium, circuit_transport, mycelium_circuit_transport_quic),
     TransportOpts = #{
         listen_port => application:get_env(mycelium, circuit_listen_port, 0),
         pool_size => application:get_env(mycelium, circuit_pool_size, 3),
@@ -109,14 +111,16 @@ init([]) ->
         modules => [mycelium_nat]
     },
 
-    %% Transport - must start before relay as relay uses transport
+    %% Transport - must start before relay as relay uses transport.
+    %% Module is selected via the `circuit_transport' app env;
+    %% defaults to QUIC streams multiplexed on quic_dist.
     Transport = #{
-        id => mycelium_circuit_transport_tcp,
-        start => {mycelium_circuit_transport_tcp, start_link, [TransportOpts]},
+        id => circuit_transport,
+        start => {TransportMod, start_link, [TransportOpts]},
         restart => permanent,
         shutdown => 5000,
         type => worker,
-        modules => [mycelium_circuit_transport_tcp]
+        modules => [TransportMod]
     },
 
     %% Relay handler - singleton

@@ -36,6 +36,7 @@
     id            :: node(),                    %% Node name
     address       :: inet:ip_address() | undefined, %% IP address (for passive view)
     port          :: inet:port_number() | undefined, %% Distribution port
+    quic_port     :: inet:port_number() | undefined, %% QUIC dist UDP port (when known)
     connected     :: boolean(),                 %% Currently in active view?
     priority      :: high | low,                %% For NEIGHBOR protocol
     last_seen     :: integer() | undefined,     %% erlang:monotonic_time()
@@ -98,10 +99,13 @@
     visited = [] :: [node()]             %% Nodes already visited
 }).
 
-%% Trusted peer key for Ed25519 authentication
-%% Identity is based on key fingerprint (SHA-256 hash), not node name
+%% Trusted peer key for Ed25519 authentication.
+%% Identity is the public key fingerprint (SHA-256). The optional
+%% `node' field is what the dist-key ETS store keys on while we still
+%% bridge node-name -> key for the dist handshake.
 -record(peer_key, {
-    fingerprint :: binary(),        %% SHA-256 hash of public key (32 bytes)
+    node        :: node() | undefined, %% Last-seen node name (ETS key)
+    fingerprint :: binary() | undefined, %% SHA-256 hash of public key (32 bytes)
     public_key  :: binary(),        %% 32 bytes Ed25519 public key
     added_at    :: integer(),       %% erlang:system_time(millisecond)
     last_seen   :: integer(),       %% erlang:system_time(millisecond)
