@@ -267,16 +267,38 @@ test_mutual_auth_tcp(Config) ->
 test_cluster_formation_with_auth(Config) ->
     Nodes = ?config(test_nodes, Config),
 
-    %% All nodes should have active views
-    lists:foreach(fun(Node) ->
-        Active = rpc:call(Node, mycelium, active_view, []),
-        ct:pal("Node ~p active view: ~p", [Node, Active]),
-        ?assert(is_list(Active)),
-        %% Should have at least one peer
-        ?assert(length(Active) >= 1)
-    end, Nodes),
-
+    %% Active-view formation is asynchronous in HyParView; allow a few
+    %% seconds for every node to have at least one peer before asserting.
+    Deadline = erlang:monotonic_time(millisecond) + 15000,
+    wait_active_view_nonempty(Nodes, Deadline),
     ok.
+
+wait_active_view_nonempty(Nodes, Deadline) ->
+    case lists:all(
+           fun(Node) ->
+                   Active = rpc:call(Node, mycelium, active_view, []),
+                   is_list(Active) andalso length(Active) >= 1
+           end, Nodes)
+    of
+        true ->
+            lists:foreach(fun(Node) ->
+                Active = rpc:call(Node, mycelium, active_view, []),
+                ct:pal("Node ~p active view: ~p", [Node, Active])
+            end, Nodes),
+            ok;
+        false ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true ->
+                    lists:foreach(fun(Node) ->
+                        Active = rpc:call(Node, mycelium, active_view, []),
+                        ct:pal("Node ~p active view: ~p", [Node, Active])
+                    end, Nodes),
+                    ?assert(false);
+                false ->
+                    timer:sleep(500),
+                    wait_active_view_nonempty(Nodes, Deadline)
+            end
+    end.
 
 test_rpc_call_authenticated(Config) ->
     Nodes = ?config(test_nodes, Config),
