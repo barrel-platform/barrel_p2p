@@ -61,7 +61,8 @@
     close/1,
     select/1,
     address/0,
-    is_node_name/1
+    is_node_name/1,
+    listen_port/0
 ]).
 
 %% User stream API
@@ -444,6 +445,13 @@ get_listen_port() ->
         _ ->
             application:get_env(mycelium, dist_port, ?MYCELIUM_DIST_DEFAULT_PORT)
     end.
+
+%% @doc Public accessor for the dist UDP port. Used by NAT discovery to
+%% publish host candidates. Returns the configured/default port; this
+%% does not reflect a running listener's port if one was bound to 0.
+-spec listen_port() -> inet:port_number().
+listen_port() ->
+    get_listen_port().
 
 %% @private
 %% Start QUIC server for distribution.

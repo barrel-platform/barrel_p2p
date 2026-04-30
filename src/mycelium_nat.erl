@@ -369,9 +369,10 @@ build_local_candidates() ->
     case get_local_addresses() of
         [] -> [];
         Addrs ->
-            %% Get our circuit listen port
+            %% Circuits ride the dist UDP port; publish that as our host
+            %% candidate so a peer can address us directly.
             Port = try
-                mycelium_circuit_transport_tcp:get_listen_port()
+                mycelium_dist:listen_port()
             catch
                 _:_ -> undefined
             end,

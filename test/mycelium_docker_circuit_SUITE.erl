@@ -260,10 +260,10 @@ test_circuit_create_direct(Config) ->
     ?assertNotEqual(undefined, DynSupRunning),
     ct:pal("circuit_dynamic_sup pid: ~p", [DynSupRunning]),
 
-    %% Verify transport is listening
-    ListenPort1 = rpc:call(Node1, mycelium_circuit_transport_tcp, get_listen_port, []),
-    ListenPort2 = rpc:call(Node2, mycelium_circuit_transport_tcp, get_listen_port, []),
-    ct:pal("Node1 listen port: ~p, Node2 listen port: ~p", [ListenPort1, ListenPort2]),
+    %% Verify dist transport is listening (circuits ride dist QUIC streams)
+    ListenPort1 = rpc:call(Node1, mycelium_dist, listen_port, []),
+    ListenPort2 = rpc:call(Node2, mycelium_dist, listen_port, []),
+    ct:pal("Node1 dist port: ~p, Node2 dist port: ~p", [ListenPort1, ListenPort2]),
     ?assert(is_integer(ListenPort1)),
     ?assert(is_integer(ListenPort2)),
 
@@ -274,9 +274,9 @@ test_circuit_create_direct(Config) ->
 
     {ok, CircuitId} = Result,
 
-    %% Wait for circuit to be established
-    %% Note: Circuit transport requires TCP connectivity between containers
-    %% which may not be fully configured in all Docker setups
+    %% Wait for circuit to be established. Circuits ride QUIC streams on
+    %% the dist connection, so this depends on the dist UDP port being
+    %% reachable between containers.
     case wait_for_circuit_ready(Node1, CircuitId, 10000) of
         ok ->
             %% Get circuit info
@@ -286,10 +286,9 @@ test_circuit_create_direct(Config) ->
             %% Close circuit
             ok = rpc:call(Node1, mycelium_circuit, close, [CircuitId]);
         timeout ->
-            %% Circuit transport connectivity issue
-            ct:pal("Circuit creation timed out - transport connectivity issue"),
+            ct:pal("Circuit creation timed out - dist connectivity issue"),
             rpc:call(Node1, mycelium_circuit, close, [CircuitId]),
-            {skip, "Circuit transport TCP connectivity not available between containers"}
+            {skip, "Dist QUIC connectivity not available between containers"}
     end.
 
 test_circuit_send_receive_direct(Config) ->

@@ -128,8 +128,8 @@ start_node() {
     echo "Cookie only nodes: ${COOKIE_ONLY_NODES:-none}"
     echo "Dist cookie: ${DIST_COOKIE:-default}"
 
-    # Circuit transport config - fixed port for Docker networking
-    local circuit_config="-mycelium circuit_listen_port 4370 -mycelium circuit_port_offset 0"
+    # Use mycelium's own proto_dist (OTP appends "_dist" -> mycelium_dist).
+    local proto_dist_config="-proto_dist mycelium"
 
     exec erl \
         -sname "$short_name" \
@@ -140,7 +140,7 @@ start_node() {
         $encryption_config \
         $whitelist_config \
         $dist_cookie_config \
-        $circuit_config \
+        $proto_dist_config \
         -eval "$startup_eval" \
         -noshell
 }

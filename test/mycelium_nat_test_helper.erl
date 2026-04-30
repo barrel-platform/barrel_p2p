@@ -60,19 +60,14 @@ setup_nat_mocks() ->
 %% @doc Setup transport mocks for connection simulation
 -spec setup_transport_mocks() -> ok.
 setup_transport_mocks() ->
-    case erlang:function_exported(mycelium_circuit_transport_tcp, get_listen_port, 0) of
-        true ->
-            meck:new(mycelium_circuit_transport_tcp, [passthrough]),
-            meck:expect(mycelium_circuit_transport_tcp, get_listen_port, fun() -> 4370 end);
-        false ->
-            ok
-    end,
+    meck:new(mycelium_dist, [passthrough]),
+    meck:expect(mycelium_dist, listen_port, fun() -> 4370 end),
     ok.
 
 %% @doc Cleanup all mocks
 -spec cleanup_mocks() -> ok.
 cleanup_mocks() ->
-    cleanup_mocks([estun, nat, mycelium_circuit_transport_tcp]).
+    cleanup_mocks([estun, nat, mycelium_dist]).
 
 %% @doc Cleanup specific mocks
 -spec cleanup_mocks([atom()]) -> ok.

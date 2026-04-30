@@ -33,14 +33,7 @@
         {circuit_idle_timeout, 300000},     %% 5 min idle cleanup
         {circuit_max_active, 100},          %% Max circuits per node
         {circuit_relay_max, 500},           %% Max circuits being relayed
-        %% Circuit transport configuration
-        {circuit_listen_port, 0},           %% 0 = auto-assign port
-        {circuit_connect_timeout, 5000},    %% 5s connection timeout
-        {circuit_heartbeat_interval, 10000}, %% 10s - send PING
-        {circuit_dead_interval, 30000},     %% 30s - no PONG = dead
-        {circuit_port_offset, 1},           %% Offset from dist port for circuit port
-        {circuit_transport, mycelium_circuit_transport_quic}, %% Transport module
-        %% Optional masque proxy URI for relay fallback (Phase 1B).
+        %% Optional masque proxy URI for relay fallback.
         %% When set, circuits with no viable peer hops can route through
         %% this proxy via CONNECT-UDP.
         {circuit_relay_uri, undefined},

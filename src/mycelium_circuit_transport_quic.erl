@@ -1,6 +1,5 @@
 -module(mycelium_circuit_transport_quic).
 -behaviour(gen_server).
--behaviour(mycelium_circuit_transport).
 
 %% QUIC Transport for Circuit Traffic
 %%

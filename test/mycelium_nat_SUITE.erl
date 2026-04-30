@@ -137,7 +137,7 @@ init_per_testcase(TestCase, Config) when
 init_per_testcase(TestCase, Config) when
     TestCase =:= test_build_local_candidates;
     TestCase =:= test_build_srflx_candidates ->
-    mycelium_nat_test_helper:cleanup_mocks([mycelium_circuit_transport_tcp]),
+    mycelium_nat_test_helper:cleanup_mocks([mycelium_dist]),
     Config;
 init_per_testcase(_TestCase, Config) ->
     Config.
@@ -153,7 +153,7 @@ end_per_testcase(TestCase, _Config) when
 end_per_testcase(TestCase, _Config) when
     TestCase =:= test_build_local_candidates;
     TestCase =:= test_build_srflx_candidates ->
-    mycelium_nat_test_helper:cleanup_mocks([mycelium_circuit_transport_tcp]),
+    mycelium_nat_test_helper:cleanup_mocks([mycelium_dist]),
     ok;
 end_per_testcase(_TestCase, _Config) ->
     ok.
@@ -404,9 +404,9 @@ test_symmetric_relay_only(_Config) ->
 %%====================================================================
 
 test_build_local_candidates(_Config) ->
-    %% Mock the transport to return a port
-    meck:new(mycelium_circuit_transport_tcp, [non_strict]),
-    meck:expect(mycelium_circuit_transport_tcp, get_listen_port, fun() -> 4370 end),
+    %% Mock the dist port lookup
+    meck:new(mycelium_dist, [passthrough]),
+    meck:expect(mycelium_dist, listen_port, fun() -> 4370 end),
 
     %% Build candidates manually (simulating what mycelium_nat does)
     LocalAddrs = get_test_local_addresses(),
@@ -421,7 +421,7 @@ test_build_local_candidates(_Config) ->
         ?assertEqual(200, Cand#candidate.priority)
     end, Candidates),
 
-    meck:unload(mycelium_circuit_transport_tcp),
+    meck:unload(mycelium_dist),
     ok.
 
 test_build_srflx_candidates(_Config) ->

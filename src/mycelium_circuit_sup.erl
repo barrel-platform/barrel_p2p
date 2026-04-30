@@ -60,14 +60,9 @@ init([]) ->
     %% ETS table for circuit registry
     ets:new(mycelium_circuits, [named_table, public, {read_concurrency, true}]),
 
-    %% Transport configuration
-    TransportMod = application:get_env(
-        mycelium, circuit_transport, mycelium_circuit_transport_quic),
+    %% Transport: circuits multiplex over the per-peer mycelium_dist
+    %% QUIC connection. No listener, no pool, no separate connect path.
     TransportOpts = #{
-        listen_port => application:get_env(mycelium, circuit_listen_port, 0),
-        pool_size => application:get_env(mycelium, circuit_pool_size, 3),
-        idle_timeout => application:get_env(mycelium, circuit_pool_idle_timeout, 60000),
-        connect_timeout => application:get_env(mycelium, circuit_connect_timeout, 5000),
         auth_enabled => application:get_env(mycelium, auth_enabled, true)
     },
 
@@ -112,15 +107,14 @@ init([]) ->
     },
 
     %% Transport - must start before relay as relay uses transport.
-    %% Module is selected via the `circuit_transport' app env;
-    %% defaults to QUIC streams multiplexed on quic_dist.
+    %% Hardcoded to mycelium_circuit_transport_quic (one transport).
     Transport = #{
         id => circuit_transport,
-        start => {TransportMod, start_link, [TransportOpts]},
+        start => {mycelium_circuit_transport_quic, start_link, [TransportOpts]},
         restart => permanent,
         shutdown => 5000,
         type => worker,
-        modules => [TransportMod]
+        modules => [mycelium_circuit_transport_quic]
     },
 
     %% Relay handler - singleton
