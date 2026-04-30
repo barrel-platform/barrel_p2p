@@ -245,10 +245,27 @@ run_auth_tests() {
     echo "Running authentication tests..."
     cd /app
 
+    # Pre-provision the test_runner's Ed25519 keypair into the same
+    # auth_key_dir the cluster nodes use. mycelium_dist_auth_stream
+    # reads node.pub/node.key directly off disk on every dist
+    # handshake, and the test_runner does not start the mycelium app
+    # (so mycelium_dist_keys never auto-generates them). Without this
+    # the first RPC to the cluster fails with auth_failed, enoent.
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        erl -noshell -pa /app/_build/test/lib/*/ebin \
+            -eval "
+                {ok, _} = application:ensure_all_started(crypto),
+                application:load(mycelium),
+                application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
+                ok = mycelium_dist_auth:ensure_keypair(),
+                halt(0).
+            "
+    fi
+
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie "$ERLANG_COOKIE" \
+        -setcookie mycelium \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/auth-test.config \
         $auth_config \
@@ -317,6 +334,19 @@ run_circuit_tests() {
         encryption_config="-mycelium encryption_enabled true"
     fi
 
+    # Pre-provision the test_runner's Ed25519 keypair (same reason as
+    # the auth runner). The circuit suite enables auth on the cluster.
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        erl -noshell -pa /app/_build/test/lib/*/ebin \
+            -eval "
+                {ok, _} = application:ensure_all_started(crypto),
+                application:load(mycelium),
+                application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
+                ok = mycelium_dist_auth:ensure_keypair(),
+                halt(0).
+            "
+    fi
+
     # Run CT suite
     echo "Running circuit tests..."
     cd /app
@@ -324,7 +354,7 @@ run_circuit_tests() {
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie "$ERLANG_COOKIE" \
+        -setcookie mycelium \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/circuit-test.config \
         $auth_config \
