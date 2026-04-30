@@ -35,6 +35,12 @@ done
 
 cd "$PROJECT_ROOT"
 
+# Inject GH_TOKEN for fetching private deps inside the docker build.
+if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    GH_TOKEN=$(gh auth token 2>/dev/null || true)
+fi
+export GH_TOKEN
+
 # Cleanup function
 cleanup() {
     echo "Cleaning up circuit test containers..."

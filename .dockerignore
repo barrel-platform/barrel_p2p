@@ -1,0 +1,11 @@
+_build/
+.git/
+.gitignore
+test_results/
+*.beam
+node_modules/
+package-lock.json
+docs/
+README.md
+*.md
+examples/

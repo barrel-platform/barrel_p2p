@@ -8,6 +8,8 @@ x-erlang-node: &erlang-node
   build:
     context: ..
     dockerfile: docker/Dockerfile
+    args:
+      GH_TOKEN: ${GH_TOKEN:-}
   environment:
     ERLANG_COOKIE: mycelium
     DIST_COOKIE: mycelium

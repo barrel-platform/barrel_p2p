@@ -70,11 +70,16 @@ start_node() {
     echo "Auth enabled: ${AUTH_ENABLED:-false}"
     echo "Auth trust mode: ${AUTH_TRUST_MODE:-tofu}"
 
-    # Build auth config
+    # Build auth config. Default to auth_enabled=false so the basic
+    # integration test (whose test_runner does not provision keys) can
+    # RPC into the cluster. The auth and circuit suites set
+    # AUTH_ENABLED=true explicitly via compose.
     local auth_config=""
     if [ "$AUTH_ENABLED" = "true" ]; then
         setup_auth_keys
         auth_config="-mycelium auth_enabled true -mycelium auth_key_dir '\"/app/data/keys\"' -mycelium auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
+    else
+        auth_config="-mycelium auth_enabled false"
     fi
 
     # Build encryption config
@@ -167,14 +172,19 @@ run_tests() {
     echo "Running integration tests..."
     cd /app
 
+    # Cluster nodes set their cookie to 'mycelium' inside mycelium_app:start.
+    # Match it on the test_runner so the dist handshake succeeds.
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie "$ERLANG_COOKIE" \
+        -setcookie mycelium \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/test.config \
+        -proto_dist mycelium \
         -noshell \
         -eval "
+            application:load(mycelium),
+            application:set_env(mycelium, auth_enabled, false),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
                 {suite, mycelium_integration_SUITE},
@@ -182,11 +192,14 @@ run_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/test.config\"}
             ]) of
-                {_Ok, 0, {0, _Skipped}} ->
-                    io:format(\"~n~nAll tests passed!~n\"),
+                {Ok, 0, {0, 0}} ->
+                    io:format(\"~n~nAll tests passed (~p)~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed tests: ~p~n\", [Failed]),
+                    init:stop(1);
+                {_Ok, 0, {U, A}} when U + A > 0 ->
+                    io:format(\"~n~nUnexpected skips: user=~p auto=~p~n\", [U, A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nTest error: ~p~n\", [Error]),
@@ -239,6 +252,7 @@ run_auth_tests() {
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/auth-test.config \
         $auth_config \
+        -proto_dist mycelium \
         -noshell \
         -eval "
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
@@ -248,11 +262,14 @@ run_auth_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/auth-test.config\"}
             ]) of
-                {_Ok, 0, {0, _Skipped}} ->
-                    io:format(\"~n~nAll auth tests passed!~n\"),
+                {Ok, 0, {0, 0}} ->
+                    io:format(\"~n~nAll auth tests passed (~p)~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed auth tests: ~p~n\", [Failed]),
+                    init:stop(1);
+                {_Ok, 0, {U, A}} when U + A > 0 ->
+                    io:format(\"~n~nUnexpected auth skips: user=~p auto=~p~n\", [U, A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nAuth test error: ~p~n\", [Error]),
@@ -312,6 +329,7 @@ run_circuit_tests() {
         -config /app/docker/circuit-test.config \
         $auth_config \
         $encryption_config \
+        -proto_dist mycelium \
         -noshell \
         -eval "
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
@@ -321,11 +339,14 @@ run_circuit_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/circuit-test.config\"}
             ]) of
-                {Ok, 0, {_UserSkip, _AutoSkip}} ->
+                {Ok, 0, {0, 0}} ->
                     io:format(\"~n~nCircuit tests: ~p passed, 0 failed~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed circuit tests: ~p~n\", [Failed]),
+                    init:stop(1);
+                {_Ok, 0, {U, A}} when U + A > 0 ->
+                    io:format(\"~n~nUnexpected circuit skips: user=~p auto=~p~n\", [U, A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nCircuit test error: ~p~n\", [Error]),

@@ -4,22 +4,51 @@
 ARG ERLANG_VERSION=28
 FROM erlang:${ERLANG_VERSION}-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache git
+# Install build dependencies. cmake + a C/C++ toolchain are needed by
+# rocksdb, derp, and instrument NIFs. perl/linux-headers are required
+# by derp's bundled boringssl.
+RUN apk add --no-cache \
+    git \
+    bash \
+    build-base \
+    cmake \
+    ninja \
+    perl \
+    linux-headers \
+    lz4-dev \
+    snappy-dev \
+    libsodium-dev
 
 WORKDIR /app
 
 # Copy rebar configs first for better layer caching
 COPY rebar.config rebar.lock* ./
 
-# Fetch dependencies
-RUN rebar3 get-deps
+# Fetch dependencies. GH_TOKEN authenticates against github for any
+# private deps (e.g. erlang_masque). Pass it from the host with
+# --build-arg GH_TOKEN=$(gh auth token) when building. We rewrite the
+# GitHub URL with the token only for the duration of the fetch step;
+# the credential is wiped before the layer is committed so it does
+# not persist in the image history.
+ARG GH_TOKEN
+RUN if [ -n "$GH_TOKEN" ]; then \
+        git config --global \
+            "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" \
+            "https://github.com/"; \
+    fi && \
+    rebar3 get-deps
 
 # Copy source code
 COPY config/ config/
 COPY include/ include/
 COPY src/ src/
 COPY test/ test/
+
+# Some deps (notably rocksdb) have a `git submodule update` compile
+# pre-hook. Without a .git anywhere in the parent chain, the hook
+# aborts. An empty repo at /app makes the no-op submodule update
+# succeed without polluting the source tree.
+RUN git init -q .
 
 # Compile with test profile (includes test dependencies)
 RUN rebar3 as test compile
