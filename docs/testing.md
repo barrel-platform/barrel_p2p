@@ -100,17 +100,20 @@ still trust the same peer. The strict-mode profile
 (`docker compose --profile strict`) adds an `untrusted_node`
 that the cluster rejects.
 
-> **Status:** the test_runner now provisions its own Ed25519
-> keypair, starts `mycelium_dist_keys` for TOFU storage, and
-> successfully completes the handshake with the first two
-> cluster nodes (their pubkeys land in
-> `/app/data/keys/trusted/`). It then hangs on the third
-> peer's `net_kernel:connect_node/1` — `connect_node` has no
-> bounded timeout, so a wedged auth_stream stalls
-> `init_per_suite` indefinitely. The fix is to make the
-> three-way handshake order deterministic, or to put a
-> watchdog around `connect_node`. Tracked as follow-up
-> work.
+> **Status:** init_per_suite times out at `wait_for_rpc`. The
+> test_runner provisions its own Ed25519 keypair, starts
+> `mycelium_dist_keys` for TOFU storage, opens dist
+> connections to the first two cluster nodes (their pubkeys
+> land in `/app/data/keys/trusted/`), then fails to complete
+> the handshake against the third peer. The runner uses
+> `bounded_connect/2` so it doesn't hang indefinitely, but
+> the underlying handshake still doesn't go through, so
+> `init_per_suite`'s 60-second deadline elapses and the cases
+> auto-skip. The clean fix is plumbing the
+> `cookie_only_nodes` whitelist through to the gatekeeper:
+> defer the auth_stream when the peer is whitelisted, fall
+> back to the OTP cookie challenge for that peer only. Left
+> as follow-up work.
 
 **`run_circuit_tests.sh` → `mycelium_docker_circuit_SUITE`** —
 four nodes across three docker networks:
