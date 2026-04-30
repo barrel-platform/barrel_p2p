@@ -244,7 +244,7 @@ handle_outgoing_after_hello(Socket, TargetNode, MyPubKey, PeerNode, PeerPubKey, 
                             case mycelium_dist_protocol:decode(ChallengeData) of
                                 {challenge, PeerNonce, PeerTimestamp} ->
                                     handle_outgoing_challenge_exchange(
-                                        Socket, MyPubKey, PeerPubKey,
+                                        Socket, MyPubKey, TargetNode, PeerPubKey,
                                         MyNonce, MyTimestamp,
                                         PeerNonce, PeerTimestamp, Timeout);
                                 _ ->
@@ -260,7 +260,7 @@ handle_outgoing_after_hello(Socket, TargetNode, MyPubKey, PeerNode, PeerPubKey, 
             {error, {node_mismatch, {expected, TargetNode}, {got, PeerNode}}}
     end.
 
-handle_outgoing_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
+handle_outgoing_challenge_exchange(Socket, _MyPubKey, PeerNode, PeerPubKey,
                                    MyNonce, MyTimestamp,
                                    PeerNonce, PeerTimestamp, Timeout) ->
     %% Step 5: Sign peer's challenge and send response
@@ -279,7 +279,7 @@ handle_outgoing_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
                                                         {MyNonce, MyTimestamp}) of
                                         true ->
                                             %% Step 7: Receive final OK/FAIL
-                                            finalize_auth(Socket, PeerPubKey, Timeout);
+                                            finalize_auth(Socket, PeerNode, PeerPubKey, Timeout);
                                         false ->
                                             {error, signature_verification_failed}
                                     end;
@@ -314,7 +314,8 @@ do_authenticate_incoming(Socket) ->
                             case socket_send(Socket, HelloMsg) of
                                 ok ->
                                     handle_incoming_after_hello(
-                                        Socket, MyPubKey, PeerNode, PeerPubKey, Timeout);
+                                        Socket, MyPubKey, PeerNode, PeerPubKey, Timeout
+                                    );
                                 {error, Reason} ->
                                     {error, {send_hello_failed, Reason}}
                             end;
@@ -334,16 +335,16 @@ do_authenticate_incoming(Socket) ->
             Error
     end.
 
-handle_incoming_after_hello(Socket, MyPubKey, _PeerNode, PeerPubKey, Timeout) ->
-    %% Check if peer's key is trusted (identity is based on key fingerprint, not node name)
-    case mycelium_dist_keys:is_key_trusted(PeerPubKey) of
+handle_incoming_after_hello(Socket, MyPubKey, PeerNode, PeerPubKey, Timeout) ->
+    %% Check if peer's key is trusted for the claimed peer node.
+    case mycelium_dist_keys:is_trusted(PeerNode, PeerPubKey) of
         true ->
-            continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout);
+            continue_incoming_auth(Socket, MyPubKey, PeerNode, PeerPubKey, Timeout);
         false ->
             %% In TOFU mode, we'll trust on first use
             case get_trust_mode() of
                 tofu ->
-                    continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout);
+                    continue_incoming_auth(Socket, MyPubKey, PeerNode, PeerPubKey, Timeout);
                 strict ->
                     FailMsg = mycelium_dist_protocol:encode_fail(<<"untrusted_key">>),
                     socket_send(Socket, FailMsg),
@@ -351,7 +352,7 @@ handle_incoming_after_hello(Socket, MyPubKey, _PeerNode, PeerPubKey, Timeout) ->
             end
     end.
 
-continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout) ->
+continue_incoming_auth(Socket, MyPubKey, PeerNode, PeerPubKey, Timeout) ->
     %% Step 3: Receive peer's challenge
     case socket_recv(Socket, Timeout) of
         {ok, ChallengeData} ->
@@ -363,7 +364,7 @@ continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout) ->
                     case socket_send(Socket, ChallengeMsg) of
                         ok ->
                             handle_incoming_challenge_exchange(
-                                Socket, MyPubKey, PeerPubKey,
+                                Socket, MyPubKey, PeerNode, PeerPubKey,
                                 MyNonce, MyTimestamp,
                                 PeerNonce, PeerTimestamp, Timeout);
                         {error, Reason} ->
@@ -376,7 +377,7 @@ continue_incoming_auth(Socket, MyPubKey, PeerPubKey, Timeout) ->
             {error, {recv_challenge_failed, Reason}}
     end.
 
-handle_incoming_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
+handle_incoming_challenge_exchange(Socket, _MyPubKey, PeerNode, PeerPubKey,
                                    MyNonce, MyTimestamp,
                                    PeerNonce, PeerTimestamp, Timeout) ->
     %% Step 5: Receive peer's response first (as acceptor)
@@ -398,7 +399,9 @@ handle_incoming_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
                                             case socket_send(Socket, OkMsg) of
                                                 ok ->
                                                     %% Record trusted peer (TOFU)
-                                                    mycelium_dist_keys:store_key_if_new(PeerPubKey),
+                                                    mycelium_dist_keys:store_key_if_new(
+                                                        PeerNode, PeerPubKey
+                                                    ),
                                                     %% Step 8: Perform key exchange if encryption enabled
                                                     case mycelium_crypto:is_encryption_enabled() of
                                                         true ->
@@ -427,14 +430,13 @@ handle_incoming_challenge_exchange(Socket, _MyPubKey, PeerPubKey,
             {error, {recv_response_failed, Reason}}
     end.
 
-finalize_auth(Socket, PeerPubKey, Timeout) ->
+finalize_auth(Socket, PeerNode, PeerPubKey, Timeout) ->
     case socket_recv(Socket, Timeout) of
         {ok, FinalData} ->
             case mycelium_dist_protocol:decode(FinalData) of
                 ok ->
                     %% Record trusted peer (TOFU)
-                    mycelium_dist_keys:store_key_if_new(
-                        get_peer_from_socket(Socket), PeerPubKey),
+                    mycelium_dist_keys:store_key_if_new(PeerNode, PeerPubKey),
                     %% Perform key exchange if encryption is enabled
                     case mycelium_crypto:is_encryption_enabled() of
                         true ->
@@ -547,17 +549,6 @@ socket_recv(Socket, Timeout) when is_port(Socket) ->
     gen_tcp:recv(Socket, 0, Timeout);
 socket_recv(Socket, Timeout) ->
     ssl:recv(Socket, 0, Timeout).
-
-get_peer_from_socket(Socket) when is_port(Socket) ->
-    case inet:peername(Socket) of
-        {ok, {_Ip, _Port}} -> unknown;
-        _ -> unknown
-    end;
-get_peer_from_socket(Socket) ->
-    case ssl:peername(Socket) of
-        {ok, {_Ip, _Port}} -> unknown;
-        _ -> unknown
-    end.
 
 %%====================================================================
 %% C-Node Whitelist
