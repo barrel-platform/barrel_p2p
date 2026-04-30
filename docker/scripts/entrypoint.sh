@@ -272,6 +272,10 @@ run_auth_tests() {
         -proto_dist mycelium \
         -noshell \
         -eval "
+            application:load(mycelium),
+            application:set_env(mycelium, auth_enabled, true),
+            application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
+            application:set_env(mycelium, auth_trust_mode, tofu),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
                 {suite, mycelium_docker_auth_SUITE},
@@ -362,6 +366,10 @@ run_circuit_tests() {
         -proto_dist mycelium \
         -noshell \
         -eval "
+            application:load(mycelium),
+            application:set_env(mycelium, auth_enabled, true),
+            application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
+            application:set_env(mycelium, auth_trust_mode, tofu),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
                 {suite, mycelium_docker_circuit_SUITE},
