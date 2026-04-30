@@ -100,20 +100,11 @@ still trust the same peer. The strict-mode profile
 (`docker compose --profile strict`) adds an `untrusted_node`
 that the cluster rejects.
 
-> **Status:** init_per_suite times out at `wait_for_rpc`. The
-> test_runner provisions its own Ed25519 keypair, starts
-> `mycelium_dist_keys` for TOFU storage, opens dist
-> connections to the first two cluster nodes (their pubkeys
-> land in `/app/data/keys/trusted/`), then fails to complete
-> the handshake against the third peer. The runner uses
-> `bounded_connect/2` so it doesn't hang indefinitely, but
-> the underlying handshake still doesn't go through, so
-> `init_per_suite`'s 60-second deadline elapses and the cases
-> auto-skip. The clean fix is plumbing the
-> `cookie_only_nodes` whitelist through to the gatekeeper:
-> defer the auth_stream when the peer is whitelisted, fall
-> back to the OTP cookie challenge for that peer only. Left
-> as follow-up work.
+> **Status:** the suite runs end-to-end. The `cookie_only_nodes`
+> whitelist short-circuits the Ed25519 handshake for whitelisted
+> probes (the test_runner) and lets the OTP-level cookie
+> challenge cover the rest. Cluster-internal connections still
+> run the full Ed25519 challenge-response.
 
 **`run_circuit_tests.sh` → `mycelium_docker_circuit_SUITE`** —
 four nodes across three docker networks:
@@ -128,10 +119,9 @@ through the relays, and bidirectional data flow through the
 circuit transport over the per-peer `mycelium_dist` QUIC
 connection.
 
-> **Status:** same hang as the auth suite. The cluster forms
-> across the three networks and authenticates internally; the
-> test_runner authenticates against the first two peers, then
-> stalls in `net_kernel:connect_node/1` on the third.
+> **Status:** the suite runs end-to-end. Same
+> `cookie_only_nodes` whitelist mechanism that unblocks the auth
+> suite applies here.
 
 ### Reading the results
 
