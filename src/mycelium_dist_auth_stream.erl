@@ -108,6 +108,11 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, PeerNode, Timeout) ->
                     );
                 {hello, Other, _} ->
                     {error, {node_mismatch, {expected, PeerNode}, {got, Other}}};
+                ok ->
+                    %% Server short-circuited the handshake because we
+                    %% match its cookie_only_nodes whitelist. Trust the
+                    %% Erlang dist cookie challenge to do the rest.
+                    ok;
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -241,21 +246,45 @@ do_incoming(Conn, PeerStream, Buffer, Timeout) ->
     end.
 
 server_after_hello(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
-    case mycelium_dist_keys:is_trusted(PeerNode, PeerPubKey) of
+    %% cookie_only_nodes is a whitelist of peer-name patterns the
+    %% cluster trusts on cookie alone. test_runner-style probes can
+    %% be exempted from the full Ed25519 handshake; they still face
+    %% the OTP-level dist challenge that comes after.
+    case mycelium_dist_auth:is_cookie_only_allowed(PeerNode) of
         true ->
-            server_open_my_stream(
-                Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout
-            );
+            server_send_skip(Conn, PeerNode);
         false ->
-            case trust_mode() of
-                tofu ->
+            case mycelium_dist_keys:is_trusted(PeerNode, PeerPubKey) of
+                true ->
                     server_open_my_stream(
                         Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout
                     );
-                strict ->
-                    send_fail_via_uni(Conn, <<"untrusted_key">>),
-                    {error, untrusted_key}
+                false ->
+                    case trust_mode() of
+                        tofu ->
+                            server_open_my_stream(
+                                Conn, PeerStream, Buffer,
+                                PeerNode, PeerPubKey, Timeout
+                            );
+                        strict ->
+                            send_fail_via_uni(Conn, <<"untrusted_key">>),
+                            {error, untrusted_key}
+                    end
             end
+    end.
+
+%% Whitelisted peer: open our uni stream just to send AUTH_OK and
+%% finalise. The client recognises the OK frame in client_recv_hello
+%% and falls through without challenge-response.
+server_send_skip(Conn, PeerNode) ->
+    case quic:open_unidirectional_stream(Conn) of
+        {ok, MyStream} ->
+            Msg = mycelium_dist_protocol:encode_ok(),
+            _ = stream_send(Conn, MyStream, Msg),
+            catch quic:send_data(Conn, MyStream, <<>>, true),
+            {ok, PeerNode};
+        {error, Reason} ->
+            {error, {open_auth_stream_failed, Reason}}
     end.
 
 server_open_my_stream(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
