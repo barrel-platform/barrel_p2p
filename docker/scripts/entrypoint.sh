@@ -2,7 +2,10 @@
 set -e
 
 # Entrypoint script for Mycelium nodes
-# Handles different roles: seed, member, test_runner, auth_test_runner, strict_seed
+# Handles different roles: seed, member, auth_test_runner, circuit_test_runner, strict_seed
+#
+# The basic 3-node integration test_runner role is gone - that suite
+# moved to the local CT suite mycelium_dist_basic_SUITE.
 
 export HOME=/tmp
 
@@ -148,68 +151,6 @@ start_node() {
         $proto_dist_config \
         -eval "$startup_eval" \
         -noshell
-}
-
-# Run integration tests
-run_tests() {
-    echo "Starting test runner"
-    echo "Test nodes: $TEST_NODES"
-
-    # Wait for all test nodes to be reachable
-    for node in $(echo "$TEST_NODES" | tr ',' ' '); do
-        host=$(echo "$node" | cut -d'@' -f2)
-        wait_for_node "$host"
-    done
-
-    # Give nodes extra time to form cluster
-    echo "Waiting for cluster to form..."
-    sleep 10
-
-    # Create test results directory
-    mkdir -p /app/test_results
-
-    # Run CT suite
-    echo "Running integration tests..."
-    cd /app
-
-    # Cluster nodes set their cookie to 'mycelium' inside mycelium_app:start.
-    # Match it on the test_runner so the dist handshake succeeds.
-    erl \
-        -sname test_runner \
-        -hidden \
-        -setcookie ${DIST_COOKIE:-mycelium} \
-        -pa /app/_build/test/lib/*/ebin \
-        -config /app/docker/test.config \
-        -proto_dist mycelium \
-        -noshell \
-        -eval "
-            application:load(mycelium),
-            application:set_env(mycelium, auth_enabled, false),
-            os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
-            case ct:run_test([
-                {suite, mycelium_integration_SUITE},
-                {dir, \"/app/test\"},
-                {logdir, \"/app/test_results\"},
-                {config, \"/app/docker/test.config\"}
-            ]) of
-                {Ok, 0, {_UserSkip, 0}} ->
-                    io:format(\"~n~nAll tests passed (~p ok)~n\", [Ok]),
-                    init:stop(0);
-                {_Ok, Failed, _} when Failed > 0 ->
-                    io:format(\"~n~nFailed tests: ~p~n\", [Failed]),
-                    init:stop(1);
-                {_Ok, 0, {_, A}} when A > 0 ->
-                    io:format(\"~n~nAuto-skipped tests: ~p (init failure)~n\", [A]),
-                    init:stop(1);
-                Error ->
-                    io:format(\"~n~nTest error: ~p~n\", [Error]),
-                    init:stop(1)
-            end.
-        "
-
-    exit_code=$?
-    echo "Tests completed with exit code: $exit_code"
-    exit $exit_code
 }
 
 # Run authentication tests
@@ -422,9 +363,6 @@ case "$NODE_ROLE" in
         fi
         start_node "$NODE_NAME" "$CONTACT_NODE"
         ;;
-    test_runner)
-        run_tests
-        ;;
     auth_test_runner)
         run_auth_tests
         ;;
@@ -433,7 +371,7 @@ case "$NODE_ROLE" in
         ;;
     *)
         echo "Unknown role: $NODE_ROLE"
-        echo "Use: seed, member, test_runner, auth_test_runner, circuit_test_runner, or strict_seed"
+        echo "Use: seed, member, auth_test_runner, circuit_test_runner, or strict_seed"
         exit 1
         ;;
 esac

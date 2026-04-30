@@ -18,15 +18,14 @@ Mycelium ships two layers of tests:
 | `rebar3 check` | `xref` + `dialyzer` + `eunit` + `ct` |
 | `rebar3 ct --suite=test/mycelium_dist_basic_SUITE` | Two-node cluster mechanics (no docker) |
 | `rebar3 ct --suite=test/mycelium_dist_auth_basic_SUITE` | Three-node Ed25519 key/trust API (no docker) |
-| `./docker/scripts/run_tests.sh` | 3-node cluster e2e |
 | `./docker/scripts/run_auth_tests.sh` | Ed25519 strict + TOFU e2e |
 | `./docker/scripts/run_circuit_tests.sh` | Multi-network circuit relay e2e |
 
 The two `*_basic_SUITE` entries spawn slave nodes via `ct_slave` on
-the local host. They cover the cluster-mechanics and key/trust API
-half of the docker suites in seconds. The docker suites are still
-authoritative for the full `-proto_dist mycelium` carrier (circuit
-QUIC streams, multi-network isolation).
+the local host. They cover cluster mechanics, registry sync, service
+discovery, HyParView shuffle, and the key/trust API in seconds. The
+docker suites are still authoritative for the full `-proto_dist
+mycelium` carrier (circuit QUIC streams, multi-network isolation).
 
 ## Local tests
 
@@ -36,12 +35,12 @@ Prerequisite: Erlang/OTP 28+, rebar3.
 rebar3 ct
 ```
 
-A green run reports `Skipped 57 (57, 0) tests. Passed 261 tests.`
-The 57 skipped cases come from the three docker-only suites
-(`mycelium_integration_SUITE`, `mycelium_docker_auth_SUITE`,
-`mycelium_docker_circuit_SUITE`); they print `Docker-only suite.
-Run via ./docker/scripts/<name>.sh` and exit cleanly. They are
-only exercised when run through the docker scripts below.
+A green run reports `Skipped 43 (43, 0) tests. Passed 265 tests.`
+The 43 skipped cases come from the two docker-only suites
+(`mycelium_docker_auth_SUITE`, `mycelium_docker_circuit_SUITE`);
+they print `Docker-only suite. Run via ./docker/scripts/<name>.sh`
+and exit cleanly. They are only exercised when run through the
+docker scripts below.
 
 To run a single suite:
 
@@ -179,34 +178,27 @@ Prerequisites:
   (`erlang_masque`); the run scripts auto-export the token from
   `gh auth token` if `GH_TOKEN` is unset.
 
-The three scripts each bring up a compose stack, run a CT suite
+The two scripts each bring up a compose stack, run a CT suite
 inside the `test_runner` container, and tear the stack down on
 exit. CT logs land under `test_results/`.
 
 ```bash
-./docker/scripts/run_tests.sh           # 3-node cluster
 ./docker/scripts/run_auth_tests.sh      # Ed25519 auth
 ./docker/scripts/run_circuit_tests.sh   # multi-network circuit relay
 ```
 
-Common flags (all three scripts):
+The basic 3-node cluster mechanics suite is no longer in docker.
+It moved to `mycelium_dist_basic_SUITE`, runs locally via `rebar3
+ct` in seconds, and covers the same HyParView/registry/overlay
+behaviour.
+
+Common flags (both scripts):
 
 - `--no-build` — reuse the existing image instead of rebuilding.
 - `--cleanup` — tear down containers, networks, and volumes from
   a previous run, then exit.
 
-`run_tests.sh` also accepts `--5node` to use the 5-node compose
-profile.
-
 ### What each suite covers
-
-**`run_tests.sh` → `mycelium_integration_SUITE`** — three
-mycelium nodes (`node1`, `node2`, `node3`) form a HyParView
-cluster on the default compose network. Tests cover basic RPC,
-active-view membership, gen_server calls across the cluster,
-node leave/rejoin, registry sync, and overlay routing
-(`mycelium:whereis_service/1`, service proxies, global
-transparency).
 
 **`run_auth_tests.sh` → `mycelium_docker_auth_SUITE`** — three
 nodes start with `auth_enabled=true, auth_trust_mode=tofu`. The
@@ -256,7 +248,6 @@ failure.
 To clean up between runs:
 
 ```bash
-./docker/scripts/run_tests.sh --cleanup
 ./docker/scripts/run_auth_tests.sh --cleanup
 ./docker/scripts/run_circuit_tests.sh --cleanup
 ```
@@ -281,7 +272,7 @@ the locked SHA no longer exists. Refresh the lock and rebuild:
 ```bash
 rebar3 unlock <name>
 rebar3 get-deps
-./docker/scripts/run_tests.sh
+./docker/scripts/run_auth_tests.sh
 ```
 
 Docker build prompts for github auth or fails on a private dep
@@ -290,7 +281,7 @@ token` automatically when `GH_TOKEN` is unset; if you don't use
 the `gh` CLI, export it manually:
 
 ```bash
-GH_TOKEN=ghp_xxx ./docker/scripts/run_tests.sh
+GH_TOKEN=ghp_xxx ./docker/scripts/run_auth_tests.sh
 ```
 
 The token is passed as a build arg, used only to rewrite

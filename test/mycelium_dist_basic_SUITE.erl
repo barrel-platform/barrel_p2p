@@ -44,7 +44,11 @@
     list_services_test/1,
     leave_rejoin_test/1,
     large_message_test/1,
-    disconnect_reconnect_test/1
+    disconnect_reconnect_test/1,
+    registry_sync_running_test/1,
+    whereis_service_remote_test/1,
+    proxy_creation_test/1,
+    shuffle_test/1
 ]).
 
 %%====================================================================
@@ -65,6 +69,10 @@ groups() ->
             active_view_test,
             register_service_test,
             list_services_test,
+            registry_sync_running_test,
+            whereis_service_remote_test,
+            proxy_creation_test,
+            shuffle_test,
             leave_rejoin_test,
             large_message_test,
             disconnect_reconnect_test
@@ -256,6 +264,72 @@ disconnect_reconnect_test(Config) ->
         end,
         5000
     ),
+    ok.
+
+%% mycelium_registry_sync runs as a named process on every node.
+registry_sync_running_test(Config) ->
+    lists:foreach(
+        fun(Node) ->
+            Pid = rpc:call(Node, erlang, whereis, [mycelium_registry_sync]),
+            ?assert(is_pid(Pid))
+        end,
+        [?config(node1, Config), ?config(node2, Config)]
+    ),
+    ok.
+
+%% A service registered on Node2 is discoverable from Node1 via whereis.
+whereis_service_remote_test(Config) ->
+    Node1 = ?config(node1, Config),
+    Node2 = ?config(node2, Config),
+
+    ServiceName = remote_svc_test,
+    {ok, HolderPid} = rpc:call(Node2, mycelium, start_service_holder,
+                               [ServiceName]),
+    try
+        wait_until(
+            fun() ->
+                case rpc:call(Node1, mycelium, whereis_service,
+                              [ServiceName]) of
+                    {ok, _} -> true;
+                    {ok, _, _} -> true;
+                    {found, _, _} -> true;
+                    _ -> false
+                end
+            end,
+            5000
+        )
+    after
+        rpc:call(Node2, mycelium, stop_service_holder, [HolderPid])
+    end,
+    ok.
+
+%% ensure_proxy creates a local proxy pid that fronts a remote service.
+proxy_creation_test(Config) ->
+    Node1 = ?config(node1, Config),
+    Node2 = ?config(node2, Config),
+
+    ServiceName = proxy_test_svc,
+    {ok, HolderPid} = rpc:call(Node2, mycelium, start_service_holder,
+                               [ServiceName]),
+    try
+        timer:sleep(500),
+        {ok, ProxyPid} = rpc:call(Node1, mycelium_registry, ensure_proxy,
+                                  [ServiceName, Node2]),
+        ?assert(is_pid(ProxyPid)),
+        ?assertEqual(Node1, node(ProxyPid))
+    after
+        rpc:call(Node2, mycelium, stop_service_holder, [HolderPid])
+    end,
+    ok.
+
+%% trigger_shuffle is the HyParView passive-view exchange. Just make
+%% sure it doesn't crash and that the node still reports a sane view.
+shuffle_test(Config) ->
+    Node1 = ?config(node1, Config),
+    ok = rpc:call(Node1, mycelium_hyparview_shuffle, trigger_shuffle, []),
+    timer:sleep(500),
+    Active = rpc:call(Node1, mycelium, active_view, []),
+    ?assert(is_list(Active)),
     ok.
 
 %%====================================================================
