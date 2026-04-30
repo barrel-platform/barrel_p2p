@@ -208,10 +208,21 @@ listen(Name, ExtraOpts) ->
                         protocol = quic
                     },
 
-                    %% Creation number (1-3, different for each instance)
-                    Creation = get_creation(Name),
-
-                    {ok, {Listener, Address, Creation}};
+                    %% Register with EPMD so other nodes can resolve us.
+                    %% net_kernel does not auto-register for custom
+                    %% proto_dist modules; each module is responsible for
+                    %% calling register_node inside its own listen/2.
+                    NameStr = case Name of
+                        N when is_atom(N) -> atom_to_list(N);
+                        N when is_list(N) -> N
+                    end,
+                    EpmdMod = net_kernel:epmd_module(),
+                    case EpmdMod:register_node(NameStr, ActualPort, inet) of
+                        {ok, Creation} ->
+                            {ok, {Listener, Address, Creation}};
+                        {error, EpmdReason} ->
+                            {error, EpmdReason}
+                    end;
                 {error, Reason} ->
                     {error, Reason}
             end;
@@ -557,12 +568,6 @@ register_early_boot_listener(Name, Pid, Port) ->
 %% @private
 dist_server_name(Name) ->
     list_to_atom("mycelium_dist_" ++ atom_to_list(Name)).
-
-%% @private
-%% Get creation number (1-3) for the node.
-%% Different instances should have different creation numbers.
-get_creation(Name) ->
-    (erlang:phash2(Name) + erlang:system_time(second)) rem 3 + 1.
 
 %% @private
 %% Load TLS credentials from files or config.

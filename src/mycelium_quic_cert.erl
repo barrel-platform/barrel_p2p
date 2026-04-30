@@ -139,7 +139,7 @@ create_certificate(PrivateKey, PublicKey) ->
         SubjectPKInfo = #'SubjectPublicKeyInfo'{
             algorithm = #'AlgorithmIdentifier'{
                 algorithm = ?'rsaEncryption',
-                parameters = 'NULL'
+                parameters = {asn1_OPENTYPE, <<5, 0>>}
             },
             subjectPublicKey = public_key:der_encode('RSAPublicKey', PublicKey)
         },
@@ -150,7 +150,7 @@ create_certificate(PrivateKey, PublicKey) ->
             serialNumber = Serial,
             signature = #'AlgorithmIdentifier'{
                 algorithm = ?'sha256WithRSAEncryption',
-                parameters = 'NULL'
+                parameters = {asn1_OPENTYPE, <<5, 0>>}
             },
             issuer = Subject,
             validity = Validity,
@@ -168,7 +168,7 @@ create_certificate(PrivateKey, PublicKey) ->
             tbsCertificate = TBSCert,
             signatureAlgorithm = #'AlgorithmIdentifier'{
                 algorithm = ?'sha256WithRSAEncryption',
-                parameters = 'NULL'
+                parameters = {asn1_OPENTYPE, <<5, 0>>}
             },
             signature = Signature
         },

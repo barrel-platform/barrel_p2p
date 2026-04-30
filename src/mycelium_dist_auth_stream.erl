@@ -450,12 +450,24 @@ recv_first_chunk(Conn, StreamId, Timeout) ->
 %% Helpers
 %%====================================================================
 
-sign_for_peer(Nonce, Timestamp, PeerPubKey) ->
+sign_for_peer(Nonce, Timestamp, _PeerPubKey) ->
+    %% Sign <Nonce | Timestamp | OwnPubKey>. The peer verifies via
+    %% mycelium_dist_auth:verify_response/3 which rebuilds the message
+    %% as <Nonce | Timestamp | ResponderPubKey> (== our pubkey from the
+    %% peer's perspective). Including the responder's own pubkey gives
+    %% channel binding to the responder's identity; including the peer's
+    %% pubkey instead leaves the verifier unable to reproduce the
+    %% message.
     case mycelium_dist_auth:get_private_key() of
         {ok, PrivKey} ->
-            Message = <<Nonce/binary, Timestamp:64/big, PeerPubKey/binary>>,
-            Sig = crypto:sign(eddsa, none, Message, [PrivKey, ed25519]),
-            {ok, Sig};
+            case mycelium_dist_auth:get_public_key() of
+                {ok, MyPubKey} ->
+                    Message =
+                        <<Nonce/binary, Timestamp:64/big, MyPubKey/binary>>,
+                    Sig = crypto:sign(eddsa, none, Message, [PrivKey, ed25519]),
+                    {ok, Sig};
+                Error -> Error
+            end;
         Error ->
             Error
     end.
@@ -487,7 +499,12 @@ record_peer(PeerNode, PeerPubKey) ->
     end.
 
 auth_enabled() ->
-    application:get_env(mycelium, auth_enabled, true).
+    %% Default false: auth is opt-in. Production sys.config sets true
+    %% explicitly. Defaulting to true would crash any node that uses
+    %% -proto_dist mycelium without first loading the mycelium app, since
+    %% get_public_key/0 reads keys from disk that only get_provisioned
+    %% when the supervision tree starts mycelium_dist_keys.
+    application:get_env(mycelium, auth_enabled, false).
 
 trust_mode() ->
     application:get_env(mycelium, auth_trust_mode, tofu).
