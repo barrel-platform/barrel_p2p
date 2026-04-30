@@ -6,8 +6,8 @@
 %% Given a masque proxy URI and a target `{Host, Port}', this module
 %% opens a CONNECT-UDP tunnel and returns an adapter map that can be
 %% passed to `quic:connect/4' or registered with
-%% `quic_dist:set_connect_options/2' so the next dist `setup/5' to a
-%% peer rides the tunnel.
+%% `mycelium_dist:set_relay/2' so the next dist `setup/5' to a peer
+%% rides the tunnel.
 %%
 %% The QUIC connection pid is unknown at adapter-construction time
 %% (the dist setup path spawns it inside `quic:connect/4'). The bridge
@@ -47,7 +47,7 @@ open(ProxyURI, Target) ->
 %% @doc Open a CONNECT-UDP tunnel to `Target' through `ProxyURI' and
 %% return a handle plus an adapter map ready to feed
 %% `quic:connect/4' (under `socket_adapter') or
-%% `quic_dist:set_connect_options/2'.
+%% `mycelium_dist:set_relay/2'.
 -spec open(proxy_uri(), target(), masque:connect_opts()) ->
     {ok, handle(), Adapter :: map()} | {error, term()}.
 open(ProxyURI, Target, Opts0) ->
@@ -76,9 +76,9 @@ open(ProxyURI, Target, Opts0) ->
 wire_to_node(Node, ProxyURI, Target) ->
     wire_to_node(Node, ProxyURI, Target, #{}).
 
-%% @doc Open a CONNECT-UDP tunnel and pre-register it with `quic_dist'
-%% so the next `setup/5' to `Node' rides the tunnel. The caller still
-%% has to trigger the dist handshake (typically via
+%% @doc Open a CONNECT-UDP tunnel and pre-register it with
+%% `mycelium_dist' so the next `setup/5' to `Node' rides the tunnel.
+%% The caller still has to trigger the dist handshake (typically via
 %% `net_kernel:connect_node/1' or by sending a message that touches
 %% the node).
 -spec wire_to_node(node(), proxy_uri(), target(), masque:connect_opts()) ->
@@ -86,22 +86,19 @@ wire_to_node(Node, ProxyURI, Target) ->
 wire_to_node(Node, ProxyURI, Target, Opts) ->
     case open(ProxyURI, Target, Opts) of
         {ok, Handle, Adapter} ->
-            ok = quic_dist:set_connect_options(Node, #{
-                socket_backend => adapter,
-                socket_adapter => Adapter
-            }),
+            ok = mycelium_dist:set_relay(Node, Adapter),
             {ok, Handle#handle{node = Node}};
         {error, _} = Err ->
             Err
     end.
 
 %% @doc Tear down the tunnel and the bridge process. Also clears any
-%% pending dist connect override registered via `wire_to_node/3,4'.
+%% pending dist relay registered via `wire_to_node/3,4'.
 -spec close(handle()) -> ok.
 close(#handle{bridge = Bridge, node = Node}) ->
     case Node of
         undefined -> ok;
-        _ -> quic_dist:clear_connect_options(Node)
+        _ -> mycelium_dist:clear_relay(Node)
     end,
     Bridge ! stop,
     ok.

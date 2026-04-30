@@ -110,6 +110,13 @@
     clear_connect_options/1
 ]).
 
+%% Per-node masque relay routing
+-export([
+    set_relay/2,
+    get_relay/1,
+    clear_relay/1
+]).
+
 %%====================================================================
 %% Distribution Module Callbacks
 %%====================================================================
@@ -898,6 +905,32 @@ clear_connect_options(Node) when is_atom(Node) ->
             _ = ets:delete(mycelium_dist_connect_opts, Node),
             ok
     end.
+
+%% @doc Register a masque relay adapter for the next `setup/5' attempt
+%% against `Node'. The adapter is wrapped in a connect-options map with
+%% `socket_backend => adapter' and `socket_adapter => Adapter', then
+%% stored as a single-shot override (the first matching `setup/5'
+%% consumes it).
+-spec set_relay(node(), map()) -> ok.
+set_relay(Node, Adapter) when is_atom(Node), is_map(Adapter) ->
+    set_connect_options(Node, #{
+        socket_backend => adapter,
+        socket_adapter => Adapter
+    }).
+
+%% @doc Look up the relay adapter registered for `Node'. Returns
+%% `{ok, Adapter}' if a relay is pending, `error' otherwise.
+-spec get_relay(node()) -> {ok, map()} | error.
+get_relay(Node) when is_atom(Node) ->
+    case get_connect_options(Node) of
+        #{socket_adapter := Adapter} -> {ok, Adapter};
+        _ -> error
+    end.
+
+%% @doc Drop any pending relay for `Node'.
+-spec clear_relay(node()) -> ok.
+clear_relay(Node) when is_atom(Node) ->
+    clear_connect_options(Node).
 
 %% @private
 %% Atomically read and remove the override for `Node'. Used by the
