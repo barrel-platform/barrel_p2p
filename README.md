@@ -127,6 +127,12 @@ Mycelium owns its proto_dist module. Add to your `vm.args`:
 inter-node traffic, including circuit user streams, multiplexes
 over a single QUIC connection per peer.
 
+## Testing
+
+`rebar3 ct` runs the local CT suites; the docker scripts under
+`docker/scripts/` exercise the multi-node clusters. See
+[docs/testing.md](docs/testing.md) for the full command list.
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) - Installation and first steps
@@ -134,6 +140,7 @@ over a single QUIC connection per peer.
 - [Circuit Routing](docs/circuits.md) - Multi-hop encrypted communication
 - [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
 - [Comparison with Partisan](docs/partisan-comparison.md) - When to use which
+- [Testing](docs/testing.md) - Running local and docker test suites
 - [Internals](docs/internals.md) - Architecture and protocol details
 
 ## API Reference

@@ -244,9 +244,17 @@ Common issues:
 
 See [Authentication](authentication.md) for details on key provisioning and strict mode setup.
 
+## Running the test suite
+
+`rebar3 ct` runs the local CT suites (no docker needed). The
+multi-node integration suites are docker-only and live behind
+the wrappers in `docker/scripts/`. See [Testing](testing.md)
+for the full command list.
+
 ## Next Steps
 
 - [Tutorial: Building P2P Applications](tutorial.md) - Build a distributed chat system
 - [Circuit Routing](circuits.md) - Multi-hop encrypted communication
 - [Authentication](authentication.md) - Key management and trust modes
+- [Testing](testing.md) - Local and docker test commands
 - [Internals](internals.md) - Understand the protocols and architecture
