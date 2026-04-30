@@ -381,10 +381,11 @@ wait_for_rpc_loop([Node | Rest], Deadline) ->
         true ->
             {error, {timeout_waiting_for, Node}};
         false ->
-            %% Force the dist connection up; QUIC setup over a custom
-            %% proto_dist needs more headroom than the default rpc
-            %% timeout on the first call.
-            _ = net_kernel:connect_node(Node),
+            %% Force the dist connection up. net_kernel:connect_node/1
+            %% blocks indefinitely on a wedged handshake, so run it in
+            %% a child process and abandon it after 30s; the outer
+            %% loop checks the deadline and retries.
+            _ = bounded_connect(Node, 30000),
             case rpc:call(Node, erlang, node, [], 10000) of
                 Node ->
                     wait_for_rpc_loop(Rest, Deadline);
@@ -392,6 +393,27 @@ wait_for_rpc_loop([Node | Rest], Deadline) ->
                     timer:sleep(500),
                     wait_for_rpc_loop([Node | Rest], Deadline)
             end
+    end.
+
+%% Spawn net_kernel:connect_node/1 in a child and wait up to Timeout.
+%% On timeout the child is left to finish on its own (killing it can
+%% leave net_kernel internal state in a half-open state); the outer
+%% loop just retries.
+bounded_connect(Node, Timeout) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Pid, MRef} = spawn_monitor(fun() ->
+        Parent ! {Tag, net_kernel:connect_node(Node)}
+    end),
+    receive
+        {Tag, Res} ->
+            erlang:demonitor(MRef, [flush]),
+            Res;
+        {'DOWN', MRef, process, Pid, _} ->
+            false
+    after Timeout ->
+        erlang:demonitor(MRef, [flush]),
+        false
     end.
 
 wait_for_mycelium(Nodes, Timeout) ->
