@@ -5,14 +5,14 @@
 %% QUIC Transport for Circuit Traffic
 %%
 %% Multiplexes circuits as user streams on top of the existing
-%% quic_dist Erlang-distribution connection. One stream per circuit
+%% mycelium_dist Erlang-distribution connection. One stream per circuit
 %% direction. No separate listener: streams ride the dist QUIC
 %% connection that net_kernel already established.
 %%
 %% Wire format (per-stream, identical to TCP transport):
 %%   <<CircuitIdLen:8, CircuitId/binary, Payload/binary>>
 %%
-%% Pre-condition: Erlang must be booted with `-proto_dist quic_dist'
+%% Pre-condition: Erlang must be booted with `-proto_dist mycelium'
 %% so dist connections to peers are QUIC. Identification, auth and
 %% keepalive are inherited from the dist layer; nodedown drops every
 %% stream to the disconnected peer.
@@ -50,7 +50,7 @@
 %% when an inbound message lands.
 -record(stream_state, {
     key          :: {binary(), node()},
-    stream_ref   :: term(),       %% {quic_dist_stream, Node, StreamId}
+    stream_ref   :: term(),       %% {mycelium_dist_stream, Node, StreamId}
     node         :: node(),
     circuit_id   :: #circuit_id{},
     circuit_pid  :: pid() | undefined,
@@ -86,7 +86,7 @@ send({quic_conn, Node}, CircuitId, Data) ->
     Frame = encode_frame(CircuitId, Data),
     case ensure_stream(Node, CircuitId) of
         {ok, StreamRef} ->
-            quic_dist:send(StreamRef, Frame);
+            mycelium_dist:send(StreamRef, Frame);
         {error, _} = Err ->
             Err
     end;
@@ -94,13 +94,13 @@ send({quic, StreamRef}, CircuitId, Data) ->
     %% Direct send on a known stream ref (kept for symmetry with the
     %% original skeleton; not used by the behaviour dispatcher).
     Frame = encode_frame(CircuitId, Data),
-    quic_dist:send(StreamRef, Frame).
+    mycelium_dist:send(StreamRef, Frame).
 
 -spec close(mycelium_circuit_transport:conn_ref()) -> ok.
 close({quic_conn, _Node}) ->
     ok;
 close({quic, StreamRef}) ->
-    _ = quic_dist:close_stream(StreamRef),
+    _ = mycelium_dist:close_stream(StreamRef),
     ok.
 
 -spec get_connection(node()) -> {ok, mycelium_circuit_transport:conn_ref()} | {error, term()}.
@@ -164,13 +164,13 @@ handle_cast({unregister_circuit, Node, CircuitId}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({quic_dist_stream, StreamRef, {data, Data, _Fin}}, State) ->
+handle_info({mycelium_dist_stream, StreamRef, {data, Data, _Fin}}, State) ->
     handle_stream_data(StreamRef, Data),
     {noreply, State};
-handle_info({quic_dist_stream, StreamRef, closed}, State) ->
+handle_info({mycelium_dist_stream, StreamRef, closed}, State) ->
     handle_stream_gone(StreamRef, closed),
     {noreply, State};
-handle_info({quic_dist_stream, StreamRef, {reset, _ErrorCode}}, State) ->
+handle_info({mycelium_dist_stream, StreamRef, {reset, _ErrorCode}}, State) ->
     handle_stream_gone(StreamRef, reset),
     {noreply, State};
 handle_info({nodeup, Node}, State) ->
@@ -187,7 +187,7 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, _State) ->
     ets:foldl(fun(#stream_state{stream_ref = Ref}, _) ->
-                  catch quic_dist:close_stream(Ref),
+                  catch mycelium_dist:close_stream(Ref),
                   ok
               end, ok, ?STREAM_TABLE),
     ok.
@@ -214,7 +214,7 @@ ensure_stream(Node, CircuitId) ->
 open_stream(Node) ->
     case is_dist_connected(Node) of
         true ->
-            case quic_dist:open_stream(Node, [{priority, 128}]) of
+            case mycelium_dist:open_stream(Node, [{priority, 128}]) of
                 {ok, Ref}      -> {ok, Ref};
                 {error, R}     -> {error, {open_stream_failed, R}}
             end;
@@ -249,7 +249,7 @@ do_unregister_circuit(_Node, CircuitId) ->
     case ets:take(?STREAM_TABLE, Key) of
         [#stream_state{stream_ref = Ref, monitor_ref = MRef}] ->
             demonitor_pid(MRef),
-            catch quic_dist:close_stream(Ref),
+            catch mycelium_dist:close_stream(Ref),
             ok;
         [] ->
             ok
@@ -340,7 +340,7 @@ drop_streams_for_pid(Pid) ->
     lists:foreach(
       fun(#stream_state{key = Key, stream_ref = Ref}) ->
               ets:delete(?STREAM_TABLE, Key),
-              catch quic_dist:close_stream(Ref)
+              catch mycelium_dist:close_stream(Ref)
       end, Streams).
 
 notify_circuit(undefined, _Node, _Reason) -> ok;
@@ -363,10 +363,10 @@ is_dist_connected(Node) ->
 
 register_acceptor(Node) when Node =:= nonode@nohost -> ok;
 register_acceptor(Node) ->
-    catch quic_dist:accept_streams(Node),
+    catch mycelium_dist:accept_streams(Node),
     ok.
 
-node_of_stream({quic_dist_stream, Node, _StreamId}) -> Node;
+node_of_stream({mycelium_dist_stream, Node, _StreamId}) -> Node;
 node_of_stream(_)                                   -> undefined.
 
 now_ms() ->
