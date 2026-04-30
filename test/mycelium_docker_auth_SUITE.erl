@@ -463,7 +463,7 @@ wait_for_rpc_loop([Node | Rest], Deadline) ->
         true ->
             {error, {timeout_waiting_for, Node}};
         false ->
-            _ = net_kernel:connect_node(Node),
+            _ = bounded_connect(Node, 5000),
             case rpc:call(Node, erlang, node, [], 10000) of
                 Node ->
                     wait_for_rpc_loop(Rest, Deadline);
@@ -471,6 +471,28 @@ wait_for_rpc_loop([Node | Rest], Deadline) ->
                     timer:sleep(500),
                     wait_for_rpc_loop([Node | Rest], Deadline)
             end
+    end.
+
+%% net_kernel:connect_node/1 has no bounded timeout: a stuck dist
+%% handshake will block the caller indefinitely. Run it in a child
+%% process and kill it after Timeout so the outer wait loop can
+%% retry.
+bounded_connect(Node, Timeout) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Pid, MRef} = spawn_monitor(fun() ->
+        Parent ! {Tag, net_kernel:connect_node(Node)}
+    end),
+    receive
+        {Tag, Res} ->
+            erlang:demonitor(MRef, [flush]),
+            Res;
+        {'DOWN', MRef, process, Pid, _} ->
+            false
+    after Timeout ->
+        erlang:demonitor(MRef, [flush]),
+        exit(Pid, kill),
+        false
     end.
 
 wait_for_mycelium_auth(Nodes, Timeout) ->
