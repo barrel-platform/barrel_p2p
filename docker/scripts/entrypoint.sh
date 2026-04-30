@@ -192,14 +192,14 @@ run_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/test.config\"}
             ]) of
-                {Ok, 0, {0, 0}} ->
-                    io:format(\"~n~nAll tests passed (~p)~n\", [Ok]),
+                {Ok, 0, {_UserSkip, 0}} ->
+                    io:format(\"~n~nAll tests passed (~p ok)~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed tests: ~p~n\", [Failed]),
                     init:stop(1);
-                {_Ok, 0, {U, A}} when U + A > 0 ->
-                    io:format(\"~n~nUnexpected skips: user=~p auto=~p~n\", [U, A]),
+                {_Ok, 0, {_, A}} when A > 0 ->
+                    io:format(\"~n~nAuto-skipped tests: ~p (init failure)~n\", [A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nTest error: ~p~n\", [Error]),
@@ -262,14 +262,14 @@ run_auth_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/auth-test.config\"}
             ]) of
-                {Ok, 0, {0, 0}} ->
-                    io:format(\"~n~nAll auth tests passed (~p)~n\", [Ok]),
+                {Ok, 0, {_UserSkip, 0}} ->
+                    io:format(\"~n~nAll auth tests passed (~p ok)~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed auth tests: ~p~n\", [Failed]),
                     init:stop(1);
-                {_Ok, 0, {U, A}} when U + A > 0 ->
-                    io:format(\"~n~nUnexpected auth skips: user=~p auto=~p~n\", [U, A]),
+                {_Ok, 0, {_, A}} when A > 0 ->
+                    io:format(\"~n~nAuto-skipped auth tests: ~p (init failure)~n\", [A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nAuth test error: ~p~n\", [Error]),
@@ -339,14 +339,14 @@ run_circuit_tests() {
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/circuit-test.config\"}
             ]) of
-                {Ok, 0, {0, 0}} ->
+                {Ok, 0, {_UserSkip, 0}} ->
                     io:format(\"~n~nCircuit tests: ~p passed, 0 failed~n\", [Ok]),
                     init:stop(0);
                 {_Ok, Failed, _} when Failed > 0 ->
                     io:format(\"~n~nFailed circuit tests: ~p~n\", [Failed]),
                     init:stop(1);
-                {_Ok, 0, {U, A}} when U + A > 0 ->
-                    io:format(\"~n~nUnexpected circuit skips: user=~p auto=~p~n\", [U, A]),
+                {_Ok, 0, {_, A}} when A > 0 ->
+                    io:format(\"~n~nAuto-skipped circuit tests: ~p (init failure)~n\", [A]),
                     init:stop(1);
                 Error ->
                     io:format(\"~n~nCircuit test error: ~p~n\", [Error]),

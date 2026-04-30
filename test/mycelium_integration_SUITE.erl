@@ -381,7 +381,11 @@ wait_for_rpc_loop([Node | Rest], Deadline) ->
         true ->
             {error, {timeout_waiting_for, Node}};
         false ->
-            case rpc:call(Node, erlang, node, [], 2000) of
+            %% Force the dist connection up first; QUIC setup over a
+            %% custom proto_dist needs more headroom than the default
+            %% 2-second rpc timeout on the first call.
+            _ = net_kernel:connect_node(Node),
+            case rpc:call(Node, erlang, node, [], 10000) of
                 Node ->
                     wait_for_rpc_loop(Rest, Deadline);
                 _ ->
