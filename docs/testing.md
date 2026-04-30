@@ -16,10 +16,17 @@ Mycelium ships two layers of tests:
 | `rebar3 ct` | All non-docker CT suites |
 | `rebar3 eunit` | Pure unit tests |
 | `rebar3 check` | `xref` + `dialyzer` + `eunit` + `ct` |
-| `rebar3 ct --suite=test/mycelium_circuit_SUITE` | One suite |
+| `rebar3 ct --suite=test/mycelium_dist_basic_SUITE` | Two-node cluster mechanics (no docker) |
+| `rebar3 ct --suite=test/mycelium_dist_auth_basic_SUITE` | Three-node Ed25519 key/trust API (no docker) |
 | `./docker/scripts/run_tests.sh` | 3-node cluster e2e |
 | `./docker/scripts/run_auth_tests.sh` | Ed25519 strict + TOFU e2e |
 | `./docker/scripts/run_circuit_tests.sh` | Multi-network circuit relay e2e |
+
+The two `*_basic_SUITE` entries spawn slave nodes via `ct_slave` on
+the local host. They cover the cluster-mechanics and key/trust API
+half of the docker suites in seconds. The docker suites are still
+authoritative for the full `-proto_dist mycelium` carrier (circuit
+QUIC streams, multi-network isolation).
 
 ## Local tests
 
@@ -29,7 +36,7 @@ Prerequisite: Erlang/OTP 28+, rebar3.
 rebar3 ct
 ```
 
-A green run reports `Skipped 57 (57, 0) tests. Passed 247 tests.`
+A green run reports `Skipped 57 (57, 0) tests. Passed 261 tests.`
 The 57 skipped cases come from the three docker-only suites
 (`mycelium_integration_SUITE`, `mycelium_docker_auth_SUITE`,
 `mycelium_docker_circuit_SUITE`); they print `Docker-only suite.
