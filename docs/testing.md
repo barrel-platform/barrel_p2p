@@ -100,16 +100,17 @@ still trust the same peer. The strict-mode profile
 (`docker compose --profile strict`) adds an `untrusted_node`
 that the cluster rejects.
 
-> **Status:** the cluster forms and the cluster nodes
-> authenticate with each other. `init_per_suite` currently
-> fails because the test_runner's connection into the cluster
-> cannot complete the Ed25519 handshake — the
-> `cookie_only_nodes` whitelist that should let the runner
-> bypass auth was wired into the legacy TCP/TLS dist
-> (`mycelium_dist_auth:is_cookie_only_allowed/1` is defined but
-> never called from `mycelium_dist_auth_stream`). Fixing it is
-> a separate piece of work; the suite is left as-is so the gap
-> stays visible.
+> **Status:** the test_runner now provisions its own Ed25519
+> keypair, starts `mycelium_dist_keys` for TOFU storage, and
+> successfully completes the handshake with the first two
+> cluster nodes (their pubkeys land in
+> `/app/data/keys/trusted/`). It then hangs on the third
+> peer's `net_kernel:connect_node/1` — `connect_node` has no
+> bounded timeout, so a wedged auth_stream stalls
+> `init_per_suite` indefinitely. The fix is to make the
+> three-way handshake order deterministic, or to put a
+> watchdog around `connect_node`. Tracked as follow-up
+> work.
 
 **`run_circuit_tests.sh` → `mycelium_docker_circuit_SUITE`** —
 four nodes across three docker networks:
@@ -124,11 +125,10 @@ through the relays, and bidirectional data flow through the
 circuit transport over the per-peer `mycelium_dist` QUIC
 connection.
 
-> **Status:** same gap as the auth suite. The cluster forms
-> across the three networks and authenticates internally, but
-> the test_runner cannot RPC in until the
-> `cookie_only_nodes` bypass is plumbed through to
-> `mycelium_dist_auth_stream`.
+> **Status:** same hang as the auth suite. The cluster forms
+> across the three networks and authenticates internally; the
+> test_runner authenticates against the first two peers, then
+> stalls in `net_kernel:connect_node/1` on the third.
 
 ### Reading the results
 
