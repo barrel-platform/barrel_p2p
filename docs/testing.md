@@ -119,9 +119,14 @@ through the relays, and bidirectional data flow through the
 circuit transport over the per-peer `mycelium_dist` QUIC
 connection.
 
-> **Status:** the suite runs end-to-end. Same
-> `cookie_only_nodes` whitelist mechanism that unblocks the auth
-> suite applies here.
+> **Status:** the suite passes when init_per_suite succeeds
+> (11 ok, 0 failed observed). The four-node multi-network
+> startup is occasionally flaky: `wait_for_rpc` is just
+> `net_kernel:connect_node + rpc:call`, and `connect_node` has
+> no built-in timeout, so a stuck dist handshake against any
+> peer can wedge the whole runner. Re-run if it stalls; a
+> bounded watchdog around `connect_node` is the proper fix
+> (tracked separately).
 
 ### Reading the results
 
