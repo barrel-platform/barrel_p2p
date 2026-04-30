@@ -99,7 +99,8 @@
 %% Internal exports
 -export([
     acceptor_loop/2,
-    do_setup/6
+    do_setup/6,
+    gatekeeper_loop/1
 ]).
 
 %% Per-node connect-time option overrides
@@ -616,45 +617,108 @@ load_credentials(_) ->
     end.
 
 %% @private
-%% Handle a new incoming QUIC connection.
+%% Handle a new incoming QUIC connection. The listener calls this
+%% during its handshake; we return a "gatekeeper" pid that takes
+%% temporary ownership of the connection, runs the Ed25519 identity
+%% exchange, and only then starts the dist controller. This keeps any
+%% auth-stream bytes off the dist control stream.
 handle_new_connection(Conn) ->
     logger:info(
         "mycelium_dist: handle_new_connection called, Conn=~p~n",
         [Conn]
     ),
-    %% Start distribution controller for this connection
+    Gatekeeper = proc_lib:spawn(?MODULE, gatekeeper_loop, [Conn]),
+    {ok, Gatekeeper}.
+
+%% @private
+-spec gatekeeper_loop(pid()) -> no_return().
+gatekeeper_loop(Conn) ->
+    Timeout = auth_handshake_timeout(),
+    receive
+        {quic, Conn, {connected, _Info}} ->
+            gatekeeper_authenticate(Conn, Timeout);
+        {quic, Conn, {closed, Reason}} ->
+            exit({connection_closed, Reason});
+        {quic, Conn, {transport_error, Code, Reason}} ->
+            exit({transport_error, Code, Reason})
+    after Timeout ->
+        catch quic:close(Conn, timeout),
+        exit(connect_timeout)
+    end.
+
+%% @private
+-spec gatekeeper_authenticate(pid(), timeout()) -> no_return().
+gatekeeper_authenticate(Conn, Timeout) ->
+    case mycelium_dist_auth_stream:authenticate_incoming(Conn, Timeout) of
+        {ok, _PeerNode} ->
+            gatekeeper_handoff(Conn);
+        {error, Reason} ->
+            logger:warning(
+                "mycelium_dist: incoming auth failed: ~p~n", [Reason]
+            ),
+            catch quic:close(Conn, normal),
+            exit({auth_failed, Reason})
+    end.
+
+%% @private
+%% Auth succeeded: start the dist controller (which takes ownership of
+%% Conn synchronously in its init/enter), forward any in-flight events
+%% that may have landed in our mailbox during the handover, notify the
+%% acceptor, and exit.
+-spec gatekeeper_handoff(pid()) -> no_return().
+gatekeeper_handoff(Conn) ->
     case mycelium_dist_controller:start_link(Conn, server) of
         {ok, ControllerPid} ->
-            logger:info("mycelium_dist: server controller started: ~p~n", [ControllerPid]),
-            %% Notify the acceptor about the new connection
-            %% The server name is based on the short node name (before @)
-            NodeName = node(),
-            ShortName =
-                case NodeName of
-                    nonode@nohost ->
-                        nonode;
-                    _ ->
-                        NodeStr = atom_to_list(NodeName),
-                        case string:split(NodeStr, "@") of
-                            [Name, _Host] -> list_to_atom(Name);
-                            [Name] -> list_to_atom(Name)
-                        end
-                end,
-            ServerName = dist_server_name(ShortName),
-            case persistent_term:get({mycelium_dist_acceptor, ServerName}, undefined) of
-                undefined ->
-                    %% No acceptor registered yet, this is normal during early boot
-                    %% The kernel will eventually call accept/1
-                    ok;
-                AcceptorPid when is_pid(AcceptorPid) ->
-                    %% Notify acceptor - NodeName will be extracted during handshake
-                    AcceptorPid ! {accept, ControllerPid, undefined}
-            end,
-            {ok, ControllerPid};
+            logger:info(
+                "mycelium_dist: server controller started: ~p~n", [ControllerPid]
+            ),
+            drain_and_forward(Conn, ControllerPid),
+            _ = notify_acceptor(ControllerPid),
+            unlink(ControllerPid),
+            exit(normal);
         Error ->
-            logger:error("mycelium_dist: Failed to start controller: ~p~n", [Error]),
-            Error
+            logger:error(
+                "mycelium_dist: Failed to start controller: ~p~n", [Error]
+            ),
+            catch quic:close(Conn, normal),
+            exit({controller_failed, Error})
     end.
+
+%% @private
+drain_and_forward(Conn, Pid) ->
+    receive
+        {quic, Conn, _} = Msg ->
+            _ = Pid ! Msg,
+            drain_and_forward(Conn, Pid)
+    after 0 ->
+        ok
+    end.
+
+%% @private
+notify_acceptor(ControllerPid) ->
+    NodeName = node(),
+    ShortName =
+        case NodeName of
+            nonode@nohost ->
+                nonode;
+            _ ->
+                NodeStr = atom_to_list(NodeName),
+                case string:split(NodeStr, "@") of
+                    [Name, _Host] -> list_to_atom(Name);
+                    [Name] -> list_to_atom(Name)
+                end
+        end,
+    ServerName = dist_server_name(ShortName),
+    case persistent_term:get({mycelium_dist_acceptor, ServerName}, undefined) of
+        undefined ->
+            ok;
+        AcceptorPid when is_pid(AcceptorPid) ->
+            AcceptorPid ! {accept, ControllerPid, undefined}
+    end.
+
+%% @private
+auth_handshake_timeout() ->
+    application:get_env(mycelium, auth_handshake_timeout, 10000).
 
 %%====================================================================
 %% Internal Functions - Acceptor
@@ -920,18 +984,15 @@ connect_to_node(Kernel, Node, IP, Port, MyNode, Type, Timer) ->
 wait_for_connection(Kernel, Node, Conn, MyNode, Type, Timer) ->
     receive
         {quic, Conn, {connected, _Info}} ->
-            %% Start distribution controller
-            case mycelium_dist_controller:start_link(Conn, client) of
-                {ok, DistCtrl} ->
-                    %% Set kernel on controller and store node
-                    mycelium_dist_controller:set_supervisor(DistCtrl, Kernel),
-                    mycelium_dist_controller:set_node(DistCtrl, Node),
-                    %% Perform distribution handshake
-                    HSData = create_hs_data_setup(Kernel, DistCtrl, Node, MyNode, Type, Timer),
-                    dist_util:handshake_we_started(HSData);
-                {error, Reason} ->
+            %% Run Ed25519 identity exchange on a dedicated uni-stream
+            %% pair before any dist_util traffic. On failure the QUIC
+            %% connection is dropped before the controller starts.
+            case mycelium_dist_auth_stream:authenticate_outgoing(Conn, Node) of
+                ok ->
+                    start_client_controller(Kernel, Node, Conn, MyNode, Type, Timer);
+                {error, AuthReason} ->
                     quic:close(Conn, normal),
-                    ?shutdown2(Node, {controller_failed, Reason})
+                    ?shutdown2(Node, {auth_failed, AuthReason})
             end;
         {quic, Conn, {closed, Reason}} ->
             ?shutdown2(Node, {closed, Reason});
@@ -940,6 +1001,19 @@ wait_for_connection(Kernel, Node, Conn, MyNode, Type, Timer) ->
         {'EXIT', Timer, setup_timer_timeout} ->
             quic:close(Conn, timeout),
             ?shutdown2(Node, connect_timeout)
+    end.
+
+%% @private
+start_client_controller(Kernel, Node, Conn, MyNode, Type, Timer) ->
+    case mycelium_dist_controller:start_link(Conn, client) of
+        {ok, DistCtrl} ->
+            mycelium_dist_controller:set_supervisor(DistCtrl, Kernel),
+            mycelium_dist_controller:set_node(DistCtrl, Node),
+            HSData = create_hs_data_setup(Kernel, DistCtrl, Node, MyNode, Type, Timer),
+            dist_util:handshake_we_started(HSData);
+        {error, Reason} ->
+            quic:close(Conn, normal),
+            ?shutdown2(Node, {controller_failed, Reason})
     end.
 
 %%====================================================================
