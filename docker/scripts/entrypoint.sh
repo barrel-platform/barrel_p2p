@@ -276,6 +276,10 @@ run_auth_tests() {
             application:set_env(mycelium, auth_enabled, true),
             application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
             application:set_env(mycelium, auth_trust_mode, tofu),
+            %% mycelium_dist_keys is the gen_server that records TOFU
+            %% pubkeys from each peer. Without it, the auth handshake
+            %% reaches store_key_if_new and crashes with noproc.
+            {ok, _} = mycelium_dist_keys:start_link(),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
                 {suite, mycelium_docker_auth_SUITE},
@@ -370,6 +374,10 @@ run_circuit_tests() {
             application:set_env(mycelium, auth_enabled, true),
             application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
             application:set_env(mycelium, auth_trust_mode, tofu),
+            %% mycelium_dist_keys is the gen_server that records TOFU
+            %% pubkeys from each peer. Without it, the auth handshake
+            %% reaches store_key_if_new and crashes with noproc.
+            {ok, _} = mycelium_dist_keys:start_link(),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
                 {suite, mycelium_docker_circuit_SUITE},
