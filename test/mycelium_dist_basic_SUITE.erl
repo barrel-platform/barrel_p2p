@@ -80,6 +80,10 @@ init_per_suite(Config) ->
         {error, {already_started, _}} -> ok
     end,
     erlang:set_cookie(node(), mycelium_ct_cookie),
+    %% Earlier suites may have started the mycelium application on the
+    %% CT BEAM, which sets dist_auto_connect=never. ct_slave relies on
+    %% auto-connect to confirm slave boot, so reset it here.
+    ok = application:set_env(kernel, dist_auto_connect, true),
     Config.
 
 end_per_suite(_Config) ->
