@@ -28,11 +28,12 @@
     test_invalid_message_rejected/1
 ]).
 
-%% Test cases - Trust mode
+%% Test cases - Trust mode (the four handshake decisions)
 -export([
     test_strict_rejects_unknown/1,
-    test_tofu_accepts_first/1,
-    test_tofu_rejects_key_change/1,
+    test_tofu_accepts_and_stores/1,
+    test_conflicting_key_rejected/1,
+    test_wrong_signature_rejected/1,
     test_key_persistence_to_disk/1
 ]).
 
@@ -81,8 +82,9 @@ groups() ->
         ]},
         {trust_tests, [sequence], [
             test_strict_rejects_unknown,
-            test_tofu_accepts_first,
-            test_tofu_rejects_key_change,
+            test_tofu_accepts_and_stores,
+            test_conflicting_key_rejected,
+            test_wrong_signature_rejected,
             test_key_persistence_to_disk
         ]},
         {whitelist_tests, [parallel], [
@@ -289,75 +291,80 @@ test_invalid_message_rejected(_Config) ->
 %% Trust Mode Tests
 %%====================================================================
 
+%% Peer presents a fingerprint we have never seen, strict mode -> reject.
 test_strict_rejects_unknown(_Config) ->
-    %% Set strict mode
     mycelium_dist_keys:set_trust_mode(strict),
     ?assertEqual(strict, mycelium_dist_keys:get_trust_mode()),
 
-    %% Unknown key should not be trusted
+    Peer = 'unknown@host',
     UnknownKey = crypto:strong_rand_bytes(32),
-    ?assertNot(mycelium_dist_keys:is_key_trusted(UnknownKey)),
+    ?assertNot(mycelium_dist_keys:is_trusted(Peer, UnknownKey)),
+    ?assertEqual({error, not_found}, mycelium_dist_keys:lookup_key(Peer)),
     ok.
 
-test_tofu_accepts_first(_Config) ->
-    %% Set TOFU mode
+%% Peer presents a fingerprint we have never seen, TOFU mode -> accept and store.
+test_tofu_accepts_and_stores(_Config) ->
     mycelium_dist_keys:set_trust_mode(tofu),
     ?assertEqual(tofu, mycelium_dist_keys:get_trust_mode()),
 
-    %% Store a new key (TOFU)
+    Peer = 'fresh@host',
     NewKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(NewKey),
 
-    %% Should now be trusted
-    ?assert(mycelium_dist_keys:is_key_trusted(NewKey)),
+    ok = mycelium_dist_keys:store_key_if_new(Peer, NewKey),
+    ?assert(mycelium_dist_keys:is_trusted(Peer, NewKey)),
 
-    %% Can look it up by fingerprint
-    Fp = mycelium_dist_keys:fingerprint(NewKey),
-    {ok, LookedUpKey} = mycelium_dist_keys:lookup_key(Fp),
-    ?assertEqual(NewKey, LookedUpKey),
+    {ok, StoredKey} = mycelium_dist_keys:lookup_key(Peer),
+    ?assertEqual(NewKey, StoredKey),
     ok.
 
-test_tofu_rejects_key_change(_Config) ->
+%% Peer presents a fingerprint that conflicts with the one stored for that
+%% node -> reject (key change / possible attack).
+test_conflicting_key_rejected(_Config) ->
     mycelium_dist_keys:set_trust_mode(tofu),
 
-    %% Store a key
+    Peer = 'rotated@host',
     OriginalKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(OriginalKey),
+    ok = mycelium_dist_keys:store_key_if_new(Peer, OriginalKey),
+    ?assert(mycelium_dist_keys:is_trusted(Peer, OriginalKey)),
 
-    %% Storing same key again should succeed (updates last_seen)
-    ok = mycelium_dist_keys:store_key_if_new(OriginalKey),
+    %% A different key for the same node is a conflict.
+    ConflictingKey = crypto:strong_rand_bytes(32),
+    ?assertNotEqual(OriginalKey, ConflictingKey),
+    ?assertNot(mycelium_dist_keys:is_trusted(Peer, ConflictingKey)),
+    ?assertEqual({error, key_mismatch},
+                 mycelium_dist_keys:store_key_if_new(Peer, ConflictingKey)),
+    ok.
 
-    %% Original key should be trusted
-    ?assert(mycelium_dist_keys:is_key_trusted(OriginalKey)),
+%% Peer signs the challenge with the wrong key -> verify_response rejects.
+test_wrong_signature_rejected(_Config) ->
+    ok = mycelium_dist_auth:ensure_keypair(),
+    {Nonce, Timestamp} = mycelium_dist_auth:create_challenge(),
 
-    %% Different key is simply a different identity (not a conflict)
-    DifferentKey = crypto:strong_rand_bytes(32),
-    ?assertNot(mycelium_dist_keys:is_key_trusted(DifferentKey)),
+    %% Sign with our own key, then claim a different public key as origin.
+    {ok, Signature} = mycelium_dist_auth:sign_challenge(Nonce, Timestamp),
+    {WrongPubKey, _WrongPriv} = mycelium_dist_auth:generate_keypair(),
+
+    ?assertNot(mycelium_dist_auth:verify_response(Signature, WrongPubKey, {Nonce, Timestamp})),
     ok.
 
 test_key_persistence_to_disk(Config) ->
     KeyDir = proplists:get_value(key_dir, Config),
     mycelium_dist_keys:set_trust_mode(tofu),
 
-    %% Store a key
+    Peer = 'persist@host',
     PubKey = crypto:strong_rand_bytes(32),
-    ok = mycelium_dist_keys:store_key_if_new(PubKey),
+    ok = mycelium_dist_keys:store_key_if_new(Peer, PubKey),
 
-    %% Check file was created (filename is first 16 chars of hex fingerprint)
+    %% File is named <Node>.pub under <KeyDir>/trusted/.
     TrustedDir = filename:join(KeyDir, "trusted"),
-    FpHex = mycelium_dist_keys:fingerprint_hex(PubKey),
-    ShortFp = binary:part(FpHex, 0, 16),
-    KeyFile = filename:join(TrustedDir, binary_to_list(ShortFp) ++ ".pub"),
+    KeyFile = filename:join(TrustedDir, atom_to_list(Peer) ++ ".pub"),
     ?assert(filelib:is_file(KeyFile)),
 
-    %% Read the file and verify format: algorithm base64-key
+    %% File contents are the raw 32-byte public key.
     {ok, FileContents} = file:read_file(KeyFile),
-    ExpectedLine = <<"mycelium-ed25519 ", (base64:encode(PubKey))/binary, "\n">>,
-    ?assertEqual(ExpectedLine, FileContents),
+    ?assertEqual(PubKey, FileContents),
 
-    %% Delete the key by fingerprint
-    Fp = mycelium_dist_keys:fingerprint(PubKey),
-    ok = mycelium_dist_keys:delete_key(Fp),
+    ok = mycelium_dist_keys:delete_key(Peer),
     ?assertNot(filelib:is_file(KeyFile)),
     ok.
 

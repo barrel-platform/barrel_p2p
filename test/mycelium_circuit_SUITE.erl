@@ -500,7 +500,7 @@ test_fallback_to_relay_when_unreachable(_Config) ->
 test_establish_timeout(_Config) ->
     %% Mock transport to not respond (simulating unresponsive peer)
     meck:expect(mycelium_circuit_transport, send, fun(_, _, _) -> ok end),
-    meck:expect(mycelium_hyparview, random_active_peers, fun(_) -> ['peer@host'] end),
+    meck:expect(mycelium_hyparview, active_view, fun() -> ['peer@host'] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['peer@host'] end),
 
     %% Override establish timeout to 100ms for testing
@@ -528,7 +528,7 @@ test_establish_timeout(_Config) ->
 test_transport_down_building(_Config) ->
     %% Mock transport to succeed initially
     meck:expect(mycelium_circuit_transport, send, fun(_, _, _) -> ok end),
-    meck:expect(mycelium_hyparview, random_active_peers, fun(_) -> ['peer@host'] end),
+    meck:expect(mycelium_hyparview, active_view, fun() -> ['peer@host'] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['peer@host'] end),
 
     CircuitId = make_circuit_id(),
@@ -656,7 +656,7 @@ test_circuit_expiry_ttl(_Config) ->
 
 test_close_during_building(_Config) ->
     meck:expect(mycelium_circuit_transport, send, fun(_, _, _) -> ok end),
-    meck:expect(mycelium_hyparview, random_active_peers, fun(_) -> ['peer@host'] end),
+    meck:expect(mycelium_hyparview, active_view, fun() -> ['peer@host'] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['peer@host'] end),
 
     CircuitId = make_circuit_id(),
@@ -714,7 +714,7 @@ test_listener_death(_Config) ->
 test_circuit_info_states(_Config) ->
     %% Test get_info in building state
     meck:expect(mycelium_circuit_transport, send, fun(_, _, _) -> ok end),
-    meck:expect(mycelium_hyparview, random_active_peers, fun(_) -> [] end),
+    meck:expect(mycelium_hyparview, active_view, fun() -> [] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> [] end),
 
     CircuitId1 = make_circuit_id(),
@@ -909,7 +909,7 @@ setup_transport_mocks() ->
     meck:expect(mycelium_circuit_transport, unregister_circuit, fun(_, _) -> ok end),
 
     meck:new(mycelium_hyparview, [passthrough]),
-    meck:expect(mycelium_hyparview, random_active_peers, fun(_) -> ['peer@host'] end),
+    meck:expect(mycelium_hyparview, active_view, fun() -> ['peer@host'] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['peer@host'] end),
     ok.
 

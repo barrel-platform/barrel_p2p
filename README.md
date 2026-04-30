@@ -12,7 +12,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **Circuit Routing** - Multi-hop encrypted channels with end-to-end privacy
 - **Hybrid Logical Clocks** - Causally consistent timestamps for conflict resolution
 - **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
-- **Pluggable Transport** - TCP and TLS distribution carriers
+- **QUIC Distribution** - Owns its `proto_dist` module (`mycelium_dist`); one QUIC connection per peer multiplexes the dist channel and circuit user streams
 
 ## Quick Start
 
@@ -105,7 +105,7 @@ Configure in your `sys.config`:
     {passive_size, 30},      %% Max passive view size (c * log n)
     {shuffle_period, 10000}, %% Topology refresh interval (ms)
 
-    %% Distribution
+    %% Distribution (mycelium_dist QUIC carrier)
     {listen_port, 9100},     %% 0 for auto-assign
     {contact_nodes, ['seed@192.168.1.10']},
 
@@ -114,6 +114,18 @@ Configure in your `sys.config`:
     {auth_trust_mode, tofu}  %% tofu | strict
 ]}
 ```
+
+### Distribution carrier
+
+Mycelium owns its proto_dist module. Add to your `vm.args`:
+
+```
+-proto_dist mycelium
+```
+
+(OTP appends `_dist` and resolves to `mycelium_dist`.) All
+inter-node traffic, including circuit user streams, multiplexes
+over a single QUIC connection per peer.
 
 ## Documentation
 

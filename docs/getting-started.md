@@ -6,6 +6,9 @@ This guide walks you through setting up Mycelium in your Erlang project and runn
 
 - Erlang/OTP 26 or later
 - rebar3 build tool
+- `-proto_dist mycelium` in your `vm.args` (OTP appends `_dist` and
+  resolves to `mycelium_dist`). Mycelium owns its distribution
+  carrier and uses QUIC under the hood.
 
 ## Adding Mycelium to Your Project
 
@@ -70,15 +73,16 @@ Create or update your `config/sys.config`:
 | `circuit_default_ttl` | 3600000 | Default circuit lifetime in ms (1 hour) |
 | `circuit_relay_max` | 500 | Maximum circuits this node will relay |
 | `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
-| `circuit_listen_port` | 0 | Port for circuit transport (0 = OS assigned) |
-| `circuit_pool_size` | 3 | Connection pool size per destination |
+| `circuit_establish_timeout` | 30000 | Timeout for circuit setup in ms |
+| `circuit_max_active` | 100 | Maximum concurrent active circuits per node |
 
 ## Starting Your First Node
 
 ### Option 1: Interactive Shell
 
 ```bash
-rebar3 shell --config config/sys.config --sname node1
+rebar3 shell --config config/sys.config --sname node1 \
+    --erl_args "-proto_dist mycelium"
 ```
 
 ```erlang
@@ -108,12 +112,14 @@ Start two nodes and have them find each other:
 
 **Terminal 1 - First Node (Seed)**
 ```bash
-rebar3 shell --sname seed --config config/sys.config
+rebar3 shell --sname seed --config config/sys.config \
+    --erl_args "-proto_dist mycelium"
 ```
 
 **Terminal 2 - Second Node**
 ```bash
-rebar3 shell --sname node1 --config config/sys.config
+rebar3 shell --sname node1 --config config/sys.config \
+    --erl_args "-proto_dist mycelium"
 ```
 
 ```erlang

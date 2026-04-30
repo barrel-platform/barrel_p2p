@@ -34,7 +34,10 @@ Mycelium classifies NAT behavior according to RFC 5780:
 | port_restricted | Yes | Yes | Yes | Yes | No |
 | symmetric | Yes | No | No | No | No |
 
-When hole punching isn't viable, Mycelium automatically falls back to relay routing through the HyParView overlay network.
+When hole punching isn't viable, Mycelium falls back through the
+HyParView overlay relay rung; if `circuit_relay_uri` is configured,
+it can also tunnel via a HTTP/3 CONNECT-UDP MASQUE relay
+(`mycelium_circuit_relay_masque`) before giving up.
 
 ## Architecture
 
@@ -315,7 +318,8 @@ When establishing a connection to a peer:
 1. **Check viability**: Query `is_viable/2` with local and peer NAT types
 2. **If viable**: Attempt hole punch using peer's candidates
 3. **If not viable or punch fails**: Use relay routing through overlay
-4. **Same-NAT optimization**: If external IPs match, prefer host candidates (local network)
+4. **MASQUE rung**: If overlay relay is unavailable and `circuit_relay_uri` is configured, tunnel the dist QUIC connection through an HTTP/3 CONNECT-UDP relay (`mycelium_circuit_relay_masque`)
+5. **Same-NAT optimization**: If external IPs match, prefer host candidates (local network)
 
 ### Same-NAT Optimization
 

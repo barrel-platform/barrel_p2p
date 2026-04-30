@@ -201,96 +201,56 @@ test_invalidate_all(_Config) ->
 %%====================================================================
 
 test_probe_sync_reachable(_Config) ->
-    %% Start a TCP listener and probe it
-    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
-    {ok, Port} = inet:port(ListenSock),
+    Node = 'reachable_probe@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> true end),
 
-    %% Create a fake node name with localhost
-    Node = list_to_atom("testnode@127.0.0.1"),
-
-    %% Store the port so the probe can find it
-    ets:insert(mycelium_circuit_ports, {Node, Port}),
-
-    %% Probe should succeed
     Result = mycelium_circuit_reachability:probe_sync(Node),
     ?assertEqual(true, Result),
-
-    %% Should be cached now
     ?assertEqual(true, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    gen_tcp:close(ListenSock),
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 test_probe_sync_unreachable(_Config) ->
-    %% Probe a port that's not listening
-    Node = list_to_atom("unreachable@127.0.0.1"),
+    Node = 'unreachable_probe@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> false end),
 
-    %% Use a port that's unlikely to be in use
-    ets:insert(mycelium_circuit_ports, {Node, 59999}),
-
-    %% Set short timeout for faster test
     application:set_env(mycelium, circuit_probe_timeout, 100),
 
-    %% Probe should fail
     Result = mycelium_circuit_reachability:probe_sync(Node),
     ?assertEqual(false, Result),
-
-    %% Should be cached as false
     ?assertEqual(false, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 test_probe_async_caches_result(_Config) ->
-    %% Start a TCP listener
-    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
-    {ok, Port} = inet:port(ListenSock),
+    Node = 'async_probe@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> true end),
 
-    Node = list_to_atom("asyncnode@127.0.0.1"),
-    ets:insert(mycelium_circuit_ports, {Node, Port}),
-
-    %% Should be unknown before probe
     ?assertEqual(unknown, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Start async probe
     ok = mycelium_circuit_reachability:probe_async(Node),
-
-    %% Wait for probe to complete
     timer:sleep(200),
 
-    %% Should be cached now
     ?assertEqual(true, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    gen_tcp:close(ListenSock),
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 test_probe_async_deduplication(_Config) ->
-    %% Start a TCP listener
-    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
-    {ok, Port} = inet:port(ListenSock),
+    Node = 'dedup_probe@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> true end),
 
-    Node = list_to_atom("dedupnode@127.0.0.1"),
-    ets:insert(mycelium_circuit_ports, {Node, Port}),
-
-    %% Fire multiple async probes - should be deduplicated
     ok = mycelium_circuit_reachability:probe_async(Node),
     ok = mycelium_circuit_reachability:probe_async(Node),
     ok = mycelium_circuit_reachability:probe_async(Node),
 
-    %% Wait for probe to complete
     timer:sleep(200),
 
-    %% Should be cached
     ?assertEqual(true, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    gen_tcp:close(ListenSock),
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 %%====================================================================
@@ -321,52 +281,34 @@ test_probe_disabled(_Config) ->
     ok.
 
 test_custom_cache_ttl(_Config) ->
-    %% Set very short TTL
-    application:set_env(mycelium, circuit_reachability_cache_ttl, 100), %% 100ms
+    application:set_env(mycelium, circuit_reachability_cache_ttl, 100),
 
-    %% Start a TCP listener
-    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
-    {ok, Port} = inet:port(ListenSock),
+    Node = 'shortttl@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> true end),
 
-    Node = list_to_atom("shortttl@127.0.0.1"),
-    ets:insert(mycelium_circuit_ports, {Node, Port}),
-
-    %% Probe it
     ?assertEqual(true, mycelium_circuit_reachability:probe_sync(Node)),
     ?assertEqual(true, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Wait for TTL to expire
     timer:sleep(150),
-
-    %% Should be unknown now
     ?assertEqual(unknown, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    gen_tcp:close(ListenSock),
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 test_custom_negative_ttl(_Config) ->
-    %% Set very short negative TTL
-    application:set_env(mycelium, circuit_reachability_negative_ttl, 100), %% 100ms
+    application:set_env(mycelium, circuit_reachability_negative_ttl, 100),
     application:set_env(mycelium, circuit_probe_timeout, 50),
 
-    Node = list_to_atom("shortnegttl@127.0.0.1"),
-    %% Use unreachable port
-    ets:insert(mycelium_circuit_ports, {Node, 59998}),
+    Node = 'shortnegttl@somehost',
+    mock_connect_node(fun(N) when N =:= Node -> false end),
 
-    %% Probe it - should fail
     ?assertEqual(false, mycelium_circuit_reachability:probe_sync(Node)),
     ?assertEqual(false, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Wait for negative TTL to expire
     timer:sleep(150),
-
-    %% Should be unknown now
     ?assertEqual(unknown, mycelium_circuit_reachability:is_reachable(Node)),
 
-    %% Cleanup
-    ets:delete(mycelium_circuit_ports, Node),
+    unmock_connect_node(),
     ok.
 
 %%====================================================================
@@ -374,52 +316,43 @@ test_custom_negative_ttl(_Config) ->
 %%====================================================================
 
 test_direct_connection_detection(_Config) ->
-    %% Test that circuit creation uses direct connection when target is reachable
-
-    %% Mock hyparview to return empty active view
     meck:new(mycelium_hyparview, [passthrough]),
     meck:expect(mycelium_hyparview, active_view, fun() -> [] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['relay@host'] end),
 
-    %% Start a TCP listener to simulate reachable target
-    {ok, ListenSock} = gen_tcp:listen(0, [binary, {active, false}]),
-    {ok, Port} = inet:port(ListenSock),
+    Target = 'direct_target@somehost',
 
-    Target = list_to_atom("direct_target@127.0.0.1"),
-    ets:insert(mycelium_circuit_ports, {Target, Port}),
-
-    %% Pre-populate cache to indicate direct reachability
     Now = erlang:monotonic_time(millisecond),
     ets:insert(mycelium_reachability_cache, {cache_entry, Target, true, Now + 300000}),
 
-    %% Test the can_connect_direct function indirectly through select_hops behavior
-    %% When target is in cache as reachable, select_hops should return empty hops
-    %% We can't call mycelium_circuit:select_hops directly, but we test is_reachable
     ?assertEqual(true, mycelium_circuit_reachability:is_reachable(Target)),
 
-    %% Cleanup
     meck:unload(mycelium_hyparview),
-    gen_tcp:close(ListenSock),
-    ets:delete(mycelium_circuit_ports, Target),
     ok.
 
 test_fallback_to_relay(_Config) ->
-    %% Test that circuit falls back to relay when target is not directly reachable
-
-    %% Mock hyparview
     meck:new(mycelium_hyparview, [passthrough]),
     meck:expect(mycelium_hyparview, active_view, fun() -> [] end),
     meck:expect(mycelium_hyparview, passive_view, fun() -> ['relay@host'] end),
 
-    Target = list_to_atom("unreachable_target@127.0.0.1"),
+    Target = 'unreachable_target@somehost',
 
-    %% Pre-populate cache to indicate unreachable
     Now = erlang:monotonic_time(millisecond),
     ets:insert(mycelium_reachability_cache, {cache_entry, Target, false, Now + 60000}),
 
-    %% Verify cache returns false
     ?assertEqual(false, mycelium_circuit_reachability:is_reachable(Target)),
 
-    %% Cleanup
     meck:unload(mycelium_hyparview),
+    ok.
+
+%%====================================================================
+%% Helpers
+%%====================================================================
+
+mock_connect_node(Fun) ->
+    meck:new(net_kernel, [unstick, passthrough]),
+    meck:expect(net_kernel, connect_node, Fun).
+
+unmock_connect_node() ->
+    catch meck:unload(net_kernel),
     ok.

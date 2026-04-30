@@ -30,7 +30,14 @@ This document covers the internal architecture, protocols, and implementation de
                     └──────────┬──────────┘
                                │
                     ┌──────────┴──────────┐
-                    │    TCP/TLS Carrier  │
+                    │    mycelium_dist    │
+                    │ (proto_dist module) │
+                    │  Ed25519 + QUIC     │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │   erlang_quic       │
+                    │ (transport library) │
                     └─────────────────────┘
 ```
 
@@ -387,49 +394,33 @@ Node A (initiator)                    Node B (acceptor)
 
 ```erlang
 %% Store a peer's key (for strict mode)
-mycelium_dist_keys:store_key(PubKey).
-
-%% Compute fingerprint for identification
-Fp = mycelium_dist_keys:fingerprint(PubKey).
-FpHex = mycelium_dist_keys:fingerprint_hex(PubKey).
+mycelium_dist_keys:store_key(Node, PubKey).
 
 %% List trusted peers
 mycelium_dist_keys:list_trusted().
 
-%% Check if key is trusted
-mycelium_dist_keys:is_key_trusted(PubKey).
+%% Check if a peer's presented key is trusted
+mycelium_dist_keys:is_trusted(Node, PubKey).
 
 %% Get this node's public key
 {ok, MyPubKey} = mycelium_dist_auth:get_public_key().
 ```
 
-## Distribution Carriers
+## Distribution Carrier
 
-Mycelium uses Erlang's distribution carrier interface for transport.
-
-### TCP Carrier (Default)
-
-Direct TCP connections between nodes.
+Mycelium owns its `proto_dist` module: `mycelium_dist`. Selected
+with `-proto_dist mycelium` (OTP appends the `_dist` suffix). The
+carrier wraps `erlang_quic` and runs an Ed25519 challenge-response
+on a dedicated unidirectional auth stream pair before
+`dist_util:handshake_*` runs. The same QUIC connection multiplexes
+the dist control stream and any circuit user streams.
 
 ```erlang
 %% Configuration
 {mycelium, [
-    {listen_port, 9100}
-]}
-```
-
-### TLS Carrier
-
-Encrypted connections with certificate validation.
-
-```erlang
-{mycelium, [
-    {carrier, tls},
-    {tls_opts, [
-        {certfile, "cert.pem"},
-        {keyfile, "key.pem"},
-        {cacertfile, "ca.pem"}
-    ]}
+    {listen_port, 9100},
+    {auth_enabled, true},
+    {auth_trust_mode, tofu}
 ]}
 ```
 
@@ -536,8 +527,14 @@ mycelium_circuit_sup (one_for_one)
 ├── mycelium_circuit_relay (gen_server)
 │   └── Manages relay hop state
 │
-├── mycelium_circuit_transport (supervisor)
-│   └── Connection pool to peers
+├── mycelium_circuit_transport_quic (worker)
+│   └── User-stream multiplexer over the per-peer mycelium_dist
+│       QUIC connection. Circuits ride the same connection that
+│       carries the Erlang distribution channel.
+│
+├── mycelium_circuit_relay_masque (worker)
+│   └── HTTP/3 CONNECT-UDP relay fallback when direct UDP and
+│       hole-punching both fail.
 │
 └── circuit processes (dynamic)
     └── mycelium_circuit (gen_statem)

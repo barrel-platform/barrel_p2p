@@ -55,7 +55,7 @@ First, Mycelium checks if the target is directly reachable without NAT traversal
 |-------|--------|----------------|
 | Active view | Target in HyParView active view | Direct path |
 | Erlang nodes | Target in `nodes()` | Direct path |
-| TCP probe | Quick connect to circuit port | Direct path |
+| Dist probe | `net_kernel:connect_node/1` with bounded timeout | Direct path |
 
 ```erlang
 %% Direct path results in 0-hop circuit (still encrypted)
@@ -140,8 +140,9 @@ When creating a circuit, Mycelium automatically checks if the target is directly
 
 1. **Active view check**: If target is in HyParView active view, use direct connection
 2. **Erlang nodes check**: If target is in `nodes()`, use direct connection
-3. **TCP probe**: If not a neighbor, probe target's circuit port with a quick TCP connect
-4. **NAT hole punch**: If TCP fails but NATs are compatible, attempt UDP hole punch
+3. **Dist probe**: If not a neighbor, call `net_kernel:connect_node/1` with a bounded timeout. Mycelium owns the dist carrier (`mycelium_dist`) so a successful probe means the QUIC connection is up and the circuit can multiplex over it.
+4. **NAT hole punch**: If the probe fails but NATs are compatible, attempt UDP hole punch
+5. **MASQUE relay**: If hole punching also fails, fall back to a HTTP/3 CONNECT-UDP relay (`mycelium_circuit_relay_masque`) when `circuit_relay_uri` is configured
 
 If direct connection is possible, the circuit uses zero relay hops (direct path), reducing latency and network overhead. If direct fails, it falls back to relay routing.
 
@@ -342,13 +343,9 @@ Configure circuit routing in your `sys.config`:
     {circuit_relay_max, 500},         %% Max circuits this node will relay
     {circuit_idle_timeout, 300000},   %% Idle circuit cleanup interval (5 min)
 
-    %% Transport
-    {circuit_listen_port, 4370},      %% Port for circuit connections (0 = auto)
-    {circuit_pool_size, 3},           %% Connection pool size per peer
-
     %% Direct connection optimization
     {circuit_probe_direct, true},     %% Enable direct connection probing
-    {circuit_probe_timeout, 500},     %% TCP probe timeout in ms
+    {circuit_probe_timeout, 500},     %% Dist connect_node probe timeout in ms
     {circuit_reachability_cache_ttl, 300000},    %% Cache TTL for successful probes (5 min)
     {circuit_reachability_negative_ttl, 60000},  %% Cache TTL for failed probes (1 min)
 
@@ -371,10 +368,8 @@ Configure circuit routing in your `sys.config`:
 | `circuit_default_ttl` | 3600000 | Default circuit lifetime in ms (1 hour) |
 | `circuit_relay_max` | 500 | Maximum circuits this node will relay |
 | `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
-| `circuit_listen_port` | 0 | Port for circuit transport (0 = OS assigned) |
-| `circuit_pool_size` | 3 | Connection pool size per destination |
 | `circuit_probe_direct` | true | Enable direct connection probing |
-| `circuit_probe_timeout` | 500 | TCP probe timeout in ms |
+| `circuit_probe_timeout` | 500 | Dist connect_node probe timeout in ms |
 | `circuit_reachability_cache_ttl` | 300000 | Cache TTL for successful probes in ms (5 min) |
 | `circuit_reachability_negative_ttl` | 60000 | Cache TTL for failed probes in ms (1 min) |
 | `nat_enabled` | true | Enable NAT type discovery via STUN |
@@ -610,7 +605,7 @@ Solutions:
 Network connection to first hop failed.
 
 Solutions:
-- Check firewall allows circuit_listen_port
+- Check firewall allows the dist QUIC port (UDP)
 - Verify peer is still in active view
 - Check for network partitions
 
