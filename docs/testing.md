@@ -53,6 +53,116 @@ rebar3 dialyzer   # 151 warnings is the current baseline
 
 `rebar3 check` chains `xref + dialyzer + eunit + ct` in one go.
 
+## Interactive testing with `rebar3 shell`
+
+Quick way to poke at a running node by hand. Two-node setup
+covers most cases.
+
+### Single node
+
+```bash
+rebar3 shell --sname m1 --setcookie mycelium \
+    --erl_args "-proto_dist mycelium"
+```
+
+The `--erl_args` block goes straight to `erl`; without it the
+node boots on the default TCP carrier and `mycelium_dist` is
+not the listener. After boot:
+
+```erlang
+%% mycelium starts automatically with the application
+1> mycelium:active_view().
+[]
+2> mycelium:register_service(my_service, #{version => "1.0"}).
+ok
+3> mycelium:lookup(my_service).
+{ok,[{my_service,m1@host,<0.142.0>,#{version => "1.0"}}]}
+4> q().
+```
+
+### Two-node cluster
+
+In one terminal:
+
+```bash
+rebar3 shell --sname m1 --setcookie mycelium \
+    --erl_args "-proto_dist mycelium"
+```
+
+In another terminal:
+
+```bash
+rebar3 shell --sname m2 --setcookie mycelium \
+    --erl_args "-proto_dist mycelium"
+```
+
+On `m2`, join the cluster:
+
+```erlang
+1> mycelium:join('m1@yourhost').
+ok
+2> mycelium:active_view().
+[m1@yourhost]
+3> rpc:call('m1@yourhost', mycelium, active_view, []).
+[m2@yourhost]
+```
+
+Replace `yourhost` with the short hostname `inet:gethostname/0`
+returns. `--sname m1` resolves to `m1@<short-hostname>` on
+both shells, and they need to share that.
+
+### Useful inspection
+
+```erlang
+%% Cluster + transport
+mycelium:active_view().
+mycelium:passive_view().
+nodes().                            %% all dist-connected peers
+sys:get_state(mycelium_hyparview).  %% raw HyParView state
+
+%% mycelium_dist QUIC carrier
+mycelium_dist:listen_port().
+erl_epmd:names().                   %% who is registered locally
+
+%% Trust + auth state (only when auth_enabled=true)
+mycelium_dist_keys:list_trusted().
+mycelium_dist_keys:get_trust_mode().
+{ok, MyPub} = mycelium_dist_auth:get_public_key().
+
+%% Circuits
+{ok, CId} = mycelium:circuit_create('m1@yourhost').
+mycelium:circuit_send(CId, <<"ping">>).
+mycelium_circuit_metrics:get_metrics().
+mycelium:circuit_close(CId).
+
+%% GUI (visualises supervision tree, processes, ETS tables)
+observer:start().
+```
+
+### Auth/encryption opt-in
+
+The shell defaults match the basic CT suite: `auth_enabled=false`,
+no encryption. To exercise auth:
+
+```bash
+rebar3 shell --sname m1 --setcookie mycelium --erl_args " \
+    -proto_dist mycelium \
+    -mycelium auth_enabled true \
+    -mycelium auth_trust_mode tofu \
+    -mycelium auth_key_dir '\"data/keys\"'"
+```
+
+Each node generates its keypair on first boot (under
+`data/keys/node.{key,pub}` relative to the working dir) and
+records peer fingerprints under `data/keys/trusted/`.
+
+### Tear-down
+
+`q()` in the shell, or `Ctrl-G` then `q` if you want to leave
+the BEAM running. `mycelium:leave()` issues a graceful HyParView
+disconnect first - useful when you want the peer to clean up its
+active view immediately rather than wait for a tick to time out.
+
 ## Docker e2e tests
 
 Prerequisites:
