@@ -177,7 +177,7 @@ run_tests() {
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie mycelium \
+        -setcookie ${DIST_COOKIE:-mycelium} \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/test.config \
         -proto_dist mycelium \
@@ -265,7 +265,7 @@ run_auth_tests() {
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie mycelium \
+        -setcookie ${DIST_COOKIE:-mycelium} \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/auth-test.config \
         $auth_config \
@@ -362,7 +362,7 @@ run_circuit_tests() {
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie mycelium \
+        -setcookie ${DIST_COOKIE:-mycelium} \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/circuit-test.config \
         $auth_config \
