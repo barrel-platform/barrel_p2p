@@ -142,37 +142,31 @@ groups() ->
     ].
 
 init_per_suite(Config) ->
-    ct:pal("Starting circuit routing integration test suite"),
-
-    %% Parse test nodes from environment
-    NodesStr = os:getenv("TEST_NODES", "node1@node1,node2@node2,node3@node3,node4@node4"),
-    Nodes = [list_to_atom(string:trim(N)) || N <- string:tokens(NodesStr, ",")],
-    ct:pal("Test nodes: ~p", [Nodes]),
-
-    %% Assign roles
-    [Node1, Node2, Node3, Node4 | _] = Nodes,
-    ct:pal("Node1 (initiator): ~p", [Node1]),
-    ct:pal("Node2 (relay): ~p", [Node2]),
-    ct:pal("Node3 (relay): ~p", [Node3]),
-    ct:pal("Node4 (destination): ~p", [Node4]),
-
-    %% Wait for nodes to be reachable via rpc
-    ok = wait_for_rpc(Nodes, 120000),
-    ct:pal("All nodes reachable via RPC"),
-
-    %% Wait for mycelium to be running
-    ok = wait_for_mycelium(Nodes, 60000),
-    ct:pal("Mycelium running on all nodes"),
-
-    %% Wait for cluster to stabilize
-    ok = wait_for_cluster_formation(Nodes, 60000),
-    ct:pal("Cluster formed"),
-
-    [{test_nodes, Nodes},
-     {node1, Node1},
-     {node2, Node2},
-     {node3, Node3},
-     {node4, Node4} | Config].
+    case os:getenv("TEST_NODES") of
+        false ->
+            {skip, "Docker-only suite. Run via ./docker/scripts/run_circuit_tests.sh"};
+        NodesStr ->
+            ct:pal("Starting circuit routing integration test suite"),
+            Nodes = [list_to_atom(string:trim(N))
+                     || N <- string:tokens(NodesStr, ",")],
+            ct:pal("Test nodes: ~p", [Nodes]),
+            [Node1, Node2, Node3, Node4 | _] = Nodes,
+            ct:pal("Node1 (initiator): ~p", [Node1]),
+            ct:pal("Node2 (relay): ~p", [Node2]),
+            ct:pal("Node3 (relay): ~p", [Node3]),
+            ct:pal("Node4 (destination): ~p", [Node4]),
+            ok = wait_for_rpc(Nodes, 120000),
+            ct:pal("All nodes reachable via RPC"),
+            ok = wait_for_mycelium(Nodes, 60000),
+            ct:pal("Mycelium running on all nodes"),
+            ok = wait_for_cluster_formation(Nodes, 60000),
+            ct:pal("Cluster formed"),
+            [{test_nodes, Nodes},
+             {node1, Node1},
+             {node2, Node2},
+             {node3, Node3},
+             {node4, Node4} | Config]
+    end.
 
 end_per_suite(_Config) ->
     ct:pal("Circuit routing integration test suite complete"),

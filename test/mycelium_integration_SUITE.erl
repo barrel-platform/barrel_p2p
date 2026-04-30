@@ -71,22 +71,20 @@ groups() ->
     ].
 
 init_per_suite(Config) ->
-    ct:pal("Starting integration test suite"),
-
-    %% Parse test nodes from environment
-    NodesStr = os:getenv("TEST_NODES", "node1@node1,node2@node2,node3@node3"),
-    Nodes = [list_to_atom(string:trim(N)) || N <- string:tokens(NodesStr, ",")],
-    ct:pal("Test nodes: ~p", [Nodes]),
-
-    %% Wait for nodes to be reachable via rpc
-    ok = wait_for_rpc(Nodes, 60000),
-    ct:pal("All nodes reachable via RPC"),
-
-    %% Wait for mycelium to be running
-    ok = wait_for_mycelium(Nodes, 30000),
-    ct:pal("Mycelium running on all nodes"),
-
-    [{test_nodes, Nodes} | Config].
+    case os:getenv("TEST_NODES") of
+        false ->
+            {skip, "Docker-only suite. Run via ./docker/scripts/run_tests.sh"};
+        NodesStr ->
+            ct:pal("Starting integration test suite"),
+            Nodes = [list_to_atom(string:trim(N))
+                     || N <- string:tokens(NodesStr, ",")],
+            ct:pal("Test nodes: ~p", [Nodes]),
+            ok = wait_for_rpc(Nodes, 60000),
+            ct:pal("All nodes reachable via RPC"),
+            ok = wait_for_mycelium(Nodes, 30000),
+            ct:pal("Mycelium running on all nodes"),
+            [{test_nodes, Nodes} | Config]
+    end.
 
 end_per_suite(_Config) ->
     ct:pal("Integration test suite complete"),
