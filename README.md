@@ -9,10 +9,11 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **HyParView Protocol** - Scalable partial membership with O(log n) connections per node
 - **Service Registry** - Distributed service discovery using OR-Map CRDTs
 - **Plumtree Broadcast** - Efficient epidemic broadcast with O(n) message complexity
-- **Circuit Routing** - Multi-hop encrypted channels with end-to-end privacy
 - **Hybrid Logical Clocks** - Causally consistent timestamps for conflict resolution
 - **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
-- **QUIC Distribution** - Owns its `proto_dist` module (`mycelium_dist`); one QUIC connection per peer multiplexes the dist channel and circuit user streams
+- **QUIC Distribution** - Runs on upstream `quic_dist`; one QUIC connection per peer carries the Erlang distribution channel. Mycelium plugs in via the `quic_dist_auth` callback for Ed25519 identity, the `discovery_module` hook for HyParView-aware peer resolution, and `register_with_epmd` for stock EPMD integration.
+- **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
+- **Multi-hop circuits** - Stream-shaped channels between cluster nodes that aren't in each other's active view, spliced at intermediate hops on top of the existing dist connections (see [docs/circuits.md](docs/circuits.md))
 
 ## Quick Start
 
@@ -36,10 +37,6 @@ mycelium:subscribe().
 
 %% View connected peers
 mycelium:active_view().
-
-%% Create a secure circuit to another node
-{ok, CircuitId} = mycelium:circuit_create('target@host').
-mycelium:circuit_send(CircuitId, <<"encrypted data">>).
 ```
 
 ## Installation
@@ -105,7 +102,7 @@ Configure in your `sys.config`:
     {passive_size, 30},      %% Max passive view size (c * log n)
     {shuffle_period, 10000}, %% Topology refresh interval (ms)
 
-    %% Distribution (mycelium_dist QUIC carrier)
+    %% Distribution (quic_dist carrier)
     {listen_port, 9100},     %% 0 for auto-assign
     {contact_nodes, ['seed@192.168.1.10']},
 
@@ -117,15 +114,36 @@ Configure in your `sys.config`:
 
 ### Distribution carrier
 
-Mycelium owns its proto_dist module. Add to your `vm.args`:
+Mycelium runs on upstream `quic_dist`. Add to your `vm.args`:
 
 ```
--proto_dist mycelium
+-proto_dist quic
 ```
 
-(OTP appends `_dist` and resolves to `mycelium_dist`.) All
-inter-node traffic, including circuit user streams, multiplexes
-over a single QUIC connection per peer.
+The default `sys.config` wires the three mycelium hooks into
+`quic_dist`:
+
+```erlang
+{quic, [{dist, [
+    {auth_callback, {mycelium_dist_auth_callback, authenticate}},
+    {discovery_module, mycelium_quic_discovery},
+    {register_with_epmd, true},
+    {cert_file, <<"data/quic/node.crt">>},
+    {key_file, <<"data/quic/node.key">>}
+]}]}.
+```
+
+All inter-node traffic flows over a single QUIC connection per peer.
+Mycelium does not bundle NAT traversal or relay; nodes are expected to
+reach each other directly. When a tunnel/relay is needed, register an
+external socket adapter with `quic_dist:set_connect_options/2` (see
+[docs/external-relay.md](docs/external-relay.md)).
+
+Generate the QUIC TLS material once before the first boot:
+
+```erlang
+mycelium_quic_cert:ensure_cert().
+```
 
 ## Testing
 
@@ -137,8 +155,9 @@ over a single QUIC connection per peer.
 
 - [Getting Started](docs/getting-started.md) - Installation and first steps
 - [Building P2P Applications](docs/tutorial.md) - Tutorial with worked examples
-- [Circuit Routing](docs/circuits.md) - Multi-hop encrypted communication
 - [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
+- [Circuits](docs/circuits.md) - Multi-hop streams over the dist QUIC channel
+- [External Relay](docs/external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
 - [Comparison with Partisan](docs/partisan-comparison.md) - When to use which
 - [Testing](docs/testing.md) - Running local and docker test suites
 - [Internals](docs/internals.md) - Architecture and protocol details

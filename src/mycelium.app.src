@@ -14,8 +14,7 @@
     {applications, [
         kernel,
         stdlib,
-        quic,
-        masque
+        quic
     ]},
     {env, [
         {active_size, 5},
@@ -25,19 +24,7 @@
         {shuffle_length, 8},
         {shuffle_period, 10000},
         {listen_port, 0},
-        {contact_nodes, []},
-        %% Circuit routing configuration
-        {circuit_default_hops, 2},          %% Default intermediate hops
-        {circuit_default_ttl, 3600000},     %% 1 hour lifetime
-        {circuit_establish_timeout, 30000}, %% 30s establishment timeout
-        {circuit_idle_timeout, 300000},     %% 5 min idle cleanup
-        {circuit_max_active, 100},          %% Max circuits per node
-        {circuit_relay_max, 500},           %% Max circuits being relayed
-        %% Optional masque proxy URI for relay fallback.
-        %% When set, circuits with no viable peer hops can route through
-        %% this proxy via CONNECT-UDP.
-        {circuit_relay_uri, undefined},
-        {circuit_relay_opts, #{}}
+        {contact_nodes, []}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

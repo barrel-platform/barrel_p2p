@@ -1,123 +1,79 @@
+%%% -*- erlang -*-
+%%%
+%%% Mycelium Circuit Supervisor
+%%%
+%%% Top supervisor wires:
+%%%   - `mycelium_circuit_relay' (singleton, accepts incoming streams)
+%%%   - `mycelium_circuit_pipe_sup' (simple_one_for_one for pipes)
+%%%
+%%% Pipes are dynamically started by both the public API
+%%% (`mycelium_circuit:open/2', initiator role) and the relay
+%%% (destination + relay roles).
+%%%
+%%% Copyright (c) 2024-2026 Benoit Chesneau
+%%% Apache License 2.0
+
 -module(mycelium_circuit_sup).
 -behaviour(supervisor).
 
-%% Circuit subsystem supervisor
-%%
-%% Manages:
-%%   - mycelium_circuit_relay: single process for relay operations
-%%   - dynamic circuit processes: one per active circuit endpoint
-
--include("mycelium.hrl").
-
-%% API
+-export([start_link/0, start_link_pipes/0]).
 -export([
-    start_link/0,
-    start_circuit/6,
-    start_circuit_dest/4
+    start_pipe_initiator/6,
+    start_pipe_destination/4,
+    start_pipe_relay/4
 ]).
-
-%% Supervisor callbacks
 -export([init/1]).
 
--define(SERVER, ?MODULE).
-
-%%====================================================================
-%% API
-%%====================================================================
-
 start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, top).
 
-%% @doc Start a circuit as initiator
--spec start_circuit(CircuitId :: #circuit_id{}, Role :: initiator,
-                    Target :: node(), Hops :: [node()],
-                    TTL :: pos_integer(), Owner :: pid()) ->
-    {ok, pid()} | {error, term()}.
-start_circuit(CircuitId, initiator, Target, Hops, TTL, Owner) ->
-    supervisor:start_child(circuit_dynamic_sup,
-        [initiator, CircuitId, Target, Hops, TTL, Owner]).
+%% @doc Initiator endpoint pipe: locally-driven endpoint that knows
+%% the target and the path so it can repath on hop failure.
+-spec start_pipe_initiator(
+    quic_dist:stream_ref(),
+    binary(),
+    node(),
+    [node()],
+    pid(),
+    map()
+) -> {ok, pid()} | {error, term()}.
+start_pipe_initiator(Stream, CircuitId, Target, FullPath, Owner, Opts) ->
+    supervisor:start_child(mycelium_circuit_pipe_sup,
+        [{initiator, Stream, CircuitId, Target, FullPath, Owner, Opts}]).
 
-%% @doc Start a circuit as destination
--spec start_circuit_dest(CircuitId :: #circuit_id{},
-                         CryptoSession :: #crypto_session{},
-                         TTL :: pos_integer(), Owner :: pid()) ->
-    {ok, pid()} | {error, term()}.
-start_circuit_dest(CircuitId, CryptoSession, TTL, Owner) ->
-    supervisor:start_child(circuit_dynamic_sup,
-        [destination, CircuitId, CryptoSession, TTL, Owner]).
+%% @doc Destination endpoint pipe: terminates the circuit. Pending
+%% is the residual app data that arrived in the same chunk as CREATE.
+-spec start_pipe_destination(
+    quic_dist:stream_ref(),
+    binary(),
+    binary(),
+    pid()
+) -> {ok, pid()} | {error, term()}.
+start_pipe_destination(Stream, CircuitId, Pending, Owner) ->
+    supervisor:start_child(mycelium_circuit_pipe_sup,
+        [{destination, Stream, CircuitId, Pending, Owner}]).
 
-%%====================================================================
-%% Supervisor callbacks
-%%====================================================================
+%% @doc Relay pipe: intermediate hop that splices two raw streams.
+-spec start_pipe_relay(
+    quic_dist:stream_ref(),
+    quic_dist:stream_ref(),
+    binary(),
+    binary()
+) -> {ok, pid()} | {error, term()}.
+start_pipe_relay(In, Out, CircuitId, Pending) ->
+    supervisor:start_child(mycelium_circuit_pipe_sup,
+        [{relay, In, Out, CircuitId, Pending}]).
 
-init([]) ->
-    SupFlags = #{
-        strategy => one_for_one,
-        intensity => 10,
-        period => 10
-    },
-
-    %% ETS table for circuit registry
-    ets:new(mycelium_circuits, [named_table, public, {read_concurrency, true}]),
-
-    %% Transport: circuits multiplex over the per-peer mycelium_dist
-    %% QUIC connection. No listener, no pool, no separate connect path.
-    TransportOpts = #{
-        auth_enabled => application:get_env(mycelium, auth_enabled, true)
-    },
-
-    %% Metrics collector - start first
-    Metrics = #{
-        id => mycelium_circuit_metrics,
-        start => {mycelium_circuit_metrics, start_link, []},
+init(top) ->
+    SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
+    PipeSup = #{
+        id => mycelium_circuit_pipe_sup,
+        start => {?MODULE, start_link_pipes, []},
         restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_circuit_metrics]
+        shutdown => infinity,
+        type => supervisor,
+        modules => [?MODULE]
     },
-
-    %% Reachability cache for direct connection optimization
-    Reachability = #{
-        id => mycelium_circuit_reachability,
-        start => {mycelium_circuit_reachability, start_link, []},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_circuit_reachability]
-    },
-
-    %% NAT cache - stores local and peer NAT info
-    NatCache = #{
-        id => mycelium_nat_cache,
-        start => {mycelium_nat_cache, start_link, []},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_nat_cache]
-    },
-
-    %% NAT discovery - STUN detection and UPnP/NAT-PMP mapping
-    Nat = #{
-        id => mycelium_nat,
-        start => {mycelium_nat, start_link, []},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_nat]
-    },
-
-    %% Transport - must start before relay as relay uses transport.
-    %% Hardcoded to mycelium_circuit_transport_quic (one transport).
-    Transport = #{
-        id => circuit_transport,
-        start => {mycelium_circuit_transport_quic, start_link, [TransportOpts]},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_circuit_transport_quic]
-    },
-
-    %% Relay handler - singleton
     Relay = #{
         id => mycelium_circuit_relay,
         start => {mycelium_circuit_relay, start_link, []},
@@ -126,47 +82,20 @@ init([]) ->
         type => worker,
         modules => [mycelium_circuit_relay]
     },
-
-    %% UDP hole punching for NAT traversal
-    HolePunch = #{
-        id => mycelium_hole_punch,
-        start => {mycelium_hole_punch, start_link, []},
-        restart => permanent,
-        shutdown => 5000,
-        type => worker,
-        modules => [mycelium_hole_punch]
-    },
-
-    %% Dynamic supervisor for circuit processes
-    CircuitDynSup = #{
-        id => circuit_dynamic_sup,
-        start => {supervisor, start_link, [{local, circuit_dynamic_sup}, ?MODULE, [dynamic]]},
-        restart => permanent,
-        shutdown => infinity,
-        type => supervisor,
-        modules => [?MODULE]
-    },
-
-    ChildSpecs = [Metrics, Reachability, NatCache, Nat, Transport, HolePunch, Relay, CircuitDynSup],
-    {ok, {SupFlags, ChildSpecs}};
-
-%% Dynamic supervisor for circuit processes
-init([dynamic]) ->
-    SupFlags = #{
-        strategy => simple_one_for_one,
-        intensity => 10,
-        period => 10
-    },
-
-    %% Child spec for dynamically started circuits
-    %% Args are passed via start_child/2
-    CircuitChild = #{
-        id => mycelium_circuit,
-        start => {mycelium_circuit, start_link, []},
+    {ok, {SupFlags, [PipeSup, Relay]}};
+init(pipes) ->
+    SupFlags = #{strategy => simple_one_for_one, intensity => 10, period => 10},
+    Spec = #{
+        id => mycelium_circuit_pipe,
+        start => {mycelium_circuit_pipe, start_link, []},
         restart => temporary,
         shutdown => 5000,
         type => worker,
-        modules => [mycelium_circuit]
+        modules => [mycelium_circuit_pipe]
     },
+    {ok, {SupFlags, [Spec]}}.
 
-    {ok, {SupFlags, [CircuitChild]}}.
+%% @private Bridge for the pipe sub-supervisor (invoked by the top
+%% spec above).
+start_link_pipes() ->
+    supervisor:start_link({local, mycelium_circuit_pipe_sup}, ?MODULE, pipes).

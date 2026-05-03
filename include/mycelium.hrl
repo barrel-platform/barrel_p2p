@@ -1,36 +1,6 @@
 -ifndef(MYCELIUM_HRL).
 -define(MYCELIUM_HRL, true).
 
-%%====================================================================
-%% NAT Types and Records
-%%====================================================================
-
-%% NAT type classification (RFC 5780)
--type nat_type() :: public           %% No NAT, directly reachable
-                  | full_cone        %% Any external host can reach via mapped address
-                  | restricted_cone  %% External host must receive packet first (IP restricted)
-                  | port_restricted  %% External host must receive packet first (IP+port restricted)
-                  | symmetric        %% Different mapping per destination
-                  | unknown.         %% Could not determine
-
-%% Connection candidate for NAT traversal (ICE-like)
--record(candidate, {
-    type     :: host | srflx | relay,    %% host=local, srflx=STUN reflexive, relay=TURN
-    address  :: inet:ip_address(),
-    port     :: inet:port_number(),
-    priority :: non_neg_integer()
-}).
-
-%% NAT info for cache storage
--record(nat_info, {
-    nat_type      :: nat_type(),
-    external_addr :: inet:ip_address() | undefined,
-    external_port :: inet:port_number() | undefined,
-    candidates    :: [#candidate{}],
-    discovered_at :: integer(),          %% erlang:monotonic_time(millisecond)
-    expires_at    :: integer()           %% erlang:monotonic_time(millisecond)
-}).
-
 %% Peer representation (transport-agnostic)
 -record(peer, {
     id            :: node(),                    %% Node name
@@ -42,12 +12,7 @@
     last_seen     :: integer() | undefined,     %% erlang:monotonic_time()
     %% Failure tracking for high churn handling
     fail_count    = 0 :: non_neg_integer(),     %% Consecutive failures
-    backoff_until :: integer() | undefined,     %% erlang:monotonic_time() - skip until this time
-    %% NAT fields (Phase 2)
-    nat_type      :: nat_type() | undefined,
-    external_addr :: inet:ip_address() | undefined,
-    external_port :: inet:port_number() | undefined,
-    candidates    :: [#candidate{}] | undefined
+    backoff_until :: integer() | undefined      %% erlang:monotonic_time() - skip until this time
 }).
 
 %% HyParView state (application layer)
@@ -129,52 +94,5 @@
     {neighbor_reply, Accept :: boolean(), Sender :: #peer{}} |
     {shuffle, TTL :: integer(), Peers :: [#peer{}], Sender :: #peer{}} |
     {shuffle_reply, Peers :: [#peer{}], Sender :: #peer{}}.
-
-%%====================================================================
-%% Circuit Routing Records
-%%====================================================================
-
-%% Circuit identifier
--record(circuit_id, {
-    id        :: binary(),       %% 16 bytes UUID
-    initiator :: node()
-}).
-
-%% Relay hop state (held by intermediate nodes)
--record(circuit_hop, {
-    circuit_id :: #circuit_id{},
-    prev_node  :: node() | initiator,
-    next_node  :: node() | destination,
-    created_at :: integer(),
-    last_seen  :: integer()
-}).
-
-%% Full circuit state (endpoint only - initiator or destination)
--record(circuit, {
-    id         :: #circuit_id{},
-    role       :: initiator | destination,
-    target     :: node(),
-    hops       :: [node()],
-    crypto     :: #crypto_session{},
-    state      :: building | ready | closing,
-    created_at :: integer(),
-    expires_at :: integer()
-}).
-
-%% Circuit protocol message types
--define(CIRCUIT_CREATE, 1).
--define(CIRCUIT_CREATED, 2).
--define(CIRCUIT_EXTEND, 3).
--define(CIRCUIT_EXTENDED, 4).
--define(CIRCUIT_DATA, 5).
--define(CIRCUIT_DESTROY, 6).
--define(CIRCUIT_PING, 7).
--define(CIRCUIT_PONG, 8).
-
-%% Hole punch signaling message types (sent via relay)
--define(HOLE_PUNCH_REQUEST, 16).
--define(HOLE_PUNCH_RESPONSE, 17).
--define(HOLE_PUNCH_CONNECT, 18).
--define(HOLE_PUNCH_CONNECTED, 19).
 
 -endif.

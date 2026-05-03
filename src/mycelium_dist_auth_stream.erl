@@ -26,24 +26,25 @@
     authenticate_incoming/2
 ]).
 
--include("mycelium_dist.hrl").
-
--define(LEN_SIZE, ?MYCELIUM_DIST_HS_LEN_SIZE).
-
--type result() :: ok | {error, term()}.
+%% 2-byte big-endian length prefix used during the auth handshake.
+-define(LEN_SIZE, 2).
 
 %%====================================================================
 %% Public API
 %%====================================================================
 
-%% @doc Run the auth protocol as the connection initiator.
--spec authenticate_outgoing(Conn :: pid(), PeerNode :: node()) -> result().
-authenticate_outgoing(Conn, PeerNode) ->
+%% @doc Run the auth protocol as the connection initiator. Returns the
+%% node atom claimed by the peer (verified by signature against the
+%% trusted key for that atom). The dist handshake that runs immediately
+%% after refuses the connection if that name does not match the target.
+-spec authenticate_outgoing(Conn :: pid(), Timeout :: timeout()) ->
+    {ok, node() | undefined} | {error, term()}.
+authenticate_outgoing(Conn, Timeout) ->
     case auth_enabled() of
         false ->
-            ok;
+            {ok, undefined};
         true ->
-            run_outgoing(Conn, PeerNode)
+            run_outgoing(Conn, Timeout)
     end.
 
 %% @doc Run the auth protocol as the connection responder.
@@ -61,12 +62,11 @@ authenticate_incoming(Conn, Timeout) ->
 %% Outgoing (client) side
 %%====================================================================
 
-run_outgoing(Conn, PeerNode) ->
-    Timeout = handshake_timeout(),
+run_outgoing(Conn, Timeout) ->
     case quic:open_unidirectional_stream(Conn) of
         {ok, MyStream} ->
             try
-                do_outgoing(Conn, MyStream, PeerNode, Timeout)
+                do_outgoing(Conn, MyStream, Timeout)
             after
                 catch quic:send_data(Conn, MyStream, <<>>, true)
             end;
@@ -74,7 +74,7 @@ run_outgoing(Conn, PeerNode) ->
             {error, {open_auth_stream_failed, Reason}}
     end.
 
-do_outgoing(Conn, MyStream, PeerNode, Timeout) ->
+do_outgoing(Conn, MyStream, Timeout) ->
     case mycelium_dist_auth:get_public_key() of
         {ok, MyPubKey} ->
             MyNode = node(),
@@ -84,8 +84,7 @@ do_outgoing(Conn, MyStream, PeerNode, Timeout) ->
                     case wait_for_peer_stream(Conn, Timeout) of
                         {ok, PeerStream, Buffer} ->
                             client_recv_hello(
-                                Conn, MyStream, PeerStream, Buffer,
-                                PeerNode, Timeout
+                                Conn, MyStream, PeerStream, Buffer, Timeout
                             );
                         {error, Reason} ->
                             {error, Reason}
@@ -97,22 +96,30 @@ do_outgoing(Conn, MyStream, PeerNode, Timeout) ->
             Error
     end.
 
-client_recv_hello(Conn, MyStream, PeerStream, Buffer, PeerNode, Timeout) ->
+client_recv_hello(Conn, MyStream, PeerStream, Buffer, Timeout) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, HelloBin, Rest} ->
             case mycelium_dist_protocol:decode(HelloBin) of
-                {hello, ClaimedNode, PeerPubKey} when ClaimedNode =:= PeerNode ->
-                    client_send_challenge(
-                        Conn, MyStream, PeerStream, Rest,
-                        PeerNode, PeerPubKey, Timeout
-                    );
-                {hello, Other, _} ->
-                    {error, {node_mismatch, {expected, PeerNode}, {got, Other}}};
+                {hello, ClaimedNode, PeerPubKey} ->
+                    %% Trust check is done before we issue our challenge:
+                    %% in strict mode, refuse if the claimed node has no
+                    %% pinned key (or has one and it differs). The dist
+                    %% handshake that follows verifies this atom matches
+                    %% the connect target.
+                    case trust_check(ClaimedNode, PeerPubKey) of
+                        ok ->
+                            client_send_challenge(
+                                Conn, MyStream, PeerStream, Rest,
+                                ClaimedNode, PeerPubKey, Timeout
+                            );
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
                 ok ->
                     %% Server short-circuited the handshake because we
                     %% match its cookie_only_nodes whitelist. Trust the
                     %% Erlang dist cookie challenge to do the rest.
-                    ok;
+                    {ok, undefined};
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -120,6 +127,19 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, PeerNode, Timeout) ->
             end;
         {error, Reason} ->
             {error, {recv_hello_failed, Reason}}
+    end.
+
+%% Strict mode demands a pre-pinned key for `Node'. TOFU accepts the
+%% key on first contact (it gets recorded later in `record_peer/2').
+trust_check(Node, PubKey) ->
+    case mycelium_dist_keys:is_trusted(Node, PubKey) of
+        true ->
+            ok;
+        false ->
+            case trust_mode() of
+                tofu -> ok;
+                strict -> {error, untrusted_key}
+            end
     end.
 
 client_send_challenge(Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
@@ -208,7 +228,8 @@ client_recv_ok(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
         {ok, Bin, _Rest} ->
             case mycelium_dist_protocol:decode(Bin) of
                 ok ->
-                    record_peer(PeerNode, PeerPubKey);
+                    ok = record_peer(PeerNode, PeerPubKey),
+                    {ok, PeerNode};
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -538,5 +559,3 @@ auth_enabled() ->
 trust_mode() ->
     application:get_env(mycelium, auth_trust_mode, tofu).
 
-handshake_timeout() ->
-    application:get_env(mycelium, auth_handshake_timeout, 10000).

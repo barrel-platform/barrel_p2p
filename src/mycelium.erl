@@ -39,18 +39,16 @@
     unsubscribe_services/1
 ]).
 
-%% Circuit Routing API
+%% Circuit API
 -export([
-    circuit_create/1,
-    circuit_create/2,
+    circuit_open/1,
+    circuit_open/2,
     circuit_send/2,
     circuit_close/1,
-    circuit_info/1,
-    list_circuits/0,
-    %% Destination API
     circuit_listen/0,
     circuit_listen/1,
-    circuit_unlisten/0
+    circuit_unlisten/0,
+    circuit_unlisten/1
 ]).
 
 %% Via callbacks for {via, mycelium, Name} registration
@@ -277,69 +275,54 @@ send(Name, Msg) ->
     end.
 
 %%====================================================================
-%% Circuit Routing API
+%% Circuit API
 %%====================================================================
+%%
+%% Multi-hop streams over the existing per-peer dist QUIC connection.
+%% Thin wrapper around the `mycelium_circuit' module; see that module
+%% and `docs/external-relay.md' for details.
 
-%% @doc Create a circuit to target node with default options
--spec circuit_create(node()) -> {ok, term()} | {error, term()}.
-circuit_create(Target) ->
-    circuit_create(Target, #{}).
+%% @doc Open a single-hop circuit (direct stream) to `Target'.
+-spec circuit_open(node()) ->
+    {ok, mycelium_circuit:circuit_ref()} | {error, term()}.
+circuit_open(Target) ->
+    mycelium_circuit:open(Target).
 
-%% @doc Create a circuit to target node with options
-%% Options:
-%%   hops => integer() - number of intermediate relay hops (default: 2)
-%%   ttl => integer() - circuit lifetime in milliseconds (default: 1 hour)
--spec circuit_create(node(), map()) -> {ok, term()} | {error, term()}.
-circuit_create(Target, Opts) ->
-    mycelium_circuit:create(Target, Opts).
+%% @doc Open a multi-hop circuit to `Target' through the listed
+%% intermediate hops.
+-spec circuit_open(node(), [node()]) ->
+    {ok, mycelium_circuit:circuit_ref()} | {error, term()}.
+circuit_open(Target, Path) ->
+    mycelium_circuit:open(Target, Path).
 
-%% @doc Send data through an established circuit
--spec circuit_send(term(), binary()) -> ok | {error, term()}.
-circuit_send(CircuitId, Data) ->
-    mycelium_circuit:send(CircuitId, Data).
+%% @doc Send opaque application bytes on a circuit.
+-spec circuit_send(mycelium_circuit:circuit_ref(), iodata()) ->
+    ok | {error, term()}.
+circuit_send(CRef, Data) ->
+    mycelium_circuit:send(CRef, Data).
 
-%% @doc Close a circuit
--spec circuit_close(term()) -> ok.
-circuit_close(CircuitId) ->
-    mycelium_circuit:close(CircuitId).
+%% @doc Close a circuit (half-close, FIN). Both sides receive a
+%% `closed' message after the other half is also closed.
+-spec circuit_close(mycelium_circuit:circuit_ref()) -> ok.
+circuit_close(CRef) ->
+    mycelium_circuit:close(CRef).
 
-%% @doc Get info about a circuit
--spec circuit_info(term()) -> {ok, map()} | {error, not_found}.
-circuit_info(CircuitId) ->
-    mycelium_circuit:get_info(CircuitId).
-
-%% @doc List all active circuits on this node
--spec list_circuits() -> [map()].
-list_circuits() ->
-    case ets:info(mycelium_circuits, size) of
-        undefined -> [];
-        _ ->
-            lists:filtermap(fun({_Key, Pid}) ->
-                case mycelium_circuit:get_info_by_pid(Pid) of
-                    {ok, Info} -> {true, Info};
-                    _ -> false
-                end
-            end, ets:tab2list(mycelium_circuits))
-    end.
-
-%% @doc Listen for incoming circuits (registers calling process)
-%% The calling process will receive:
-%%   {circuit_ready, CircuitId} - when an incoming circuit is established
-%%   {circuit_data, CircuitId, Data} - when data arrives on a circuit
-%%   {circuit_closed, CircuitId, Reason} - when a circuit closes
--spec circuit_listen() -> ok | {error, already_listening}.
+%% @doc Register the calling process to receive incoming circuits.
+-spec circuit_listen() -> ok.
 circuit_listen() ->
-    circuit_listen(self()).
+    mycelium_circuit:listen().
 
-%% @doc Listen for incoming circuits (registers specified process)
--spec circuit_listen(pid()) -> ok | {error, already_listening}.
+-spec circuit_listen(pid()) -> ok.
 circuit_listen(Pid) ->
-    mycelium_circuit_relay:listen(Pid).
+    mycelium_circuit:listen(Pid).
 
-%% @doc Stop listening for incoming circuits
 -spec circuit_unlisten() -> ok.
 circuit_unlisten() ->
-    mycelium_circuit_relay:unlisten().
+    mycelium_circuit:unlisten().
+
+-spec circuit_unlisten(pid()) -> ok.
+circuit_unlisten(Pid) ->
+    mycelium_circuit:unlisten(Pid).
 
 %%====================================================================
 %% Test Helpers

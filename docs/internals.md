@@ -30,9 +30,9 @@ This document covers the internal architecture, protocols, and implementation de
                     └──────────┬──────────┘
                                │
                     ┌──────────┴──────────┐
-                    │    mycelium_dist    │
-                    │ (proto_dist module) │
-                    │  Ed25519 + QUIC     │
+                    │ quic_dist (upstream)│
+                    │  + auth_callback    │
+                    │  + discovery_module │
                     └──────────┬──────────┘
                                │
                     ┌──────────┴──────────┐
@@ -408,12 +408,30 @@ mycelium_dist_keys:is_trusted(Node, PubKey).
 
 ## Distribution Carrier
 
-Mycelium owns its `proto_dist` module: `mycelium_dist`. Selected
-with `-proto_dist mycelium` (OTP appends the `_dist` suffix). The
-carrier wraps `erlang_quic` and runs an Ed25519 challenge-response
-on a dedicated unidirectional auth stream pair before
-`dist_util:handshake_*` runs. The same QUIC connection multiplexes
-the dist control stream and any circuit user streams.
+Mycelium runs on upstream `quic_dist`. Boot with `-proto_dist quic`.
+The carrier opens a single QUIC connection per peer and carries the
+Erlang distribution channel on it.
+
+Mycelium plugs into three `quic_dist` extension points:
+
+- `auth_callback => {mycelium_dist_auth_callback, authenticate}` runs
+  the Ed25519 challenge-response on a uni-stream pair between the
+  QUIC handshake and the dist `handshake_we_started`/`handshake_other_started`.
+  The callback returns `{ok, NodeAtom}` on success or `{error, Reason}`;
+  on error the connection is closed and the dist controller never
+  starts.
+- `discovery_module => mycelium_quic_discovery` resolves peer node
+  names from static `{quic, [{dist, [{nodes, ...}]}]}` configuration
+  and falls back to DNS.
+- `register_with_epmd => true` makes `quic_dist:listen/2` register the
+  node with stock EPMD so external tools (`epmd -names`, mixed
+  proto_dist clusters) can resolve it.
+
+NAT traversal is out of scope. When a direct path is unavailable,
+`quic_dist:set_connect_options/2` lets callers register a per-peer
+connect-time override (e.g. `#{socket_backend => adapter,
+socket_adapter => Adapter}`) that the next `setup/5` consumes. See
+[external-relay.md](external-relay.md).
 
 ```erlang
 %% Configuration
@@ -512,135 +530,3 @@ Key metrics to monitor:
 - Service lookup latency
 - Route cache hit rate
 
-## Circuit Routing Architecture
-
-Circuit routing provides multi-hop encrypted channels. See [Circuit Routing](circuits.md) for usage; this section covers internals.
-
-### Supervision Structure
-
-```
-mycelium_circuit_sup (one_for_one)
-│
-├── mycelium_circuit_metrics (worker)
-│   └── ETS-based metrics collection
-│
-├── mycelium_circuit_relay (gen_server)
-│   └── Manages relay hop state
-│
-├── mycelium_circuit_transport_quic (worker)
-│   └── User-stream multiplexer over the per-peer mycelium_dist
-│       QUIC connection. Circuits ride the same connection that
-│       carries the Erlang distribution channel.
-│
-├── mycelium_circuit_relay_masque (worker)
-│   └── HTTP/3 CONNECT-UDP relay fallback when direct UDP and
-│       hole-punching both fail.
-│
-└── circuit processes (dynamic)
-    └── mycelium_circuit (gen_statem)
-        └── Individual circuit state machine
-```
-
-### Circuit State Machine
-
-Each circuit is managed by a `gen_statem` process with three states:
-
-```
-                    ┌─────────────────┐
-                    │    building     │
-     CREATE sent    │                 │
-     ────────────►  │  Waiting for    │
-                    │  CREATED/       │
-                    │  EXTENDED       │
-                    └────────┬────────┘
-                             │ EXTENDED received
-                             │ (or CREATED for direct)
-                             ▼
-                    ┌─────────────────┐
-                    │     ready       │
-                    │                 │
-                    │  Encrypt/send   │◄── DATA
-                    │  Decrypt/recv   │
-                    │                 │
-                    └────────┬────────┘
-                             │ close() or DESTROY
-                             ▼
-                    ┌─────────────────┐
-                    │    closing      │
-                    │                 │
-                    │  Cleanup        │
-                    └─────────────────┘
-```
-
-### Protocol Messages
-
-| Message | Format | Purpose |
-|---------|--------|---------|
-| CREATE | `{create, circuit_id, eph_pub_key}` | Establish circuit hop |
-| CREATED | `{created, circuit_id, eph_pub_key}` | Acknowledge, return key |
-| EXTEND | `{extend, circuit_id, target, eph_pub_key}` | Extend to next hop |
-| EXTENDED | `{extended, circuit_id, eph_pub_key}` | Extension complete |
-| DATA | `{data, circuit_id, encrypted_payload}` | Application data |
-| DESTROY | `{destroy, circuit_id, reason}` | Tear down circuit |
-
-DESTROY reason codes:
-- `0` - Normal close
-- `1` - Timeout/expired
-- `2` - Decryption failure
-
-### Relay Operation
-
-`mycelium_circuit_relay` maintains hop state in ETS:
-
-```erlang
--record(circuit_hop, {
-    circuit_id   :: #circuit_id{},
-    prev_node    :: node(),      %% Backward direction
-    next_node    :: node(),      %% Forward direction
-    created_at   :: integer(),
-    last_active  :: integer()
-}).
-```
-
-When a DATA message arrives:
-1. Lookup hop state by circuit_id
-2. Forward to next_node (if forward) or prev_node (if backward)
-3. Update last_active timestamp
-4. No decryption (relay sees opaque blob)
-
-### Encryption
-
-Circuit encryption uses X25519 for key exchange and ChaCha20-Poly1305 for AEAD:
-
-```erlang
--record(crypto_session, {
-    send_key     :: binary(),    %% 32 bytes
-    recv_key     :: binary(),    %% 32 bytes
-    send_nonce   :: integer(),   %% Counter
-    recv_nonce   :: integer()
-}).
-```
-
-Key derivation:
-```
-shared_secret = X25519(our_private, their_public)
-keys = HKDF-SHA256(shared_secret, initiator_pub || dest_pub)
-initiator_send_key = keys[0:32]
-dest_send_key = keys[32:64]
-```
-
-### Metrics Internals
-
-`mycelium_circuit_metrics` uses two ETS tables:
-
-1. **Counters table** (write_concurrency):
-   - `circuits_created`, `circuits_established`, etc.
-   - Per-role breakdowns: `{circuits_created, initiator}`
-   - Latency histogram buckets
-
-2. **Latency samples** (ordered_set):
-   - Ring buffer of recent samples (max 1000)
-   - Used for percentile calculations
-   - Keyed by `{timestamp, ref}` for ordering
-
-Metrics are lock-free using `ets:update_counter/3`

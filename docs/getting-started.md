@@ -6,9 +6,12 @@ This guide walks you through setting up Mycelium in your Erlang project and runn
 
 - Erlang/OTP 26 or later
 - rebar3 build tool
-- `-proto_dist mycelium` in your `vm.args` (OTP appends `_dist` and
-  resolves to `mycelium_dist`). Mycelium owns its distribution
-  carrier and uses QUIC under the hood.
+- `-proto_dist quic` in your `vm.args`. Mycelium runs on upstream
+  `quic_dist` and plugs in via the `auth_callback`, `discovery_module`,
+  and `register_with_epmd` options. The default `config/sys.config`
+  wires those.
+- A self-signed QUIC TLS cert. Generate it once with
+  `mycelium_quic_cert:ensure_cert()` (writes to `data/quic/`).
 
 ## Adding Mycelium to Your Project
 
@@ -65,24 +68,13 @@ Create or update your `config/sys.config`:
 | `auth_enabled` | true | Enable Ed25519 peer authentication |
 | `auth_trust_mode` | tofu | `tofu` (trust on first use) or `strict` (pre-shared keys only) |
 
-### Circuit Routing Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `circuit_default_hops` | 2 | Default number of intermediate relay hops |
-| `circuit_default_ttl` | 3600000 | Default circuit lifetime in ms (1 hour) |
-| `circuit_relay_max` | 500 | Maximum circuits this node will relay |
-| `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
-| `circuit_establish_timeout` | 30000 | Timeout for circuit setup in ms |
-| `circuit_max_active` | 100 | Maximum concurrent active circuits per node |
-
 ## Starting Your First Node
 
 ### Option 1: Interactive Shell
 
 ```bash
 rebar3 shell --config config/sys.config --sname node1 \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
 ```erlang
@@ -113,13 +105,13 @@ Start two nodes and have them find each other:
 **Terminal 1 - First Node (Seed)**
 ```bash
 rebar3 shell --sname seed --config config/sys.config \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
 **Terminal 2 - Second Node**
 ```bash
 rebar3 shell --sname node1 --config config/sys.config \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
 ```erlang
@@ -254,7 +246,7 @@ for the full command list.
 ## Next Steps
 
 - [Tutorial: Building P2P Applications](tutorial.md) - Build a distributed chat system
-- [Circuit Routing](circuits.md) - Multi-hop encrypted communication
 - [Authentication](authentication.md) - Key management and trust modes
+- [External Relay](external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
 - [Testing](testing.md) - Local and docker test commands
 - [Internals](internals.md) - Understand the protocols and architecture

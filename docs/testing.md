@@ -5,9 +5,8 @@ Mycelium ships two layers of tests:
 - **Local** — unit and property suites that run inside a single
   BEAM instance. No docker, no network setup.
 - **Docker e2e** — multi-container clusters that exercise the
-  full distribution carrier (`-proto_dist mycelium`), Ed25519
-  authentication, and circuit relay routing under a realistic
-  network topology.
+  full distribution carrier (`-proto_dist quic`) and Ed25519
+  authentication under a realistic network topology.
 
 ## Quick reference
 
@@ -19,13 +18,12 @@ Mycelium ships two layers of tests:
 | `rebar3 ct --suite=test/mycelium_dist_basic_SUITE` | Two-node cluster mechanics (no docker) |
 | `rebar3 ct --suite=test/mycelium_dist_auth_basic_SUITE` | Three-node Ed25519 key/trust API (no docker) |
 | `./docker/scripts/run_auth_tests.sh` | Ed25519 strict + TOFU e2e |
-| `./docker/scripts/run_circuit_tests.sh` | Multi-network circuit relay e2e |
 
 The two `*_basic_SUITE` entries spawn slave nodes via `ct_slave` on
 the local host. They cover cluster mechanics, registry sync, service
 discovery, HyParView shuffle, and the key/trust API in seconds. The
-docker suites are still authoritative for the full `-proto_dist
-mycelium` carrier (circuit QUIC streams, multi-network isolation).
+docker suite is authoritative for the full `-proto_dist quic` carrier
+behaviour (Ed25519 callback, EPMD registration, cluster join).
 
 ## Local tests
 
@@ -35,26 +33,23 @@ Prerequisite: Erlang/OTP 28+, rebar3.
 rebar3 ct
 ```
 
-A green run reports `Skipped 43 (43, 0) tests. Passed 265 tests.`
-The 43 skipped cases come from the two docker-only suites
-(`mycelium_docker_auth_SUITE`, `mycelium_docker_circuit_SUITE`);
-they print `Docker-only suite. Run via ./docker/scripts/<name>.sh`
-and exit cleanly. They are only exercised when run through the
-docker scripts below.
+A green run reports `Skipped 17 (17, 0) tests. Passed 177 tests.`
+The 17 skipped cases come from the docker-only `mycelium_docker_auth_SUITE`;
+they print `Docker-only suite. Run via ./docker/scripts/run_auth_tests.sh`
+and exit cleanly.
 
 To run a single suite:
 
 ```bash
-rebar3 ct --suite=test/mycelium_circuit_SUITE
 rebar3 ct --suite=test/mycelium_dist_auth_SUITE
-rebar3 ct --suite=test/mycelium_circuit_reachability_SUITE
+rebar3 ct --suite=test/mycelium_dist_basic_SUITE
 ```
 
 Static checks:
 
 ```bash
-rebar3 xref       # 0 new warnings vs baseline
-rebar3 dialyzer   # 151 warnings is the current baseline
+rebar3 xref       # 0 warnings
+rebar3 dialyzer
 ```
 
 `rebar3 check` chains `xref + dialyzer + eunit + ct` in one go.
@@ -67,13 +62,15 @@ covers most cases.
 ### Single node
 
 ```bash
+%% Generate the QUIC TLS material once before first boot.
+rebar3 shell --eval 'mycelium_quic_cert:ensure_cert(), halt(0).'
+
 rebar3 shell --sname m1 --setcookie mycelium \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
-The `--erl_args` block goes straight to `erl`; without it the
-node boots on the default TCP carrier and `mycelium_dist` is
-not the listener. After boot:
+Without the `-proto_dist quic` flag the node boots on the default
+TCP carrier. After boot:
 
 ```erlang
 %% mycelium starts automatically with the application
@@ -92,14 +89,14 @@ In one terminal:
 
 ```bash
 rebar3 shell --sname m1 --setcookie mycelium \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
 In another terminal:
 
 ```bash
 rebar3 shell --sname m2 --setcookie mycelium \
-    --erl_args "-proto_dist mycelium"
+    --erl_args "-proto_dist quic"
 ```
 
 On `m2`, join the cluster:
@@ -126,8 +123,7 @@ mycelium:passive_view().
 nodes().                            %% all dist-connected peers
 sys:get_state(mycelium_hyparview).  %% raw HyParView state
 
-%% mycelium_dist QUIC carrier
-mycelium_dist:listen_port().
+%% quic_dist carrier
 erl_epmd:names().                   %% who is registered locally
 
 %% Trust + auth state (only when auth_enabled=true)
@@ -135,27 +131,19 @@ mycelium_dist_keys:list_trusted().
 mycelium_dist_keys:get_trust_mode().
 {ok, MyPub} = mycelium_dist_auth:get_public_key().
 
-%% Circuits
-{ok, CId} = mycelium:circuit_create('m1@yourhost').
-mycelium:circuit_send(CId, <<"ping">>).
-mycelium_circuit_metrics:get_metrics().
-mycelium:circuit_close(CId).
-
 %% GUI (visualises supervision tree, processes, ETS tables)
 observer:start().
 ```
 
 ### Auth/encryption opt-in
 
-The shell defaults match the basic CT suite: `auth_enabled=false`,
-no encryption. To exercise auth:
+`auth_enabled` defaults to `true` in `config/sys.config`. To run
+without auth (faster local poking):
 
 ```bash
 rebar3 shell --sname m1 --setcookie mycelium --erl_args " \
-    -proto_dist mycelium \
-    -mycelium auth_enabled true \
-    -mycelium auth_trust_mode tofu \
-    -mycelium auth_key_dir '\"data/keys\"'"
+    -proto_dist quic \
+    -mycelium auth_enabled false"
 ```
 
 Each node generates its keypair on first boot (under
@@ -166,96 +154,64 @@ records peer fingerprints under `data/keys/trusted/`.
 
 `q()` in the shell, or `Ctrl-G` then `q` if you want to leave
 the BEAM running. `mycelium:leave()` issues a graceful HyParView
-disconnect first - useful when you want the peer to clean up its
-active view immediately rather than wait for a tick to time out.
+disconnect first (useful when you want the peer to clean up its
+active view immediately rather than wait for a tick to time out).
 
 ## Docker e2e tests
 
 Prerequisites:
 - docker and `docker compose` v2
 - a github auth token in `GH_TOKEN`, or the `gh` CLI logged in
-  (`gh auth login`). The build pulls a private dependency
-  (`erlang_masque`); the run scripts auto-export the token from
+  (`gh auth login`). The run scripts auto-export the token from
   `gh auth token` if `GH_TOKEN` is unset.
 
-The two scripts each bring up a compose stack, run a CT suite
-inside the `test_runner` container, and tear the stack down on
-exit. CT logs land under `test_results/`.
+The script brings up a compose stack, runs a CT suite inside the
+`test_runner` container, and tears the stack down on exit. CT logs
+land under `test_results/`.
 
 ```bash
-./docker/scripts/run_auth_tests.sh      # Ed25519 auth
-./docker/scripts/run_circuit_tests.sh   # multi-network circuit relay
+./docker/scripts/run_auth_tests.sh
 ```
 
-The basic 3-node cluster mechanics suite is no longer in docker.
-It moved to `mycelium_dist_basic_SUITE`, runs locally via `rebar3
-ct` in seconds, and covers the same HyParView/registry/overlay
-behaviour.
-
-Common flags (both scripts):
+Common flags:
 
 - `--no-build` — reuse the existing image instead of rebuilding.
 - `--cleanup` — tear down containers, networks, and volumes from
   a previous run, then exit.
 
-### What each suite covers
+### What the suite covers
 
 **`run_auth_tests.sh` → `mycelium_docker_auth_SUITE`** — three
 nodes start with `auth_enabled=true, auth_trust_mode=tofu`. The
-suite verifies that the Ed25519 in-handshake exchange runs on
-the dedicated auth stream, that fingerprints are persisted to
-`/app/data/keys/trusted/`, and that re-connects after restart
-still trust the same peer. The strict-mode profile
+suite verifies that the Ed25519 challenge-response runs through
+the upstream `quic_dist_auth` callback, that fingerprints are
+persisted to `/app/data/keys/trusted/`, and that re-connects
+after restart still trust the same peer. The strict-mode profile
 (`docker compose --profile strict`) adds an `untrusted_node`
 that the cluster rejects.
 
-> **Status:** the suite runs end-to-end. The `cookie_only_nodes`
-> whitelist short-circuits the Ed25519 handshake for whitelisted
-> probes (the test_runner) and lets the OTP-level cookie
-> challenge cover the rest. Cluster-internal connections still
-> run the full Ed25519 challenge-response.
-
-**`run_circuit_tests.sh` → `mycelium_docker_circuit_SUITE`** —
-four nodes across three docker networks:
-
-- `network_a` (172.30.0.0/24): `node1` (initiator)
-- `network_b` (172.31.0.0/24): `node4` (destination)
-- `network_relay` (172.32.0.0/24): `node2`, `node3` (relays)
-
-`node1` and `node4` cannot reach each other directly, so the
-suite exercises multi-hop relay circuits, end-to-end encryption
-through the relays, and bidirectional data flow through the
-circuit transport over the per-peer `mycelium_dist` QUIC
-connection.
-
-> **Status:** the suite passes when init_per_suite succeeds
-> (11 ok, 0 failed observed). The four-node multi-network
-> startup is occasionally flaky: `wait_for_rpc` is just
-> `net_kernel:connect_node + rpc:call`, and `connect_node` has
-> no built-in timeout, so a stuck dist handshake against any
-> peer can wedge the whole runner. Re-run if it stalls; a
-> bounded watchdog around `connect_node` is the proper fix
-> (tracked separately).
+The `cookie_only_nodes` whitelist short-circuits the Ed25519
+handshake for whitelisted probes (the test_runner) and lets the
+OTP-level cookie challenge cover the rest. Cluster-internal
+connections still run the full Ed25519 challenge-response.
 
 ### Reading the results
 
-After each script, the per-suite CT log lands in
-`test_results/`. Open `test_results/index.html` (or the
-per-suite `*.html` next to it) for the case-by-case report.
-The script's own exit code is `0` for green, non-zero on any
-failure.
+After the script finishes, the CT log lands in `test_results/`.
+Open `test_results/index.html` (or the per-suite `*.html` next to
+it) for the case-by-case report. The script's own exit code is `0`
+for green, non-zero on any failure.
 
 To clean up between runs:
 
 ```bash
 ./docker/scripts/run_auth_tests.sh --cleanup
-./docker/scripts/run_circuit_tests.sh --cleanup
 ```
 
 ## Recovery
 
 `rebar3 ct` reports `'<some>_SUITE cannot be compiled or
-loaded'` for suites you didn't touch — likely stale `.erl`
+loaded'` for suites you didn't touch: likely stale `.erl`
 files left in `_build/test/lib/mycelium/test/` from a different
 branch. Wipe the test profile and try again:
 
@@ -265,20 +221,9 @@ rm -rf _build/test
 rebar3 ct
 ```
 
-Docker `rebar3 get-deps` fails with `Failed to fetch and copy
-dep` for a git ref — the upstream branch was force-pushed and
-the locked SHA no longer exists. Refresh the lock and rebuild:
-
-```bash
-rebar3 unlock <name>
-rebar3 get-deps
-./docker/scripts/run_auth_tests.sh
-```
-
-Docker build prompts for github auth or fails on a private dep
-(`erlang_masque` is private). The run scripts read `gh auth
-token` automatically when `GH_TOKEN` is unset; if you don't use
-the `gh` CLI, export it manually:
+Docker build prompts for github auth or fails on a private dep.
+The run scripts read `gh auth token` automatically when `GH_TOKEN`
+is unset; if you don't use the `gh` CLI, export it manually:
 
 ```bash
 GH_TOKEN=ghp_xxx ./docker/scripts/run_auth_tests.sh

@@ -1,663 +1,198 @@
-# Circuit Routing
+# Circuits
 
-Circuit routing enables secure, multi-hop communication channels through the Mycelium network. Circuits provide end-to-end encryption where intermediate relay nodes cannot read the traffic.
+A circuit is a chain of QUIC user streams spliced together at one or
+more intermediate hops on top of the existing per-peer dist
+connections. Mycelium uses them to give applications stream-shaped
+channels between cluster nodes that are not in each other's active
+view, with byte-perfect resume across hop failure and automatic
+shortest/fastest path selection.
 
-## Overview
+## When to use
 
-A circuit is an encrypted tunnel from an initiator node to a destination node, optionally passing through one or more relay nodes. Key properties:
+- **Reach a cluster node that is not directly connected.** You can
+  pass an explicit path or let mycelium pick the lowest-RTT route.
+- **Multiplex many independent streams between two nodes.** A
+  single-hop circuit (`open(Peer)`) is just a stream over the
+  existing dist connection; no new QUIC handshake.
+- **Survive an intermediate hop disappearing.** When a relay's link
+  goes down, the circuit migrates to another path automatically and
+  no bytes are lost.
 
-- **End-to-end encryption**: Only the initiator and destination can read the data
-- **Relay privacy**: Intermediate hops forward opaque encrypted blobs
-- **Ephemeral keys**: Each circuit uses unique X25519 keys for forward secrecy
-- **Automatic routing**: Relay hops are selected from the HyParView membership
+## When not to use
 
-### When to Use Circuits
+- For NAT/firewall traversal: out of scope. See
+  [external-relay.md](external-relay.md) for how to wire an external
+  tunnel adapter.
+- When you need raw `quic_dist` user streams without circuit
+  framing: open them via `mycelium_streams:open(Tag, Node)` with your
+  own tag (any binary not starting with `<<"mycelium:">>`).
 
-| Use Case | Recommended |
-|----------|-------------|
-| Sensitive data between known peers | Yes |
-| Anonymous communication | Yes (multiple hops) |
-| High-throughput bulk transfer | No (use direct connections) |
-| Real-time low-latency messaging | No (circuit setup adds latency) |
-
-### Connection Path Selection
-
-Mycelium automatically selects the best path to reach a target, considering NAT traversal and direct reachability:
-
-```
-                        ┌─────────────────────────────────────────┐
-                        │         Path Selection Flow             │
-                        └─────────────────────────────────────────┘
-
-┌─────────┐     ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
-│ Circuit │────►│ Direct Reachable?│─Yes─►│  Direct Path    │────►│ 0-hop Circuit│
-│ Create  │     │ (Active/Nodes)   │     │  (No Relay)     │     │ (Encrypted)  │
-└─────────┘     └──────────────────┘     └─────────────────┘     └──────────────┘
-                        │ No
-                        ▼
-                ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
-                │ NAT Compatible?  │─Yes─►│  Hole Punch     │─OK─►│ Direct UDP   │
-                │ (Cache lookup)   │     │  Attempt        │     │ Connection   │
-                └──────────────────┘     └─────────────────┘     └──────────────┘
-                        │ No                     │ Fail
-                        ▼                        ▼
-                ┌──────────────────┐     ┌─────────────────┐     ┌──────────────┐
-                │  Select Relays   │────►│  Multi-hop      │────►│ Relay Circuit│
-                │  from HyParView  │     │  Circuit        │     │ (N hops)     │
-                └──────────────────┘     └─────────────────┘     └──────────────┘
-```
-
-#### Step 1: Direct Reachability Check
-
-First, Mycelium checks if the target is directly reachable without NAT traversal:
-
-| Check | Method | Result if True |
-|-------|--------|----------------|
-| Active view | Target in HyParView active view | Direct path |
-| Erlang nodes | Target in `nodes()` | Direct path |
-| Dist probe | `net_kernel:connect_node/1` with bounded timeout | Direct path |
+## API
 
 ```erlang
-%% Direct path results in 0-hop circuit (still encrypted)
-{ok, CircuitId} = mycelium:circuit_create('target@host').
-%% If target is reachable, circuit uses direct connection
-```
+%% Auto-route: lowest-RTT path picked via mycelium_router.
+{ok, CRef} = mycelium_circuit:open(Target).
 
-#### Step 2: NAT Compatibility Check
+%% Explicit path (intermediate hops only; target excluded).
+{ok, CRef} = mycelium_circuit:open(Target, [Hop1, Hop2]).
 
-If direct connection fails, check NAT compatibility:
-
-```
-┌─────────────┐                              ┌─────────────┐
-│   Node A    │                              │   Node B    │
-│ NAT: port   │                              │ NAT: full   │
-│ restricted  │                              │    cone     │
-└──────┬──────┘                              └──────┬──────┘
-       │                                            │
-       │         ┌──────────────────┐              │
-       └────────►│  NAT Cache       │◄─────────────┘
-                 │  Lookup Types    │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │ is_viable(       │
-                 │   port_restricted│────► true (can punch)
-                 │   full_cone)     │
-                 └──────────────────┘
-```
-
-NAT info is exchanged via the hello protocol and cached:
-
-```erlang
-%% Check if hole punch is viable
-case mycelium_nat_cache:get_peer_nat(Target) of
-    {ok, #nat_info{nat_type = PeerNat}} ->
-        LocalNat = mycelium_nat:get_nat_type(),
-        mycelium_hole_punch:is_viable(LocalNat, PeerNat);
-    {error, _} ->
-        unknown  %% Try hole punch anyway
-end.
-```
-
-#### Step 3: Hole Punch or Relay
-
-Based on NAT compatibility:
-
-**Compatible NATs (hole punch viable):**
-```
-┌─────────────┐                              ┌─────────────┐
-│   Node A    │                              │   Node B    │
-│  Internal:  │         ┌────────┐           │  Internal:  │
-│ 192.168.1.10│◄────────│  NAT   │◄──────────│ 10.0.0.20   │
-│  External:  │────────►│Gateway │──────────►│  External:  │
-│ 203.0.113.5 │         └────────┘           │198.51.100.8 │
-└──────┬──────┘              │               └──────┬──────┘
-       │                     │                      │
-       │    UDP Hole Punch   │                      │
-       │◄═══════════════════════════════════════════│
-       │═══════════════════════════════════════════►│
-       │         Direct UDP Connection              │
-```
-
-**Incompatible NATs (relay required):**
-```
-┌─────────────┐                              ┌─────────────┐
-│   Node A    │                              │   Node B    │
-│ NAT:symmetric│                             │ NAT:symmetric│
-└──────┬──────┘                              └──────┬──────┘
-       │                                            │
-       │    ┌─────────┐    ┌─────────┐             │
-       │───►│ Relay 1 │───►│ Relay 2 │─────────────│
-       │◄───│         │◄───│         │◄────────────│
-       │    └─────────┘    └─────────┘             │
-       │           Encrypted Relay Path            │
-```
-
-### Direct Connection Optimization
-
-When creating a circuit, Mycelium automatically checks if the target is directly reachable:
-
-1. **Active view check**: If target is in HyParView active view, use direct connection
-2. **Erlang nodes check**: If target is in `nodes()`, use direct connection
-3. **Dist probe**: If not a neighbor, call `net_kernel:connect_node/1` with a bounded timeout. Mycelium owns the dist carrier (`mycelium_dist`) so a successful probe means the QUIC connection is up and the circuit can multiplex over it.
-4. **NAT hole punch**: If the probe fails but NATs are compatible, attempt UDP hole punch
-5. **MASQUE relay**: If hole punching also fails, fall back to a HTTP/3 CONNECT-UDP relay (`mycelium_circuit_relay_masque`) when `circuit_relay_uri` is configured
-
-If direct connection is possible, the circuit uses zero relay hops (direct path), reducing latency and network overhead. If direct fails, it falls back to relay routing.
-
-Probe results are cached to avoid repeated connection attempts:
-- Successful probes cached for 5 minutes (configurable)
-- Failed probes cached for 1 minute (configurable)
-
-Disable probing with `{circuit_probe_direct, false}` in config.
-
-### Same-NAT Optimization
-
-When two nodes are behind the same NAT gateway (same external IP), they can communicate directly on the local network:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    NAT Gateway                          │
-│                External: 203.0.113.1                    │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              Local Network                       │   │
-│  │                                                  │   │
-│  │  ┌─────────┐         Direct         ┌─────────┐ │   │
-│  │  │ Node A  │◄═══════════════════════│ Node B  │ │   │
-│  │  │Internal:│      Local Traffic     │Internal:│ │   │
-│  │  │.168.1.10│                        │.168.1.20│ │   │
-│  │  └─────────┘                        └─────────┘ │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-```
-
-Mycelium detects same-NAT scenarios by comparing external addresses and prefers host candidates for local network communication.
-
-## Quick Start
-
-### Creating a Circuit
-
-```erlang
-%% Create a circuit to target node with default options (2 hops)
-{ok, CircuitId} = mycelium:circuit_create('target@host').
-
-%% Create with custom options
-{ok, CircuitId} = mycelium:circuit_create('target@host', #{
-    hops => 3,           %% Number of intermediate relay nodes
-    ttl => 1800000       %% Circuit lifetime in ms (30 minutes)
+%% Options.
+{ok, CRef} = mycelium_circuit:open(Target, #{
+    path => [Hop1],     %% or omit to auto-route
+    repath => true,     %% migrate on hop failure (default true)
+    max_hops => 4,      %% router probe budget
+    timeout => 200      %% probe collection timeout (ms)
 }).
+
+ok = mycelium_circuit:send(CRef, <<"hello">>).
+ok = mycelium_circuit:close(CRef).
 ```
 
-### Sending and Receiving Data
+The same calls are exposed on the `mycelium` module as
+`circuit_open/1,2`, `circuit_send/2`, `circuit_close/1`,
+`circuit_listen/0,1`, `circuit_unlisten/0,1`.
+
+## Owner mailbox
+
+Both initiator and destination receive these messages:
 
 ```erlang
-%% Send data through the circuit
-ok = mycelium:circuit_send(CircuitId, <<"Hello, secure world!">>).
+{circuit, CRef, {opened, InitiatorNode}}      %% destination only
+{circuit, CRef, {data, Data}}
+{circuit, CRef, {migrating, OldPath}}         %% before re-route attempt
+{circuit, CRef, {migrated, NewPath, EstRtt}}  %% after successful resume
+{circuit, CRef, {migration_failed, Reason}}   %% no alternate path / timeout
+{circuit, CRef, closed}                        %% peer FIN or terminal failure
+```
 
-%% The initiator receives responses as messages:
+Destination side:
+
+```erlang
+ok = mycelium_circuit:listen().
 receive
-    {circuit_data, CircuitId, Data} ->
-        io:format("Received: ~s~n", [Data])
+    {circuit, CRef, {opened, From}} ->
+        loop(CRef, From)
 end.
-```
 
-### Closing a Circuit
-
-```erlang
-%% Explicit close
-mycelium:circuit_close(CircuitId).
-
-%% Circuits also close automatically when TTL expires
-```
-
-## API Reference
-
-### mycelium:circuit_create/1,2
-
-Create a new circuit to a target node.
-
-```erlang
--spec circuit_create(Target :: node()) -> {ok, CircuitId} | {error, Reason}.
--spec circuit_create(Target :: node(), Opts :: map()) -> {ok, CircuitId} | {error, Reason}.
-```
-
-**Options:**
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `hops` | integer | 2 | Number of intermediate relay hops |
-| `ttl` | integer | 3600000 | Circuit lifetime in milliseconds |
-
-**Returns:**
-- `{ok, CircuitId}` - Circuit ID to use for sending/receiving
-- `{error, cannot_circuit_to_self}` - Cannot create circuit to local node
-- `{error, not_enough_peers}` - Not enough peers available for requested hops
-
-### mycelium:circuit_send/2
-
-Send data through an established circuit.
-
-```erlang
--spec circuit_send(CircuitId, Data :: binary()) -> ok | {error, Reason}.
-```
-
-**Returns:**
-- `ok` - Data queued for transmission
-- `{error, not_found}` - Circuit does not exist
-- `{error, circuit_not_ready}` - Circuit still establishing
-
-### mycelium:circuit_close/1
-
-Close a circuit and release resources.
-
-```erlang
--spec circuit_close(CircuitId) -> ok.
-```
-
-Always returns `ok`, even if circuit does not exist.
-
-### mycelium:circuit_info/1
-
-Get information about a circuit.
-
-```erlang
--spec circuit_info(CircuitId) -> {ok, Info :: map()} | {error, not_found}.
-```
-
-**Info map fields:**
-- `id` - Circuit identifier
-- `role` - `initiator` or `destination`
-- `target` - Target node
-- `hops` - List of relay nodes
-- `state` - `building` | `ready`
-- `created_at` - Creation timestamp (monotonic)
-- `expires_at` - Expiration timestamp (monotonic)
-
-### mycelium:list_circuits/0
-
-List all active circuits on this node.
-
-```erlang
--spec list_circuits() -> [Info :: map()].
-```
-
-Returns a list of info maps (same format as `circuit_info/1`).
-
-### mycelium:circuit_listen/0,1
-
-Register to receive incoming circuit connections.
-
-```erlang
--spec circuit_listen() -> ok | {error, already_listening}.
--spec circuit_listen(Pid :: pid()) -> ok | {error, already_listening}.
-```
-
-### mycelium:circuit_unlisten/0
-
-Stop listening for incoming circuits.
-
-```erlang
--spec circuit_unlisten() -> ok.
-```
-
-## Receiving Circuits (Destination)
-
-To accept incoming circuits, a process must register as a listener:
-
-```erlang
-%% Register as circuit listener
-ok = mycelium:circuit_listen().
-
-%% Handle incoming circuit messages
-loop() ->
+loop(CRef, From) ->
     receive
-        {circuit_ready, CircuitId} ->
-            io:format("New circuit: ~p~n", [CircuitId]),
-            loop();
-
-        {circuit_data, CircuitId, Data} ->
-            io:format("Data on ~p: ~p~n", [CircuitId, Data]),
-            %% Send response back
-            mycelium:circuit_send(CircuitId, <<"ACK">>),
-            loop();
-
-        {circuit_closed, CircuitId, Reason} ->
-            io:format("Circuit ~p closed: ~p~n", [CircuitId, Reason]),
-            loop()
+        {circuit, CRef, {data, Data}} ->
+            mycelium_circuit:send(CRef, [<<"echo:">>, Data]),
+            loop(CRef, From);
+        {circuit, CRef, closed} ->
+            ok
     end.
 ```
 
-Only one process per node can be the circuit listener. Call `circuit_unlisten/0` to release.
+## Architecture
 
-## Configuration
+Five internal modules:
 
-Configure circuit routing in your `sys.config`:
+- **`mycelium_streams`** — single user-stream acceptor per peer.
+  Demuxes incoming streams by their leading `<<TagLen:8, Tag>>`
+  preamble and hands ownership to the registered handler. Apps
+  register their own tags via
+  `mycelium_streams:register_acceptor/2` and open via
+  `mycelium_streams:open/2`. Circuits use the reserved tag
+  `<<"mycelium:circuit">>`.
+- **`mycelium_circuit_proto`** — wire format for the five circuit
+  frames: CREATE, RESUME, DATA, ACK, FIN.
+- **`mycelium_circuit_link`** — pure-data windowed reliability
+  state. Holds tx/rx sequence numbers, unacked-frame buffer for
+  retransmit, and ack-pacing counters. 48-bit frame seqs;
+  cumulative ACKs.
+- **`mycelium_circuit_relay`** — singleton acceptor for circuit
+  traffic. On CREATE: spawns a destination or relay pipe based on
+  remaining path. On RESUME: looks up the existing destination
+  pipe by circuit id and `attach_inbound`s the new stream.
+- **`mycelium_circuit_pipe`** — per-circuit gen_server in three
+  roles. *Initiator* drives migration via
+  `mycelium_router:find_path/2`. *Destination* waits for a
+  RESUME-bearing fresh inbound stream during migration. *Relay*
+  splices bytes between two streams.
 
-```erlang
-{mycelium, [
-    %% Circuit defaults
-    {circuit_default_hops, 2},        %% Default relay hops for new circuits
-    {circuit_default_ttl, 3600000},   %% Default TTL (1 hour)
+Path selection uses `mycelium_path_stats:srtt/1` (a one-line
+wrapper over `quic:get_path_stats/1`) and
+`mycelium_router:find_path/2`, which probes candidate next-hops in
+parallel and caches results in a dedicated ETS table for 30
+seconds.
 
-    %% Resource limits
-    {circuit_relay_max, 500},         %% Max circuits this node will relay
-    {circuit_idle_timeout, 300000},   %% Idle circuit cleanup interval (5 min)
+## Wire format
 
-    %% Direct connection optimization
-    {circuit_probe_direct, true},     %% Enable direct connection probing
-    {circuit_probe_timeout, 500},     %% Dist connect_node probe timeout in ms
-    {circuit_reachability_cache_ttl, 300000},    %% Cache TTL for successful probes (5 min)
-    {circuit_reachability_negative_ttl, 60000},  %% Cache TTL for failed probes (1 min)
+Each circuit stream begins with the `mycelium_streams` tag preamble
+`<<16, "mycelium:circuit">>`, followed by frames:
 
-    %% NAT traversal (see docs/nat-traversal.md for details)
-    {nat_enabled, true},              %% Enable NAT discovery
-    {stun_servers, [                  %% STUN servers for NAT type detection
-        {"stun.l.google.com", 19302}
-    ]},
-    {hole_punch_enabled, true},       %% Enable UDP hole punching
-    {hole_punch_timeout, 10000},      %% Hole punch timeout in ms
-    {upnp_enabled, true}              %% Enable UPnP/NAT-PMP port mapping
-]}
+```
+CREATE  <<1, IdLen, Id, InitLen:16, Init, PathLen, [NameLen:16, Name]*>>
+RESUME  <<2, IdLen, Id, RxNextSeq:48, PathLen, [NameLen:16, Name]*>>
+DATA    <<3, Seq:48, Len:32, Payload>>
+ACK     <<4, CumulativeSeq:48>>
+FIN     <<5, Seq:48>>
 ```
 
-### Configuration Reference
+Both DATA and FIN consume one sequence number; ACK is cumulative
+and covers any frame type with `Seq <= CumulativeSeq`.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `circuit_default_hops` | 2 | Default number of intermediate relay hops |
-| `circuit_default_ttl` | 3600000 | Default circuit lifetime in ms (1 hour) |
-| `circuit_relay_max` | 500 | Maximum circuits this node will relay |
-| `circuit_idle_timeout` | 300000 | Idle relay cleanup interval in ms (5 min) |
-| `circuit_probe_direct` | true | Enable direct connection probing |
-| `circuit_probe_timeout` | 500 | Dist connect_node probe timeout in ms |
-| `circuit_reachability_cache_ttl` | 300000 | Cache TTL for successful probes in ms (5 min) |
-| `circuit_reachability_negative_ttl` | 60000 | Cache TTL for failed probes in ms (1 min) |
-| `nat_enabled` | true | Enable NAT type discovery via STUN |
-| `stun_servers` | Google STUN | List of `{Host, Port}` STUN servers |
-| `hole_punch_enabled` | true | Enable UDP hole punching |
-| `hole_punch_timeout` | 10000 | Hole punch timeout in ms |
-| `upnp_enabled` | true | Enable UPnP/NAT-PMP port mapping |
+## Migration semantics
 
-## Metrics and Monitoring
+When the initiator's stream to its first hop closes unexpectedly:
 
-Circuit metrics are available via `mycelium_circuit_metrics:get_metrics/0`:
+1. The pipe emits `{migrating, OldPath}` to the owner.
+2. It calls `mycelium_router:find_path(Target, #{exclude => [DeadHop]})`.
+3. It opens a fresh stream to the new first hop via
+   `mycelium_streams:open(<<"mycelium:circuit">>, NewFirstHop)`.
+4. It writes `FRAME_RESUME(Id, MyRxNextSeq, NewRemainingPath)`.
+5. Each relay along the new path treats RESUME like CREATE for
+   routing: pops the path head, opens its downstream, rewrites
+   RESUME with the tail. Relays keep no per-circuit state.
+6. The destination pipe receives RESUME on a fresh inbound stream
+   (mediated by the relay's circuit-id map), prunes its own
+   tx-unacked buffer to peer's RxNextSeq, replays remaining
+   DATA/FIN frames in order, and writes its own
+   `FRAME_RESUME(Id, MyRxNextSeq, [])` back upstream.
+7. The initiator does the symmetric prune+replay on receiving the
+   destination's RESUME.
+8. Both sides emit `{migrated, NewPath, EstRtt}` and resume normal
+   traffic.
+
+Bytes in flight at the moment of failure are not lost: every
+DATA/FIN sits in the sender's unacked buffer until the peer
+cumulative-ACKs it, so the resume cursor exchange tells each side
+exactly where to pick up.
+
+## Path observability
+
+`mycelium_path_stats:summary(Node)` returns the per-connection
+metrics that upstream `quic:get_path_stats/1` exposes:
 
 ```erlang
 #{
-    circuits_created => 150,
-    circuits_established => 145,
-    circuits_failed => 5,
-    circuits_closed => 120,
-    circuits_active => 25,
-    data_sent_bytes => 1048576,
-    data_sent_count => 500,
-    data_recv_bytes => 524288,
-    data_recv_count => 250,
-    latency => #{
-        count => 145,
-        avg_ms => 82.5,
-        min_ms => 15,
-        max_ms => 450,
-        p50_ms => 65,
-        p90_ms => 180,
-        p99_ms => 350,
-        histogram => #{10 => 5, 50 => 30, 100 => 60, ...}
-    }
+    srtt => 1234,            %% smoothed RTT, microseconds
+    latest_rtt => 1500,
+    min_rtt => 1000,
+    rtt_var => 100,
+    cwnd => 14600,           %% congestion window, bytes
+    bytes_in_flight => 0,
+    in_recovery => false,
+    congested => false
 }
 ```
 
-### Latency Statistics
+`mycelium_router:find_path/2` uses `srtt/1` to rank candidates.
+Since QUIC SRTT is round-trip on the forward edge, summing per-hop
+srtts is an order-preserving proxy for total path latency.
 
-```erlang
-%% Get just latency stats
-Stats = mycelium_circuit_metrics:get_latency_stats().
-```
+## Caveats
 
-Returns percentiles (p50, p90, p99) and histogram buckets for circuit establishment latency.
-
-### Failure Categories
-
-Failed circuits are categorized:
-- `timeout` - Establishment timeout (30s default)
-- `transport_down` - Network connection failed
-- `not_enough_peers` - Insufficient peers for requested hops
-- `destroyed` - Remote end sent DESTROY
-- `local_close` - Locally closed during establishment
-
-## How It Works
-
-### Circuit Establishment Flow
-
-```
-Initiator                 Relay A                  Relay B                 Destination
-    │                        │                        │                        │
-    │── CREATE(id, eph_pub) ─►│                        │                        │
-    │                        │── CREATE ──────────────►│                        │
-    │                        │                        │── CREATE ──────────────►│
-    │                        │                        │                        │
-    │                        │                        │◄── CREATED(eph_pub) ───│
-    │                        │◄── EXTENDED ───────────│                        │
-    │◄── EXTENDED ───────────│                        │                        │
-    │                        │                        │                        │
-    │                     CIRCUIT READY                                        │
-    │                        │                        │                        │
-    │══ DATA(encrypted) ════►│══ DATA ═══════════════►│══ DATA ═══════════════►│
-    │                        │                        │                        │
-    │◄══ DATA(encrypted) ════│◄══ DATA ═══════════════│◄══ DATA ═══════════════│
-```
-
-1. Initiator selects relay hops from HyParView membership
-2. CREATE message sent to first hop with ephemeral public key
-3. Each relay forwards CREATE to next hop
-4. Destination generates its ephemeral keypair, sends CREATED back
-5. EXTENDED propagates back to initiator
-6. Both ends compute shared secret and derive session keys
-7. DATA messages are encrypted end-to-end
-
-### Protocol Messages
-
-| Message | Direction | Purpose |
-|---------|-----------|---------|
-| `CREATE` | Forward | Establish circuit hop |
-| `CREATED` | Backward | Acknowledge hop creation |
-| `EXTEND` | Forward | Extend to next hop |
-| `EXTENDED` | Backward | Acknowledge extension |
-| `DATA` | Both | Encrypted application data |
-| `DESTROY` | Both | Tear down circuit |
-
-### Encryption Layers
-
-Each circuit uses X25519 key exchange and ChaCha20-Poly1305 AEAD:
-
-1. Initiator generates ephemeral keypair
-2. Destination generates ephemeral keypair
-3. Both compute shared secret via X25519
-4. Session keys derived for each direction
-5. All DATA payloads encrypted with ChaCha20-Poly1305
-
-Relay nodes only see:
-- Circuit ID
-- Direction (forward/backward)
-- Encrypted blob
-
-## Examples
-
-### Simple Echo Circuit
-
-**Server (destination):**
-```erlang
--module(circuit_echo_server).
--export([start/0]).
-
-start() ->
-    ok = mycelium:circuit_listen(),
-    loop().
-
-loop() ->
-    receive
-        {circuit_ready, CircuitId} ->
-            io:format("Circuit ~p connected~n", [CircuitId]),
-            loop();
-        {circuit_data, CircuitId, Data} ->
-            %% Echo back
-            mycelium:circuit_send(CircuitId, Data),
-            loop();
-        {circuit_closed, CircuitId, Reason} ->
-            io:format("Circuit ~p closed: ~p~n", [CircuitId, Reason]),
-            loop()
-    end.
-```
-
-**Client (initiator):**
-```erlang
--module(circuit_echo_client).
--export([echo/2]).
-
-echo(Target, Message) ->
-    {ok, CircuitId} = mycelium:circuit_create(Target),
-    receive
-        {circuit_ready, CircuitId} ->
-            mycelium:circuit_send(CircuitId, Message),
-            receive
-                {circuit_data, CircuitId, Response} ->
-                    mycelium:circuit_close(CircuitId),
-                    {ok, Response}
-            after 5000 ->
-                mycelium:circuit_close(CircuitId),
-                {error, timeout}
-            end;
-        {circuit_failed, CircuitId, Reason} ->
-            {error, Reason}
-    after 30000 ->
-        {error, establishment_timeout}
-    end.
-```
-
-### Multi-hop Anonymous Routing
-
-```erlang
-%% Create circuit with 5 hops for stronger anonymity
-{ok, CircuitId} = mycelium:circuit_create('destination@host', #{
-    hops => 5,
-    ttl => 600000  %% 10 minutes
-}).
-```
-
-### Circuit Pool Pattern
-
-For services that need multiple concurrent circuits:
-
-```erlang
--module(circuit_pool).
--export([start/2, get_circuit/1, return_circuit/2]).
-
-start(Target, PoolSize) ->
-    Circuits = [begin
-        {ok, C} = mycelium:circuit_create(Target),
-        receive {circuit_ready, C} -> C after 30000 -> error end
-    end || _ <- lists:seq(1, PoolSize)],
-    {ok, spawn(fun() -> pool_loop(Circuits, []) end)}.
-
-get_circuit(Pool) ->
-    Pool ! {get, self()},
-    receive {circuit, C} -> {ok, C} after 5000 -> {error, timeout} end.
-
-return_circuit(Pool, Circuit) ->
-    Pool ! {return, Circuit}.
-
-pool_loop(Available, InUse) ->
-    receive
-        {get, From} when Available =/= [] ->
-            [C | Rest] = Available,
-            From ! {circuit, C},
-            pool_loop(Rest, [C | InUse]);
-        {return, C} ->
-            pool_loop([C | Available], lists:delete(C, InUse));
-        {circuit_closed, C, _} ->
-            pool_loop(lists:delete(C, Available), lists:delete(C, InUse))
-    end.
-```
-
-## Troubleshooting
-
-### Circuit Establishment Failures
-
-**`{error, not_enough_peers}`**
-
-Not enough peers in active/passive view for requested hops.
-
-Solutions:
-- Reduce number of hops: `mycelium:circuit_create(Target, #{hops => 1})`
-- Wait for more peers to join the network
-- Check `mycelium:active_view()` and `mycelium:passive_view()`
-
-**`{circuit_failed, _, timeout}`**
-
-Circuit did not establish within 30 seconds.
-
-Solutions:
-- Check network connectivity to target
-- Verify target node is running and reachable
-- Check relay nodes are healthy
-
-**`{circuit_failed, _, {transport_down, _}}`**
-
-Network connection to first hop failed.
-
-Solutions:
-- Check firewall allows the dist QUIC port (UDP)
-- Verify peer is still in active view
-- Check for network partitions
-
-### Data Transmission Issues
-
-**`{error, circuit_not_ready}`**
-
-Attempted to send before circuit fully established.
-
-Solution: Wait for `{circuit_ready, CircuitId}` message before sending.
-
-**`{circuit_closed, _, decrypt_failed}`**
-
-Data decryption failed, indicating corrupted or tampered data.
-
-This should be rare. Check for:
-- Memory corruption
-- Man-in-the-middle attacks (if encryption was compromised)
-- Bugs in custom relay implementations
-
-### Resource Issues
-
-**Too many relay circuits**
-
-Check `mycelium_circuit_relay:count()`. If near `circuit_relay_max`:
-- Increase limit in configuration
-- Reduce circuit TTL to free resources faster
-- Monitor which nodes are creating excessive circuits
-
-### Monitoring Circuit Health
-
-```erlang
-%% Check circuit status
-{ok, Info} = mycelium:circuit_info(CircuitId).
-
-%% List all circuits
-Circuits = mycelium:list_circuits().
-
-%% Check relay load
-RelayCount = mycelium_circuit_relay:count().
-
-%% Get metrics
-Metrics = mycelium_circuit_metrics:get_metrics().
-
-%% Check NAT status
-NatType = mycelium_nat:get_nat_type().
-{ok, ExtAddr, ExtPort} = mycelium_nat:get_external_address().
-```
-
-## See Also
-
-- [NAT Traversal](nat-traversal.md) - NAT discovery, hole punching, and relay fallback
-- [Authentication](authentication.md) - Ed25519 peer authentication
-- [Getting Started](getting-started.md) - Initial setup and configuration
-- [Internals](internals.md) - HyParView membership protocol
+- **Path selection is best-effort.** `find_path` probes peers
+  reachable in one hop today; multi-hop probing recursion is a
+  follow-up. For 3+ hop paths in non-trivial topologies, pass an
+  explicit `path` option.
+- **Migration drops in-flight bytes only on terminal failure.** If
+  the alternate path also dies during the resume handshake, the
+  pipe emits `migration_failed` and `closed`; the app sees
+  whatever was acknowledged before the first failure plus loss of
+  in-flight bytes from that point.
+- **One handler per tag.** `mycelium_streams:register_acceptor/2`
+  is exclusive per tag; if you need multiple consumers, fan out
+  inside your handler.

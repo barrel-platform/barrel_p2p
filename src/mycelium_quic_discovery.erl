@@ -3,8 +3,10 @@
 
 %% QUIC Discovery Backend for Mycelium
 %%
-%% Integrates with HyParView for peer discovery in QUIC distribution.
-%% Falls back to static configuration for bootstrap nodes.
+%% Resolves peer node names to QUIC dist addresses. HyParView only
+%% tracks node atoms (not transport addresses), so this module reads
+%% from static configuration in `{quic, [{dist, [{nodes, ...}]}]}'
+%% and falls back to DNS by extracting the host part of `name@host'.
 
 -include("mycelium.hrl").
 
@@ -53,68 +55,21 @@ register(_NodeName, _Port, State) ->
     {ok, State}.
 
 %% @doc Look up a node's QUIC address.
-%% First checks HyParView for the peer, then falls back to static config.
+%% Reads static configuration first, then falls back to DNS resolution
+%% of the host part of `name@host'.
 -spec lookup(atom(), string()) ->
     {ok, {inet:ip_address() | string(), inet:port_number()}} | {error, term()}.
 lookup(Node, Host) ->
-    %% First try HyParView for active/passive peer info
-    case lookup_hyparview(Node) of
-        {ok, Addr, Port} ->
-            {ok, {Addr, Port}};
-        {error, _} ->
-            %% Fall back to static configuration
-            lookup_static(Node, Host)
-    end.
+    lookup_static(Node, Host).
 
-%% @doc List all known nodes.
-%% Returns nodes from both HyParView views and static configuration.
+%% @doc List nodes from static configuration.
 -spec list_nodes(string()) -> {ok, [{atom(), inet:port_number()}]} | {error, term()}.
 list_nodes(_Host) ->
-    %% Combine HyParView nodes with static config
-    HyParViewNodes = get_hyparview_nodes(),
-    StaticNodes = get_static_nodes(),
-    %% Merge, preferring HyParView for duplicates
-    AllNodes = lists:usort(fun({A, _}, {B, _}) -> A =< B end,
-                           HyParViewNodes ++ StaticNodes),
-    {ok, AllNodes}.
+    {ok, get_static_nodes()}.
 
 %%====================================================================
 %% Internal Functions
 %%====================================================================
-
-%% @private
-%% Look up a node via HyParView peer info.
-lookup_hyparview(Node) ->
-    try
-        case mycelium_hyparview:get_peer(Node) of
-            {ok, #peer{quic_port = Port, address = Addr}}
-              when Port =/= undefined, Addr =/= undefined ->
-                {ok, Addr, Port};
-            {ok, #peer{quic_port = Port, id = NodeId}}
-              when Port =/= undefined ->
-                %% No address stored, extract from node name
-                case extract_host(NodeId) of
-                    {ok, Host} -> {ok, Host, Port};
-                    Error -> Error
-                end;
-            {ok, #peer{port = Port, address = Addr}}
-              when Port =/= undefined, Addr =/= undefined ->
-                %% Fallback to regular port if quic_port not set
-                %% Assume QUIC uses same port as distribution
-                {ok, Addr, Port};
-            {ok, #peer{port = Port, id = NodeId}}
-              when Port =/= undefined ->
-                case extract_host(NodeId) of
-                    {ok, Host} -> {ok, Host, Port};
-                    Error -> Error
-                end;
-            _ ->
-                {error, not_found}
-        end
-    catch
-        _:_ ->
-            {error, hyparview_unavailable}
-    end.
 
 %% @private
 %% Look up a node in static configuration.
@@ -151,28 +106,6 @@ lookup_from_host(Node, Host) ->
                 Error ->
                     Error
             end
-    end.
-
-%% @private
-%% Get all nodes from HyParView views with their QUIC ports.
-get_hyparview_nodes() ->
-    try
-        Active = mycelium_hyparview:active_view(),
-        Passive = mycelium_hyparview:passive_view(),
-        AllNodes = lists:usort(Active ++ Passive),
-        lists:filtermap(fun(Node) ->
-            case mycelium_hyparview:get_peer(Node) of
-                {ok, #peer{quic_port = Port}} when Port =/= undefined ->
-                    {true, {Node, Port}};
-                {ok, #peer{port = Port}} when Port =/= undefined ->
-                    {true, {Node, Port}};
-                _ ->
-                    false
-            end
-        end, AllNodes)
-    catch
-        _:_ ->
-            []
     end.
 
 %% @private
