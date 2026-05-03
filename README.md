@@ -156,12 +156,25 @@ mycelium_quic_cert:ensure_cert().
 `docker/scripts/` exercise the multi-node clusters. See
 [docs/testing.md](docs/testing.md) for the full command list.
 
+## Example
+
+A small distributed chat app lives under [`examples/chat`](examples/chat). To run a two-node demo:
+
+```bash
+cd examples/chat
+./scripts/run-demo.sh seed                    # terminal 1
+./scripts/run-demo.sh node 1                  # terminal 2
+```
+
+The script generates a QUIC TLS cert under `data/quic/` on first run, links the local mycelium tree as a `_checkouts` override, and starts each node with `-proto_dist quic`. See `examples/chat/README.md` for the three-node walkthrough and the docker compose stack.
+
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Installation and first steps
+- [Getting Started](docs/getting-started.md) - Installation, first-boot setup (TLS cert, Ed25519 keypair), and first cluster
 - [Building P2P Applications](docs/tutorial.md) - Tutorial with worked examples
 - [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
 - [Circuits](docs/circuits.md) - Multi-hop streams over the dist QUIC channel
+- [Connection migration](docs/migration.md) - RFC 9000 §9 path migration via `migrate_peer/1,2`
 - [External Relay](docs/external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
 - [Comparison with Partisan](docs/partisan-comparison.md) - When to use which
 - [Testing](docs/testing.md) - Running local and docker test suites

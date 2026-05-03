@@ -4,14 +4,64 @@ This guide walks you through setting up Mycelium in your Erlang project and runn
 
 ## Prerequisites
 
-- Erlang/OTP 26 or later
+- Erlang/OTP 27 or later
 - rebar3 build tool
 - `-proto_dist quic` in your `vm.args`. Mycelium runs on upstream
   `quic_dist` and plugs in via the `auth_callback`, `discovery_module`,
   and `register_with_epmd` options. The default `config/sys.config`
   wires those.
-- A self-signed QUIC TLS cert. Generate it once with
-  `mycelium_quic_cert:ensure_cert()` (writes to `data/quic/`).
+
+## First-boot setup: TLS cert and Ed25519 keypair
+
+Each node carries two pieces of identity material on disk.
+
+**1. QUIC TLS certificate (`data/quic/node.crt`, `node.key`).**
+The kernel app starts distribution *before* mycelium's application
+code runs, so the cert must already exist when the BEAM boots —
+`quic_dist:listen/2` fails with `{credentials, no_credentials}`
+otherwise. Generate a self-signed pair with `openssl`:
+
+```bash
+mkdir -p data/quic
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout data/quic/node.key -out data/quic/node.crt \
+    -subj '/CN=mycelium'
+```
+
+Or, if you'd rather not depend on `openssl`, use the bundled helper
+once mycelium is compiled into `_build/`:
+
+```bash
+erl -noshell -pa _build/default/lib/*/ebin \
+    -eval 'application:load(mycelium), mycelium_quic_cert:ensure_cert("data/quic"), halt().'
+```
+
+`ensure_cert/1` is idempotent — re-running it is a no-op when the
+files already exist.
+
+**2. Ed25519 identity keypair (`data/keys/`).** Used by the dist auth
+callback for peer authentication. The keypair is **generated lazily**
+on first `mycelium_app:start/2` (via
+`mycelium_dist_auth:ensure_keypair/0`); no manual step is required.
+The public key fingerprint is logged on startup.
+
+To inspect or rotate the keypair manually after the application is
+running:
+
+```erlang
+%% Read the current keypair.
+{ok, PubKey} = mycelium_dist_auth:get_public_key().
+mycelium_dist_keys:fingerprint(PubKey).
+%% => 32-byte SHA-256 binary
+
+%% Force-regenerate (deletes existing files first).
+file:delete("data/keys/node.pub"),
+file:delete("data/keys/node.priv"),
+ok = mycelium_dist_auth:ensure_keypair().
+```
+
+For pre-shared (`strict`) trust where every peer key is provisioned
+ahead of time, see [Authentication](authentication.md).
 
 ## Adding Mycelium to Your Project
 
@@ -71,6 +121,9 @@ Create or update your `config/sys.config`:
 ## Starting Your First Node
 
 ### Option 1: Interactive Shell
+
+Make sure `data/quic/node.{crt,key}` exist (see "First-boot setup"
+above), then:
 
 ```bash
 rebar3 shell --config config/sys.config --sname node1 \

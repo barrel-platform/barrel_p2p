@@ -3,72 +3,79 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.0] - 2026-05-03
 
-### Added
-- `mycelium:migrate_peer/1,2` — RFC 9000 §9 path migration on the
-  per-peer QUIC dist channel; rebinds to a new local 4-tuple without
-  rekey or HyParView churn.
-- `mycelium_path_stats:connection/1` — public helper that resolves a
-  node atom to the underlying QUIC connection pid (used by both
-  `summary/1` and `migrate_peer/1`).
-- `mycelium_dist_keys:fingerprint/1` — SHA-256 fingerprint of an
-  Ed25519 public key for diagnostics (logs, key-mismatch reports).
-- `docs/migration.md` — connection-migration API and a custom-trigger
-  watchdog recipe.
-- `docs/external-relay.md` — guide for wiring an out-of-tree
-  tunnel/relay adapter via `quic_dist:set_connect_options/2`.
-- `mycelium_streams` — tagged user-stream multiplex (single acceptor
-  per node); reserved tag `<<"mycelium:circuit">>`.
-- Multi-hop circuits v2 (`mycelium_circuit*`): byte-perfect migration
-  across hop failure (48-bit frame seqs, cumulative ACKs, symmetric
-  RESUME exchange).
-- RTT-aware path selection: `mycelium_router:find_path/1,2` and
-  `mycelium_path_stats:srtt/1`/`summary/1` over upstream
-  `quic:get_path_stats/1`.
-- GitHub Actions CI: matrix on OTP 27/28 plus a gated multi-node
-  CT job; `compile`, `xref`, `dialyzer`, `eunit`, and `ct` all
-  required.
-- Eunit suites: `mycelium_circuit_proto_tests`,
-  `mycelium_circuit_link_tests`, `mycelium_streams_tests`,
-  `mycelium_path_stats_tests`, `mycelium_router_path_tests`,
-  `mycelium_dist_keys_tests`, `mycelium_migrate_peer_tests`.
-- CT suite: `mycelium_circuit_multinode_SUITE` (4-node diamond
-  topology via upstream `quic_call.sh`; gated on
-  `MYCELIUM_CT_QUIC_MULTINODE=1`).
+First public release.
 
-### Changed
-- Distribution carrier moved from a vendored `mycelium_dist` to
-  upstream `quic_dist`. Mycelium plugs in via `auth_callback`
+### Membership and replication
+- HyParView partial-view membership (active/passive views, ARWL/PRWL,
+  shuffle, neighbor swap, age-based passive cleanup, churn handling).
+- Plumtree epidemic broadcast tree (eager/lazy push, ihave/graft/prune,
+  self-healing).
+- Service registry on an Observed-Remove Map CRDT, replicated through
+  Plumtree, with overlay-routed `whereis_service`, local-pid proxies
+  for remote services, and `peer_up`/`peer_down` event subscription.
+- Hybrid Logical Clocks for causally-ordered timestamps used by the
+  CRDT and routing layers.
+
+### Distribution carrier
+- Runs on upstream `quic_dist` (`-proto_dist quic`); one QUIC
+  connection per peer carries the Erlang dist channel.
+- Plugs into three upstream extension points: `auth_callback`
   (`mycelium_dist_auth_callback`), `discovery_module`
   (`mycelium_quic_discovery`), and `register_with_epmd`.
-- `mycelium_circuit:open/1` now auto-routes via
-  `mycelium_router:find_path/1`; `open/2` accepts an explicit path
-  or an options map (`#{path => P, repath => false, max_hops => N}`).
-- `docs/internals.md`, `docs/circuits.md`, `docs/getting-started.md`,
-  `README.md` rewritten/refreshed for the v2 architecture and the
-  node-keyed `mycelium_dist_keys` API.
-- `docs/getting-started.md` troubleshooting snippets fixed (used to
-  call a non-existent `fingerprint/1` and the wrong arity for
-  `lookup_key/delete_key/store_key`).
+- Ed25519 distribution authentication: TOFU and strict trust modes,
+  fingerprint-keyed trust store on disk, `cookie_only_nodes`
+  whitelist for c-nodes that can't speak the auth protocol.
+- `mycelium_dist_keys:fingerprint/1` SHA-256 helper for diagnostics.
 
-### Removed
-- All NAT traversal, UDP hole-punching, and firewall-bypass code:
-  `mycelium_circuit_*` legacy transports, `mycelium_hole_punch`,
-  `mycelium_nat`, `mycelium_nat_cache`, and their CT/docker suites.
-- Vendored `mycelium_dist` module set (replaced by upstream
-  `quic_dist`).
-- Docker-driven integration suites; the local CT suites cover the
-  same surface and the multi-node SUITE handles end-to-end.
+### Streams and circuits
+- Tagged user-stream multiplex (`mycelium_streams`): single acceptor
+  per node, demultiplexes by `<<TagLen:8, Tag/binary>>` preamble;
+  reserved tag `<<"mycelium:circuit">>`, free tag space for apps.
+- Multi-hop circuits (`mycelium_circuit`): stream-shaped channels
+  between cluster nodes that aren't in each other's active view,
+  spliced at intermediate hops with stateless relays.
+- Byte-perfect migration across hop failure: 48-bit per-direction
+  frame sequence numbers, cumulative ACKs, symmetric `FRAME_RESUME`
+  exchange that prunes unacked buffers and replays preserving
+  DATA/FIN frame type. No data loss on relay disappearance.
 
-### Fixed
-- Stream handoff in `mycelium_streams` and `mycelium_circuit_relay`:
-  `controlling_process/2` now runs before draining queued events,
-  so forwarded `{quic_dist_stream, _, {data, _}}` messages don't
-  bounce back as `{error, not_owner}`.
-- Dialyzer config now pulls `hlc`/`quic`/`public_key`/`crypto`/
-  `asn1`/`ssl`/`kernel`/`stdlib` PLTs explicitly; full project is
-  warning-free.
-- CI: `epmd -daemon` started before CT (basic SUITE needs it); the
-  `whitelist_tests` group is `[sequence]` (was `[parallel]`, raced
-  on shared app env).
+### Observability and routing
+- RTT-aware path selection (`mycelium_router:find_path/1,2`) using
+  `quic:get_path_stats/1` (upstream) for srtt-based hop ranking.
+- `mycelium_path_stats` wrapper exposing `summary/1`, `srtt/1`, and
+  `connection/1` (resolves a peer node to the underlying QUIC pid).
+
+### Connection migration
+- `mycelium:migrate_peer/1,2` triggers RFC 9000 §9 path migration on
+  the per-peer dist channel; rebinds to a new local 4-tuple without
+  rekey or HyParView churn. Custom triggers (NIC-change, path-quality
+  thresholds, etc.) live in app code via the public events + stats +
+  this API; recipe in `docs/migration.md`.
+
+### Pluggable transport overrides
+- `quic_dist:set_connect_options/2` is the seam for routing a peer
+  through an out-of-tree relay/tunnel adapter (MASQUE, WireGuard,
+  SSH ProxyCommand, etc.). Documented in `docs/external-relay.md`.
+
+### Tooling and tests
+- Eunit (72 cases) covering circuit framing, reliability link, stream
+  multiplex, path stats, router path selection, dist-key fingerprint,
+  and migrate_peer wrapper.
+- Common Test (177 cases) covering churn, registry, plumtree, hyparview,
+  failure handling, dist-auth, and the basic two/three-node cluster
+  mechanics suites.
+- `mycelium_circuit_multinode_SUITE` — gated four-node diamond
+  topology integration suite driven via upstream `quic_call.sh`
+  (`MYCELIUM_CT_QUIC_MULTINODE=1`).
+- GitHub Actions matrix CI on OTP 27 and 28: compile, xref, dialyzer,
+  eunit, ct, plus the multi-node job.
+- Dialyzer- and xref-clean.
+
+### Documentation
+- README, `docs/getting-started.md`, `docs/tutorial.md`,
+  `docs/internals.md`, `docs/circuits.md`, `docs/migration.md`,
+  `docs/authentication.md`, `docs/external-relay.md`,
+  `docs/testing.md`, `docs/partisan-comparison.md`.
+- LICENSE (Apache-2.0), SECURITY.md.
