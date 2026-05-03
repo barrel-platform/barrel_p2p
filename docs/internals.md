@@ -350,28 +350,29 @@ Mycelium uses Ed25519 public-key cryptography to authenticate peer connections. 
 
 ### Key Identity
 
-Peers are identified by their **key fingerprint** (SHA-256 hash of the public key), not by node name. This allows:
-- Same keypair across hostname changes
-- Key migration between machines
-- Cryptographic identity verification
+Each trusted peer is stored under its **node atom**: lookup, store,
+and delete (`mycelium_dist_keys:lookup_key/1`, `store_key/2`,
+`delete_key/1`) all take a node atom. `mycelium_dist_keys:fingerprint/1`
+returns the SHA-256 of a public key for log lines and key-mismatch
+diagnostics.
 
 ### Key Storage
 
 ```erlang
-%% Keys stored by mycelium_dist_keys (keyed by fingerprint)
+%% Keys stored by mycelium_dist_keys (ETS keyed by #peer_key.node).
 -record(peer_key, {
-    fingerprint :: binary(),       %% SHA-256 hash of public_key (32 bytes)
-    public_key  :: binary(),       %% 32 bytes Ed25519 public key
-    added_at    :: integer(),      %% Timestamp
-    last_seen   :: integer(),      %% Last connection
+    node        :: node() | undefined,    %% Primary key
+    fingerprint :: binary() | undefined,  %% SHA-256 of public_key
+    public_key  :: binary(),              %% 32 bytes Ed25519 public key
+    added_at    :: integer(),             %% Timestamp (ms)
+    last_seen   :: integer(),             %% Last connection (ms)
     trust_level :: permanent | tofu
 }).
 ```
 
-Keys are persisted to disk in `data/keys/trusted/<fingerprint-prefix>.pub` using format:
-```
-mycelium-ed25519 <base64-encoded-public-key>
-```
+Permanent and TOFU keys are persisted to
+`data/keys/trusted/<node-atom>.pub` as the raw 32-byte public key
+binary.
 
 ### Trust Modes
 

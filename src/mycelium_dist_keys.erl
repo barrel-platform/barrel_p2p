@@ -11,7 +11,8 @@
     is_trusted/2,
     list_trusted/0,
     set_trust_mode/1,
-    get_trust_mode/0
+    get_trust_mode/0,
+    fingerprint/1
 ]).
 
 %% gen_server callbacks
@@ -87,6 +88,13 @@ set_trust_mode(Mode) when Mode =:= strict; Mode =:= tofu ->
 -spec get_trust_mode() -> strict | tofu.
 get_trust_mode() ->
     gen_server:call(?SERVER, get_trust_mode).
+
+%% @doc SHA-256 fingerprint of an Ed25519 public key. Pure helper for
+%% diagnostics (logs, key-mismatch reports). The store/lookup API is
+%% keyed by node atom, not by fingerprint.
+-spec fingerprint(binary()) -> binary().
+fingerprint(PubKey) when is_binary(PubKey), byte_size(PubKey) =:= ?PUBLIC_KEY_SIZE ->
+    crypto:hash(sha256, PubKey).
 
 %%====================================================================
 %% gen_server callbacks

@@ -210,26 +210,23 @@ Common issues:
 
 1. **Key mismatch error**: A node's key changed (regenerated or MITM attack)
    ```erlang
-   %% Check what key is stored
-   %% Keys are identified by fingerprint, not node name
-   %% Get the fingerprint of the problem key
+   %% Inspect the fingerprint (SHA-256 of the public key) for logs.
    Fp = mycelium_dist_keys:fingerprint(ProblemPubKey).
-   mycelium_dist_keys:lookup_key(Fp).
 
-   %% Delete and re-trust if key was legitimately rotated
-   mycelium_dist_keys:delete_key(Fp).
+   %% Lookup, delete, and re-trust are keyed by node atom.
+   {ok, StoredPubKey} = mycelium_dist_keys:lookup_key('peer@host').
+   mycelium_dist_keys:delete_key('peer@host').
    ```
 
 2. **Untrusted key in strict mode**: Node not pre-registered
    ```erlang
-   %% Register the peer's public key (identity is based on key, not node name)
+   %% Register the peer's public key under its node atom.
    PeerPubKey = <<...>>.  %% Get from peer
-   mycelium_dist_keys:store_key(PeerPubKey).
+   mycelium_dist_keys:store_key('peer@host', PeerPubKey).
    ```
 
 3. **View trusted keys**:
    ```erlang
-   %% Keys are identified by fingerprint
    mycelium_dist_keys:list_trusted().
    %% Returns list of #peer_key{fingerprint, public_key, ...}
    ```
