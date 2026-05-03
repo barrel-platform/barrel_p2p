@@ -87,7 +87,7 @@ groups() ->
             test_wrong_signature_rejected,
             test_key_persistence_to_disk
         ]},
-        {whitelist_tests, [parallel], [
+        {whitelist_tests, [sequence], [
             test_whitelist_exact_match,
             test_whitelist_wildcard_host,
             test_whitelist_wildcard_name,

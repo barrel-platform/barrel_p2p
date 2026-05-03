@@ -38,6 +38,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-otp-${{ matrix.otp }}-
 
+      - name: Start epmd
+        run: epmd -daemon
+
       - name: Compile
         run: rebar3 compile
 
@@ -75,6 +78,9 @@ jobs:
           key: ${{ runner.os }}-multinode-otp28-${{ hashFiles('rebar.lock', 'rebar.config') }}
           restore-keys: |
             ${{ runner.os }}-multinode-otp28-
+
+      - name: Start epmd
+        run: epmd -daemon
 
       - name: Compile
         run: rebar3 compile
