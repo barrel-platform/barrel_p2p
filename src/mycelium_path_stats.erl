@@ -68,6 +68,5 @@ extract_conn(DistCtrl) ->
 srtt(Node) ->
     case summary(Node) of
         {ok, #{srtt := Us}} -> {ok, Us};
-        {ok, _Other}        -> {error, no_srtt};
-        Err                 -> Err
+        {error, _} = Err    -> Err
     end.

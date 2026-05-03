@@ -105,28 +105,25 @@ open(Target, Path, Opts) when is_atom(Target), is_list(Path) ->
     do_open(Target, Path, Opts).
 
 do_open(Target, Path, Opts) ->
-    FullPath = Path ++ [Target],
-    case FullPath of
-        [] ->
-            {error, empty_path};
-        [FirstHop | _] ->
-            CircuitId = mycelium_circuit_proto:circuit_id(),
-            case mycelium_streams:open(?CIRCUIT_TAG, FirstHop) of
-                {ok, SR} ->
-                    RestPath = tl(FullPath),
-                    CreateMsg = mycelium_circuit_proto:encode_create(
-                        CircuitId, node(), RestPath),
-                    case quic_dist:send(SR, CreateMsg) of
-                        ok ->
-                            spawn_initiator_pipe(
-                                SR, CircuitId, Target, Path, Opts);
-                        {error, Reason} ->
-                            _ = quic_dist:close_stream(SR),
-                            {error, Reason}
-                    end;
-                {error, _} = Err ->
-                    Err
-            end
+    %% `Path' is always intermediate hops only; `Target' is appended,
+    %% so FullPath is non-empty by construction.
+    [FirstHop | _] = FullPath = Path ++ [Target],
+    CircuitId = mycelium_circuit_proto:circuit_id(),
+    case mycelium_streams:open(?CIRCUIT_TAG, FirstHop) of
+        {ok, SR} ->
+            RestPath = tl(FullPath),
+            CreateMsg = mycelium_circuit_proto:encode_create(
+                CircuitId, node(), RestPath),
+            case quic_dist:send(SR, CreateMsg) of
+                ok ->
+                    spawn_initiator_pipe(
+                        SR, CircuitId, Target, Path, Opts);
+                {error, Reason} ->
+                    _ = quic_dist:close_stream(SR),
+                    {error, Reason}
+            end;
+        {error, _} = Err ->
+            Err
     end.
 
 spawn_initiator_pipe(SR, CircuitId, Target, Path, Opts) ->

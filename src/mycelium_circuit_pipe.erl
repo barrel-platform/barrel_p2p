@@ -68,7 +68,8 @@
     %% Migration state
     migrating = false :: boolean(),
     migration_timer :: reference() | undefined,
-    migration_timeout :: pos_integer(),
+    %% 0 in relay role (never migrates); pos_integer in endpoints.
+    migration_timeout :: non_neg_integer(),
     %% Number of FRAME_RESUMEs we still need to receive from the peer
     %% before pruning+replaying. Set to 1 when migration starts.
     awaiting_peer_resume = false :: boolean(),

@@ -301,8 +301,7 @@ handle_route_request(Req, {Caller, Ref}) ->
     %% Send reply back to caller
     erlang:send(Caller, {Ref, Result}, [noconnect]).
 
-%% Shuffle a list randomly
-shuffle([]) -> [];
+%% Shuffle a list randomly. Callers only pass non-empty lists.
 shuffle(List) ->
     [X || {_, X} <- lists:sort([{rand:uniform(), E} || E <- List])].
 
@@ -424,9 +423,7 @@ cum_rtt({Replier, _Path, RemoteRtt}) ->
             LocalRtt + (case RemoteRtt of N when is_integer(N) -> N; _ -> 0 end);
         _ ->
             undefined
-    end;
-cum_rtt(_) ->
-    undefined.
+    end.
 
 %% Server-side probe handler (runs in a spawned process per probe).
 handle_route_probe(Probe, {Caller, Ref}) ->

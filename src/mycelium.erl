@@ -145,8 +145,7 @@ whereis_service_retry(Name, Retries, Delay) ->
         {error, not_found} ->
             ActualDelay = min(Delay, ?MAX_BACKOFF_MS),
             timer:sleep(ActualDelay + rand:uniform(ActualDelay div 2)),
-            whereis_service_retry(Name, Retries - 1, Delay * 2);
-        {error, _} = Error -> Error
+            whereis_service_retry(Name, Retries - 1, Delay * 2)
     end.
 
 do_whereis_service(Name) ->

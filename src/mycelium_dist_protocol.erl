@@ -84,6 +84,7 @@ encode_key_exchange(EphemeralPubKey) when byte_size(EphemeralPubKey) =:= ?X25519
     {hello, node(), binary()} |
     {challenge, binary(), integer()} |
     {response, binary()} |
+    {key_exchange, binary()} |
     ok |
     {fail, binary()} |
     {error, term()}.

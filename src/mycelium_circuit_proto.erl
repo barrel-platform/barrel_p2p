@@ -187,8 +187,7 @@ decode_after_id(_Id, _Buf, _Build) ->
 decode_after_init(Id, InitAtom, <<PathLen:8, R/binary>>, Build) ->
     case decode_path(R, PathLen, []) of
         {ok, Path, Rest} -> {ok, Build(Id, InitAtom, Path, Rest), Rest};
-        {more, N}        -> {more, N};
-        {error, _} = E   -> E
+        {more, N}        -> {more, N}
     end;
 decode_after_init(_Id, _Init, _Buf, _Build) ->
     {more, 1}.
@@ -204,8 +203,7 @@ decode_resume(<<IdLen:8, R/binary>>) when byte_size(R) >= IdLen ->
         <<RxNext:48/big, PathLen:8, R2/binary>> ->
             case decode_path(R2, PathLen, []) of
                 {ok, Path, Rest} -> {ok, {resume, Id, RxNext, Path}, Rest};
-                {more, N}        -> {more, N};
-                {error, _} = E   -> E
+                {more, N}        -> {more, N}
             end;
         _ ->
             {more, 7 - byte_size(R1)}

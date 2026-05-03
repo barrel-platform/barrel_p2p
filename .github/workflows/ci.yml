@@ -44,6 +44,9 @@ jobs:
       - name: XRef
         run: rebar3 xref
 
+      - name: Dialyzer
+        run: rebar3 dialyzer
+
       - name: EUnit
         run: rebar3 eunit
 
