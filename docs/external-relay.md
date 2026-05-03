@@ -46,24 +46,25 @@ Because the QUIC handshake, the Ed25519 auth callback, and the Erlang
 dist handshake all run on top of whatever socket the adapter exposes,
 no other code in mycelium needs to know about the relay.
 
-## Worked example: route a single peer through a MASQUE proxy
+## Worked example: route a single peer through a relay
 
 ```erlang
 ok = quic_dist:set_connect_options('peer@remote', #{
     socket_backend => adapter,
-    socket_adapter => masque_adapter:new(#{
+    socket_adapter => my_relay_adapter:new(#{
         proxy   => <<"https://proxy.example.com/connect-udp/">>,
         target  => {<<"remote">>, 4433},
-        token   => os:getenv("MASQUE_TOKEN")
+        token   => os:getenv("RELAY_TOKEN")
     })
 }),
 %% This call uses the relay; subsequent reconnects fall back to direct.
 true = net_kernel:connect_node('peer@remote').
 ```
 
-`masque_adapter` is whatever module implements the upstream
-`quic_socket` adapter contract for your relay protocol. Mycelium does
-not ship one; the protocol-specific work lives outside this codebase.
+`my_relay_adapter` is whatever module implements the upstream
+`quic_socket` adapter contract for your relay protocol (MASQUE,
+WireGuard tunnel, SSH `ProxyCommand`, etc.). Mycelium does not ship
+one; the protocol-specific work lives outside this codebase.
 
 For long-lived static routing (always relay this peer), wrap the call
 in your own supervisor that re-registers the override on every
