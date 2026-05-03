@@ -59,6 +59,12 @@
     send/2
 ]).
 
+%% Connection migration (RFC 9000 §9 path migration)
+-export([
+    migrate_peer/1,
+    migrate_peer/2
+]).
+
 %% Test helpers (for integration tests)
 -export([
     start_service_holder/1,
@@ -322,6 +328,34 @@ circuit_unlisten() ->
 -spec circuit_unlisten(pid()) -> ok.
 circuit_unlisten(Pid) ->
     mycelium_circuit:unlisten(Pid).
+
+%%====================================================================
+%% Connection Migration
+%%====================================================================
+
+%% @doc Trigger RFC 9000 §9 path migration on the QUIC connection
+%% backing the dist channel to `Node'. The connection rebinds to a
+%% new local 4-tuple via PATH_CHALLENGE/PATH_RESPONSE; keys, streams,
+%% and any open circuits ride through transparently. Useful when the
+%% local network changes (NIC/IP swap, tethering, multi-link policy).
+%%
+%% Returns `ok' on successful path validation. Common errors:
+%% - `{error, not_connected}' — no current dist channel to `Node'
+%% - `{error, no_conn}' — controller alive but underlying conn gone
+%% - `{error, peer_disable_migration}' — peer set the transport-param
+%%   flag forbidding migration; treat as terminal for this connection
+%% - `{error, timeout}' — path validation didn't complete in time
+-spec migrate_peer(node()) -> ok | {error, term()}.
+migrate_peer(Node) ->
+    migrate_peer(Node, #{}).
+
+-spec migrate_peer(node(), #{timeout => pos_integer()}) ->
+    ok | {error, term()}.
+migrate_peer(Node, Opts) when is_atom(Node), is_map(Opts) ->
+    case mycelium_path_stats:connection(Node) of
+        {ok, Conn} -> quic:migrate(Conn, Opts);
+        Err        -> Err
+    end.
 
 %%====================================================================
 %% Test Helpers

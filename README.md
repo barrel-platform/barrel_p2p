@@ -14,6 +14,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **QUIC Distribution** - Runs on upstream `quic_dist`; one QUIC connection per peer carries the Erlang distribution channel. Mycelium plugs in via the `quic_dist_auth` callback for Ed25519 identity, the `discovery_module` hook for HyParView-aware peer resolution, and `register_with_epmd` for stock EPMD integration.
 - **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
 - **Multi-hop circuits** - Stream-shaped channels between cluster nodes that aren't in each other's active view, spliced at intermediate hops on top of the existing dist connections (see [docs/circuits.md](docs/circuits.md))
+- **Connection migration** - One-shot RFC 9000 §9 path migration via `mycelium:migrate_peer/1,2`; rebinds the QUIC dist channel to a new local 4-tuple without rekey or HyParView churn (see [docs/migration.md](docs/migration.md))
 
 ## Quick Start
 

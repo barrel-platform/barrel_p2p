@@ -55,3 +55,21 @@ extract_conn_failure_returns_no_conn_test_() ->
         ?assertEqual({error, no_conn},
                      mycelium_path_stats:summary('peer@h'))
     end).
+
+connection_propagates_not_connected_test_() ->
+    with(fun () ->
+        meck:expect(quic_dist, get_controller,
+                    fun(_) -> {error, not_connected} end),
+        ?assertEqual({error, not_connected},
+                     mycelium_path_stats:connection('peer@h'))
+    end).
+
+connection_returns_no_conn_on_dead_controller_test_() ->
+    with(fun () ->
+        Dead = spawn(fun() -> ok end),
+        timer:sleep(20),
+        meck:expect(quic_dist, get_controller,
+                    fun(_) -> {ok, Dead} end),
+        ?assertEqual({error, no_conn},
+                     mycelium_path_stats:connection('peer@h'))
+    end).

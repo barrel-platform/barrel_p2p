@@ -11,7 +11,7 @@
 
 -module(mycelium_path_stats).
 
--export([summary/1, srtt/1]).
+-export([summary/1, srtt/1, connection/1]).
 
 -type summary() :: #{
     srtt => non_neg_integer(),
@@ -37,13 +37,21 @@
 %% fragile to upstream record shape changes; see TODO at module top.
 -spec summary(node()) -> {ok, summary()} | {error, term()}.
 summary(Node) when is_atom(Node) ->
+    case connection(Node) of
+        {ok, Conn} -> quic:get_path_stats(Conn);
+        Err        -> Err
+    end.
+
+%% @doc Resolve a peer node to the underlying QUIC connection pid.
+%% Used by `summary/1' here and by `mycelium:migrate_peer/1,2' for
+%% RFC 9000 §9 path migration. Returns `{error, not_connected}' if
+%% there is no current dist channel; `{error, no_conn}' if the
+%% controller is alive but the connection extraction fails.
+-spec connection(node()) -> {ok, pid()} | {error, term()}.
+connection(Node) when is_atom(Node) ->
     case quic_dist:get_controller(Node) of
-        {ok, DistCtrl} ->
-            case extract_conn(DistCtrl) of
-                {ok, Conn} -> quic:get_path_stats(Conn);
-                Err        -> Err
-            end;
-        Err -> Err
+        {ok, DistCtrl} -> extract_conn(DistCtrl);
+        Err            -> Err
     end.
 
 %% Reach into the dist controller's gen_statem state and pluck the
