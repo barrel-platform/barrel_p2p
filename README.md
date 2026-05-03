@@ -4,6 +4,10 @@ Mycelium is an Erlang/OTP library for building peer-to-peer distributed applicat
 
 Unlike traditional Erlang distribution that requires full mesh connectivity, Mycelium maintains only a small number of active connections per node (typically log(n)), making it suitable for large clusters while preserving self-healing properties.
 
+## Project Status
+
+**Experimental, pre-1.0.** APIs may change between minor releases until a `1.0` tag. The cryptographic and transport layers (Ed25519 dist auth, QUIC carrier, circuit framing) have unit and multi-node test coverage but have **not been independently audited**. Don't ship it where a transport-level compromise would be costly without doing your own review first. Bug reports and PRs welcome; see [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
 ## Key Features
 
 - **HyParView Protocol** - Scalable partial membership with O(log n) connections per node

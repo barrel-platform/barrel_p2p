@@ -6,7 +6,7 @@
 %%% per-peer dist QUIC connection. Used by `mycelium_router' to
 %%% rank candidate next-hops by srtt.
 %%%
-%%% Copyright (c) 2024-2026 Benoit Chesneau
+%%% Copyright (c) 2026 Benoit Chesneau
 %%% Apache License 2.0
 
 -module(mycelium_path_stats).

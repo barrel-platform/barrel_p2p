@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -module(mycelium_docker_auth_SUITE).
 
 %% Docker integration test suite for Ed25519 authentication

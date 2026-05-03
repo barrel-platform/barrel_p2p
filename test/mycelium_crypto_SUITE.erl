@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -module(mycelium_crypto_SUITE).
 
 %% Test suite for mycelium_crypto module

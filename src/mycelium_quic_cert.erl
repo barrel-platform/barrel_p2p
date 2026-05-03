@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -module(mycelium_quic_cert).
 
 %% X.509 Self-Signed Certificate Generation for QUIC TLS

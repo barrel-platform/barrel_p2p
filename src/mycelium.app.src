@@ -28,5 +28,6 @@
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, []}
+    {maintainers, ["Benoit Chesneau <benoitc@enki-multimedia.eu>"]},
+    {links, [{"GitHub", "https://github.com/benoitc/mycelium"}]}
 ]}.

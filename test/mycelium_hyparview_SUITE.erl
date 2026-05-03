@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -module(mycelium_hyparview_SUITE).
 
 -include_lib("common_test/include/ct.hrl").

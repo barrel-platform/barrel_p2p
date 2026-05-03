@@ -17,7 +17,7 @@
 %%% ]}]}.
 %%% '''
 %%%
-%%% Copyright (c) 2024-2026 Benoit Chesneau
+%%% Copyright (c) 2026 Benoit Chesneau
 %%% Apache License 2.0
 %%%
 

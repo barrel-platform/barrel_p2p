@@ -1,4 +1,6 @@
 %%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
 %%%
 %%% EUnit tests for mycelium:migrate_peer/1,2.
 %%%

@@ -24,19 +24,8 @@ WORKDIR /app
 # Copy rebar configs first for better layer caching
 COPY rebar.config rebar.lock* ./
 
-# Fetch dependencies. GH_TOKEN authenticates against github for any
-# private deps (e.g. erlang_masque). Pass it from the host with
-# --build-arg GH_TOKEN=$(gh auth token) when building. We rewrite the
-# GitHub URL with the token only for the duration of the fetch step;
-# the credential is wiped before the layer is committed so it does
-# not persist in the image history.
-ARG GH_TOKEN
-RUN if [ -n "$GH_TOKEN" ]; then \
-        git config --global \
-            "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" \
-            "https://github.com/"; \
-    fi && \
-    rebar3 get-deps
+# Fetch dependencies. All deps are public; no auth needed.
+RUN rebar3 get-deps
 
 # Copy source code
 COPY config/ config/

@@ -161,9 +161,6 @@ active view immediately rather than wait for a tick to time out).
 
 Prerequisites:
 - docker and `docker compose` v2
-- a github auth token in `GH_TOKEN`, or the `gh` CLI logged in
-  (`gh auth login`). The run scripts auto-export the token from
-  `gh auth token` if `GH_TOKEN` is unset.
 
 The script brings up a compose stack, runs a CT suite inside the
 `test_runner` container, and tears the stack down on exit. CT logs
@@ -221,14 +218,4 @@ rm -rf _build/test
 rebar3 ct
 ```
 
-Docker build prompts for github auth or fails on a private dep.
-The run scripts read `gh auth token` automatically when `GH_TOKEN`
-is unset; if you don't use the `gh` CLI, export it manually:
-
-```bash
-GH_TOKEN=ghp_xxx ./docker/scripts/run_auth_tests.sh
-```
-
-The token is passed as a build arg, used only to rewrite
-`https://github.com/` URLs during `rebar3 get-deps`, and is
-stripped from the layer before the runtime image is built.
+All deps are public; the docker build needs no github auth.

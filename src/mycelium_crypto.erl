@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -module(mycelium_crypto).
 
 %% X25519 Key Exchange and ChaCha20-Poly1305 Encryption for Distribution

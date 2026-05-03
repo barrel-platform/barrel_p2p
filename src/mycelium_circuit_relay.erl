@@ -23,7 +23,7 @@
 %%% `{circuit, CRef, {opened, InitNode}}' followed by the standard
 %%% `{circuit, CRef, _}' message stream from the destination pipe.
 %%%
-%%% Copyright (c) 2024-2026 Benoit Chesneau
+%%% Copyright (c) 2026 Benoit Chesneau
 %%% Apache License 2.0
 
 -module(mycelium_circuit_relay).

@@ -1,3 +1,7 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
 -ifndef(MYCELIUM_HRL).
 -define(MYCELIUM_HRL, true).
 

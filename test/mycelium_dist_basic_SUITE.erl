@@ -1,4 +1,6 @@
 %%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
 %%%
 %%% mycelium cluster basic Common Test suite.
 %%%
