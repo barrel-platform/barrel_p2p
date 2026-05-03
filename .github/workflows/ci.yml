@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: OTP ${{ matrix.otp }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - otp: '27'
+            rebar3: '3.24.0'
+          - otp: '28'
+            rebar3: '3.24.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: ${{ matrix.rebar3 }}
+
+      - name: Cache deps + _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp-${{ matrix.otp }}-${{ hashFiles('rebar.lock', 'rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-otp-${{ matrix.otp }}-
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: XRef
+        run: rebar3 xref
+
+      - name: EUnit
+        run: rebar3 eunit
+
+      - name: Common Test
+        run: rebar3 ct
+
+  multinode:
+    name: Multi-node CT (proto_dist quic)
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24.0'
+
+      - name: Cache deps + _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-multinode-otp28-${{ hashFiles('rebar.lock', 'rebar.config') }}
+          restore-keys: |
+            ${{ runner.os }}-multinode-otp28-
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run multinode SUITE
+        env:
+          MYCELIUM_CT_QUIC_MULTINODE: "1"
+        run: rebar3 ct --suite=mycelium_circuit_multinode_SUITE
+
+      - name: Upload CT logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multinode-ct-logs
+          path: _build/test/logs
+          retention-days: 7
