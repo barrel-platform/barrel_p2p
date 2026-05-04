@@ -19,25 +19,24 @@ Each node carries two pieces of identity material on disk.
 The kernel app starts distribution *before* mycelium's application
 code runs, so the cert must already exist when the BEAM boots —
 `quic_dist:listen/2` fails with `{credentials, no_credentials}`
-otherwise. Generate a self-signed pair with `openssl`:
+otherwise. Generate a self-signed pair with the bundled script:
 
 ```bash
-mkdir -p data/quic
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-    -keyout data/quic/node.key -out data/quic/node.crt \
-    -subj '/CN=mycelium'
+_build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh
 ```
 
-Or, if you'd rather not depend on `openssl`, use the bundled helper
-once mycelium is compiled into `_build/`:
+Flags: `--out-dir DIR` (default `./data/quic`), `--cn NAME`
+(default `mycelium`), `--days N`, `--key-bits N`, `--force` to
+overwrite. The script is idempotent — re-running it is a no-op
+when the files already exist.
+
+If you'd rather not depend on the `openssl` CLI, the in-BEAM helper
+does the same thing:
 
 ```bash
 erl -noshell -pa _build/default/lib/*/ebin \
     -eval 'application:load(mycelium), mycelium_quic_cert:ensure_cert("data/quic"), halt().'
 ```
-
-`ensure_cert/1` is idempotent — re-running it is a no-op when the
-files already exist.
 
 **2. Ed25519 identity keypair (`data/keys/`).** Used by the dist auth
 callback for peer authentication. The keypair is **generated lazily**

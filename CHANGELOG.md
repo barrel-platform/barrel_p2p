@@ -69,6 +69,9 @@ First public release.
   that boots a hidden probe with full Ed25519 identity and runs
   `rpc:call/5` against a live mycelium node. Available to anything
   depending on mycelium via `_build/default/lib/mycelium/priv/bin/`.
+- `priv/bin/mycelium_gen_cert.sh` — self-signed cert generator for
+  the QUIC dist channel (RSA 2048 by default; `--cn`, `--days`,
+  `--key-bits`, `--force` flags; idempotent).
 
 ### Tests
 - Eunit (72 cases) covering circuit framing, reliability link, stream

@@ -17,6 +17,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
 - **QUIC Distribution** - Runs on upstream `quic_dist` with the EPMD-less `quic_epmd` lookup module; one QUIC connection per peer carries the Erlang distribution channel. Mycelium plugs in via the `quic_dist_auth` callback for Ed25519 identity and a composing discovery chain (static config + on-disk file registry + DNS) so nodes auto-find each other on a shared filesystem.
 - **One-shot RPC tooling** - `priv/bin/mycelium_call.sh` — `erl_call`-style helper that boots a hidden probe with full Ed25519 identity and runs `rpc:call/5` against a live mycelium node. Available to any project that depends on mycelium.
+- **TLS cert helper** - `priv/bin/mycelium_gen_cert.sh` — one-shot self-signed cert generator (RSA 2048 by default) for the QUIC dist channel; idempotent.
 - **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
 - **Multi-hop circuits** - Stream-shaped channels between cluster nodes that aren't in each other's active view, spliced at intermediate hops on top of the existing dist connections (see [docs/circuits.md](docs/circuits.md))
 - **Connection migration** - One-shot RFC 9000 §9 path migration via `mycelium:migrate_peer/1,2`; rebinds the QUIC dist channel to a new local 4-tuple without rekey or HyParView churn (see [docs/migration.md](docs/migration.md))

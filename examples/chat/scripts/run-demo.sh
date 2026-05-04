@@ -40,13 +40,8 @@ fi
 # Ed25519 identity keypair under data/keys/ is generated lazily by
 # mycelium_dist_keys on first start; no setup needed.
 ensure_cert() {
-    if [ ! -f data/quic/node.crt ] || [ ! -f data/quic/node.key ]; then
-        echo "Generating self-signed QUIC TLS cert in data/quic/ ..."
-        mkdir -p data/quic
-        openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-            -keyout data/quic/node.key -out data/quic/node.crt \
-            -subj '/CN=mycelium-chat' 2>/dev/null
-    fi
+    "$CHAT_DIR/../../priv/bin/mycelium_gen_cert.sh" \
+        --out-dir data/quic --cn mycelium-chat
 }
 
 # Build the -quic_dist_* init args. The kernel boots distribution
