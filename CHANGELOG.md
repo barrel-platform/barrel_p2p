@@ -21,9 +21,14 @@ First public release.
 ### Distribution carrier
 - Runs on upstream `quic_dist` (`-proto_dist quic`); one QUIC
   connection per peer carries the Erlang dist channel.
-- Plugs into three upstream extension points: `auth_callback`
-  (`mycelium_dist_auth_callback`), `discovery_module`
-  (`mycelium_quic_discovery`), and `register_with_epmd`.
+- EPMD-less by default via upstream's `quic_epmd` lookup module.
+- Composing discovery chain (`mycelium_discovery`) with three
+  built-in backends: static config (`mycelium_discovery_static`),
+  on-disk file registry for local auto-discovery
+  (`mycelium_discovery_file`), and DNS host fallback
+  (`mycelium_discovery_dns`).
+- Plugs into upstream's `auth_callback` extension point via
+  `mycelium_dist_auth_callback`.
 - Ed25519 distribution authentication: TOFU and strict trust modes,
   fingerprint-keyed trust store on disk, `cookie_only_nodes`
   whitelist for c-nodes that can't speak the auth protocol.
@@ -59,7 +64,13 @@ First public release.
   through an out-of-tree relay/tunnel adapter (MASQUE, WireGuard,
   SSH ProxyCommand, etc.). Documented in `docs/external-relay.md`.
 
-### Tooling and tests
+### Tooling
+- `priv/bin/mycelium_call.sh` — `erl_call`-style one-shot RPC helper
+  that boots a hidden probe with full Ed25519 identity and runs
+  `rpc:call/5` against a live mycelium node. Available to anything
+  depending on mycelium via `_build/default/lib/mycelium/priv/bin/`.
+
+### Tests
 - Eunit (72 cases) covering circuit framing, reliability link, stream
   multiplex, path stats, router path selection, dist-key fingerprint,
   and migrate_peer wrapper.

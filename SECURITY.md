@@ -23,7 +23,7 @@ If a fix lands publicly before disclosure is coordinated, the commit message wil
 
 In scope:
 - The Ed25519 distribution authentication (`mycelium_dist_auth*`, `mycelium_dist_keys`).
-- The QUIC dist carrier integration (`mycelium_dist_auth_callback`, `mycelium_quic_discovery`).
+- The QUIC dist carrier integration (`mycelium_dist_auth_callback`, `mycelium_discovery`).
 - Multi-hop circuit framing (`mycelium_circuit*`, `mycelium_streams`).
 - HyParView / Plumtree / OR-Map registry behaviour under adversarial peers.
 

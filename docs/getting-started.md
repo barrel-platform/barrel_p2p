@@ -6,10 +6,10 @@ This guide walks you through setting up Mycelium in your Erlang project and runn
 
 - Erlang/OTP 27 or later
 - rebar3 build tool
-- `-proto_dist quic` in your `vm.args`. Mycelium runs on upstream
-  `quic_dist` and plugs in via the `auth_callback`, `discovery_module`,
-  and `register_with_epmd` options. The default `config/sys.config`
-  wires those.
+- `-proto_dist quic -epmd_module quic_epmd -start_epmd false` in your
+  boot args. Mycelium runs on upstream `quic_dist` (EPMD-less) and
+  plugs in via the `auth_callback` and `discovery_module` options.
+  The default `config/sys.config` wires those.
 
 ## First-boot setup: TLS cert and Ed25519 keypair
 

@@ -14,7 +14,46 @@ start(_StartType, _StartArgs) ->
     ok = application:set_env(kernel, prevent_overlapping_partitions, false),
     %% Disable auto-connect - HyParView controls the topology
     ok = application:set_env(kernel, dist_auto_connect, never),
+    %% Publish ourselves through the discovery chain. quic_dist's own
+    %% registration path runs before sys.config envs apply, so we
+    %% redo it here now that mycelium's discovery_backends env is set.
+    publish_self(),
     mycelium_sup:start_link().
+
+%% @private Register this node with the discovery chain after sys.config
+%% has applied, so backends configured in `discovery_backends' actually
+%% see the call. Best-effort; logs and moves on if anything fails.
+publish_self() ->
+    case node() of
+        nonode@nohost -> ok;
+        Node ->
+            case find_listen_port() of
+                {ok, Port} ->
+                    DistOpts = application:get_env(quic, dist, []),
+                    {ok, S0} = mycelium_discovery:init(#{}),
+                    _ = mycelium_discovery:register(Node, Port, S0),
+                    _ = DistOpts,
+                    ok;
+                error ->
+                    logger:debug(
+                        "[mycelium_app] no listen port found; "
+                        "skipping discovery publish"),
+                    ok
+            end
+    end.
+
+%% @private Find the live quic_dist listener port via persistent_term.
+%% Upstream `quic_dist' stashes `{quic_dist_early_listener, _} ->
+%% #{port => P, ...}` during early boot, and the same entry sticks
+%% around once the quic app adopts the listener.
+find_listen_port() ->
+    Hits = [V
+            || {{quic_dist_early_listener, _}, V} <- persistent_term:get(),
+               is_map(V)],
+    case Hits of
+        [#{port := Port} | _] when is_integer(Port) -> {ok, Port};
+        _ -> error
+    end.
 
 %% @doc Set the distribution cookie automatically.
 %% Uses the configured dist_cookie or defaults to 'mycelium'.

@@ -51,16 +51,21 @@ ensure_cert() {
 
 # Build the -quic_dist_* init args. The kernel boots distribution
 # before sys.config envs apply, so port / discovery / auth callback
-# must come through init args.
+# must come through init args. We use upstream `quic_epmd` as the
+# epmd_module so no stock epmd daemon is required; mycelium nodes
+# auto-publish each other through the filesystem-backed discovery
+# backend (data/discovery/<node>.endpoint).
 dist_args() {
     local port=$1
     cat <<EOF
 -proto_dist quic \
+-epmd_module quic_epmd \
+-start_epmd false \
 -quic_dist_cert $PWD/data/quic/node.crt \
 -quic_dist_key $PWD/data/quic/node.key \
 -quic_dist_port $port \
 -quic_dist_register_with_epmd true \
--quic_dist_discovery_module mycelium_quic_discovery \
+-quic_dist_discovery_module mycelium_discovery \
 -quic_dist_auth_callback mycelium_dist_auth_callback:authenticate
 EOF
 }

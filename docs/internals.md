@@ -441,12 +441,16 @@ Mycelium plugs into three `quic_dist` extension points:
   The callback returns `{ok, NodeAtom}` on success or `{error, Reason}`;
   on error the connection is closed and the dist controller never
   starts.
-- `discovery_module => mycelium_quic_discovery` resolves peer node
-  names from static `{quic, [{dist, [{nodes, ...}]}]}` configuration
-  and falls back to DNS.
-- `register_with_epmd => true` makes `quic_dist:listen/2` register the
-  node with stock EPMD so external tools (`epmd -names`, mixed
-  proto_dist clusters) can resolve it.
+- `discovery_module => mycelium_discovery` is a composing dispatcher
+  that fans out to a configurable backend chain (default:
+  `mycelium_discovery_static` for the `{quic, [{dist, [{nodes, ...}]}]}`
+  map, `mycelium_discovery_file` for an on-disk endpoint registry under
+  `data/discovery/<node>.endpoint`, and `mycelium_discovery_dns` for
+  the DNS host fallback). Lookups try each backend in order; first
+  hit wins. Registration fans out so a node's filesystem entry is
+  visible to siblings on the same host with no stock-EPMD daemon.
+- Boot args `-epmd_module quic_epmd -start_epmd false` route OTP's
+  port-please through the discovery chain instead of stock EPMD.
 
 NAT traversal is out of scope. When a direct path is unavailable,
 `quic_dist:set_connect_options/2` lets callers register a per-peer
