@@ -126,8 +126,8 @@ Make sure `data/quic/node.{crt,key}` exist (see "First-boot setup"
 above), then:
 
 ```bash
-rebar3 shell --config config/sys.config --sname node1 \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --config config/sys.config --sname node1
 ```
 
 ```erlang
@@ -157,14 +157,14 @@ Start two nodes and have them find each other:
 
 **Terminal 1 - First Node (Seed)**
 ```bash
-rebar3 shell --sname seed --config config/sys.config \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --sname seed --config config/sys.config
 ```
 
 **Terminal 2 - Second Node**
 ```bash
-rebar3 shell --sname node1 --config config/sys.config \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --sname node1 --config config/sys.config
 ```
 
 ```erlang

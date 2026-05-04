@@ -41,12 +41,28 @@ fi
 # mycelium_dist_keys on first start; no setup needed.
 ensure_cert() {
     if [ ! -f data/quic/node.crt ] || [ ! -f data/quic/node.key ]; then
-        echo "Generating QUIC TLS cert in data/quic/ ..."
-        rebar3 compile >/dev/null
-        erl -noshell \
-            -pa _build/default/lib/*/ebin \
-            -eval 'application:load(mycelium), mycelium_quic_cert:ensure_cert("data/quic"), halt().'
+        echo "Generating self-signed QUIC TLS cert in data/quic/ ..."
+        mkdir -p data/quic
+        openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -keyout data/quic/node.key -out data/quic/node.crt \
+            -subj '/CN=mycelium-chat' 2>/dev/null
     fi
+}
+
+# Build the -quic_dist_* init args. The kernel boots distribution
+# before sys.config envs apply, so port / discovery / auth callback
+# must come through init args.
+dist_args() {
+    local port=$1
+    cat <<EOF
+-proto_dist quic \
+-quic_dist_cert $PWD/data/quic/node.crt \
+-quic_dist_key $PWD/data/quic/node.key \
+-quic_dist_port $port \
+-quic_dist_register_with_epmd true \
+-quic_dist_discovery_module mycelium_quic_discovery \
+-quic_dist_auth_callback mycelium_dist_auth_callback:authenticate
+EOF
 }
 
 case "${1:-}" in
@@ -60,8 +76,8 @@ case "${1:-}" in
     seed)
         ensure_cert
         echo "Starting seed node..."
+        ERL_AFLAGS="$(dist_args 9100)" \
         rebar3 shell --sname seed --setcookie chat \
-            --erl_args "-proto_dist quic" \
             --eval "chat_client:demo()."
         ;;
 
@@ -69,9 +85,10 @@ case "${1:-}" in
         ensure_cert
         NODE_NUM="${2:-1}"
         SEED_HOST=$(hostname -s)
+        PORT=$((9100 + NODE_NUM))
         echo "Starting node${NODE_NUM}, joining seed@${SEED_HOST}..."
+        ERL_AFLAGS="$(dist_args $PORT)" \
         rebar3 shell --sname "node${NODE_NUM}" --setcookie chat \
-            --erl_args "-proto_dist quic" \
             --eval "mycelium:join('seed@${SEED_HOST}'), {ok, C} = chat_client:start(), timer:sleep(500), chat_client:join(demo_room, C)."
         ;;
 

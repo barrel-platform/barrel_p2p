@@ -28,3 +28,6 @@ Thumbs.db
 erl_crash.dump
 *.beam
 *.ez
+
+# Chat example runtime data
+examples/chat/data/

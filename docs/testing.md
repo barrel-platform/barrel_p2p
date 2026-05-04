@@ -62,14 +62,17 @@ covers most cases.
 ### Single node
 
 ```bash
-%% Generate the QUIC TLS material once before first boot.
-rebar3 shell --eval 'mycelium_quic_cert:ensure_cert(), halt(0).'
+# Generate the QUIC TLS cert once before first boot.
+mkdir -p data/quic
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout data/quic/node.key -out data/quic/node.crt \
+    -subj '/CN=mycelium'
 
-rebar3 shell --sname m1 --setcookie mycelium \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --sname m1 --setcookie mycelium
 ```
 
-Without the `-proto_dist quic` flag the node boots on the default
+Without `ERL_AFLAGS="-proto_dist quic"` the node boots on the default
 TCP carrier. After boot:
 
 ```erlang
@@ -88,15 +91,15 @@ ok
 In one terminal:
 
 ```bash
-rebar3 shell --sname m1 --setcookie mycelium \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --sname m1 --setcookie mycelium
 ```
 
 In another terminal:
 
 ```bash
-rebar3 shell --sname m2 --setcookie mycelium \
-    --erl_args "-proto_dist quic"
+ERL_AFLAGS="-proto_dist quic" \
+rebar3 shell --sname m2 --setcookie mycelium
 ```
 
 On `m2`, join the cluster:
@@ -141,9 +144,8 @@ observer:start().
 without auth (faster local poking):
 
 ```bash
-rebar3 shell --sname m1 --setcookie mycelium --erl_args " \
-    -proto_dist quic \
-    -mycelium auth_enabled false"
+ERL_AFLAGS="-proto_dist quic -mycelium auth_enabled false" \
+rebar3 shell --sname m1 --setcookie mycelium
 ```
 
 Each node generates its keypair on first boot (under
