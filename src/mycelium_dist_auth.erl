@@ -118,7 +118,7 @@ create_challenge() ->
     {Nonce, Timestamp}.
 
 %% @doc Sign a challenge
-%% Message format: <<Nonce:32/binary, Timestamp:64/big, ResponderPubKey:32/binary>>
+%% Message format: `<<Nonce:32/binary, Timestamp:64/big, ResponderPubKey:32/binary>>'
 -spec sign_challenge(binary(), integer()) -> {ok, binary()} | {error, term()}.
 sign_challenge(Nonce, Timestamp) when byte_size(Nonce) =:= ?NONCE_SIZE ->
     case get_private_key() of

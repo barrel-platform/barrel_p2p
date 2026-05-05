@@ -166,10 +166,10 @@ pull_frames(Buf, Acc, L) ->
 
 %% @doc Apply a peer DATA frame. Returns one of:
 %%   - `{deliver, Payload, Link}' when Seq matches `rx_next_expected'.
-%%   - `{duplicate, Link}' when Seq < `rx_next_expected' (already
+%%   - `{duplicate, Link}' when Seq is below `rx_next_expected' (already
 %%     delivered before a migration; silently drop).
-%%   - `{protocol_error, Reason, Link}' when Seq > `rx_next_expected'
-%%     (sender skipped a frame; bail).
+%%   - `{protocol_error, Reason, Link}' when Seq is above
+%%     `rx_next_expected' (sender skipped a frame; bail).
 -spec apply_data(non_neg_integer(), binary(), link_state()) ->
     {deliver, binary(), link_state()}
   | {duplicate, link_state()}

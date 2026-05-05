@@ -76,16 +76,14 @@ QUIC's connection migration moves an established session to a new UDP
 4-tuple without renegotiating. To migrate to a different relay:
 
 1. Establish a new socket adapter pointing at the new path.
-2. Tell the running QUIC connection to migrate. This is a `quic`
-   primitive (`quic:migrate/2`), not a dist API; it operates on the
-   connection ref returned by `quic_dist_controller:get_connection/1`
-   for `'peer@remote'`.
+2. Tell the running QUIC connection to migrate. Mycelium exposes
+   that as `mycelium:migrate_peer/1,2`, which wraps `quic:migrate/2`
+   on the connection backing the peer's dist channel.
 3. Once migration completes, the dist controller continues sending on
    the new path.
 
-Migration during a live session is the upstream's responsibility;
-mycelium does not abstract it. See the upstream `quic` docs for the
-concrete primitives.
+See [docs/migration.md](migration.md) for the full API and a
+custom-trigger watchdog recipe.
 
 ## What mycelium does not do
 

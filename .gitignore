@@ -31,3 +31,4 @@ erl_crash.dump
 
 # Chat example runtime data
 examples/chat/data/
+doc/

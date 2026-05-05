@@ -5,7 +5,7 @@
 -module(mycelium_dist_protocol).
 
 %% Wire protocol encoding for Ed25519 distribution authentication
-%% Message format: <<Type:8, Length:16/big, Payload/binary>>
+%% Message format: `<<Type:8, Length:16/big, Payload/binary>>'
 
 -export([
     encode_hello/2,
@@ -39,7 +39,7 @@
 %%====================================================================
 
 %% @doc Encode AUTH_HELLO message
-%% Format: <<Type:8, Version:8, NodeNameLen:16/big, NodeName/binary, PubKey:32/binary>>
+%% Format: `<<Type:8, Version:8, NodeNameLen:16/big, NodeName/binary, PubKey:32/binary>>'
 -spec encode_hello(node(), binary()) -> binary().
 encode_hello(NodeName, PubKey) when byte_size(PubKey) =:= ?PUBLIC_KEY_SIZE ->
     NodeBin = atom_to_binary(NodeName, utf8),
@@ -48,33 +48,33 @@ encode_hello(NodeName, PubKey) when byte_size(PubKey) =:= ?PUBLIC_KEY_SIZE ->
     <<?AUTH_HELLO:8, Payload/binary>>.
 
 %% @doc Encode AUTH_CHALLENGE message
-%% Format: <<Type:8, Nonce:32/binary, Timestamp:64/big>>
+%% Format: `<<Type:8, Nonce:32/binary, Timestamp:64/big>>'
 -spec encode_challenge(binary(), integer()) -> binary().
 encode_challenge(Nonce, Timestamp) when byte_size(Nonce) =:= ?NONCE_SIZE ->
     Payload = <<Nonce/binary, Timestamp:64/big>>,
     <<?AUTH_CHALLENGE:8, Payload/binary>>.
 
 %% @doc Encode AUTH_RESPONSE message
-%% Format: <<Type:8, Signature:64/binary>>
+%% Format: `<<Type:8, Signature:64/binary>>'
 -spec encode_response(binary()) -> binary().
 encode_response(Signature) when byte_size(Signature) =:= ?SIGNATURE_SIZE ->
     <<?AUTH_RESPONSE:8, Signature/binary>>.
 
 %% @doc Encode AUTH_OK message
-%% Format: <<Type:8>>
+%% Format: `<<Type:8>>'
 -spec encode_ok() -> binary().
 encode_ok() ->
     <<?AUTH_OK:8>>.
 
 %% @doc Encode AUTH_FAIL message
-%% Format: <<Type:8, ReasonLen:16/big, Reason/binary>>
+%% Format: `<<Type:8, ReasonLen:16/big, Reason/binary>>'
 -spec encode_fail(binary()) -> binary().
 encode_fail(Reason) when is_binary(Reason) ->
     ReasonLen = byte_size(Reason),
     <<?AUTH_FAIL:8, ReasonLen:16/big, Reason/binary>>.
 
 %% @doc Encode AUTH_KEY_EXCHANGE message
-%% Format: <<Type:8, EphemeralPubKey:32/binary>>
+%% Format: `<<Type:8, EphemeralPubKey:32/binary>>'
 -spec encode_key_exchange(binary()) -> binary().
 encode_key_exchange(EphemeralPubKey) when byte_size(EphemeralPubKey) =:= ?X25519_KEY_SIZE ->
     <<?AUTH_KEY_EXCHANGE:8, EphemeralPubKey/binary>>.

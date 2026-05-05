@@ -31,10 +31,10 @@
 %%
 %% NB: `quic_dist:get_controller/1' returns the dist controller
 %% gen_statem, not the underlying QUIC connection. `quic:get_path_stats/1'
-%% expects the connection. Until upstream exposes a
-%% `quic_dist_controller:get_path_stats/1' wrapper, we extract the
-%% conn pid via `sys:get_state' on the dist controller. This is
-%% fragile to upstream record shape changes; see TODO at module top.
+%% expects the connection. Until upstream exposes a get-path-stats
+%% wrapper on the dist controller itself, we extract the conn pid
+%% via `sys:get_state' on the dist controller. This is fragile to
+%% upstream record shape changes; see TODO at module top.
 -spec summary(node()) -> {ok, summary()} | {error, term()}.
 summary(Node) when is_atom(Node) ->
     case connection(Node) of

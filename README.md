@@ -162,7 +162,7 @@ mycelium_quic_cert:ensure_cert().
 
 ## Example
 
-A small distributed chat app lives under [`examples/chat`](examples/chat). To run a two-node demo:
+A small distributed chat app lives under [`examples/chat`](examples/chat/README.md). To run a two-node demo:
 
 ```bash
 cd examples/chat

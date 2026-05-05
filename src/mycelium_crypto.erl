@@ -114,7 +114,7 @@ encrypt(Data, Session, AAD) when is_binary(Data) ->
     end.
 
 %% @doc Decrypt data using ChaCha20-Poly1305.
-%% Input format: <<Tag:16/binary, Ciphertext/binary>>
+%% Input format: `<<Tag:16/binary, Ciphertext/binary>>'
 -spec decrypt(EncryptedData :: binary(), Session :: #crypto_session{}, AAD :: binary()) ->
     {ok, Plaintext :: binary(), UpdatedSession :: #crypto_session{}} | {error, term()}.
 decrypt(<<Tag:?POLY1305_TAG_SIZE/binary, Ciphertext/binary>>, Session, AAD) ->
@@ -167,7 +167,7 @@ hkdf_expand(PRK, Info, Length, Counter, Prev, Acc) when Counter =< 255 ->
     hkdf_expand(PRK, Info, Length, Counter + 1, T, <<Acc/binary, T/binary>>).
 
 %% @doc Create a 12-byte nonce from a 64-bit counter.
-%% Format: <<0:32, Counter:64/little>>
+%% Format: `<<0:32, Counter:64/little>>'
 -spec make_nonce(non_neg_integer()) -> binary().
 make_nonce(Counter) ->
     <<0:32, Counter:64/little>>.
