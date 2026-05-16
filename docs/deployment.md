@@ -115,6 +115,61 @@ Skipping step 1 is safe but causes a brief failure-shaped churn event
 on every peer that had you in active view (`peer_down` with reason
 `nodedown`).
 
+## Rotation runbook
+
+`mycelium_rotate` handles both QUIC TLS material and Ed25519 identity
+keys. Each call atomically backs the old material up under
+`<dir>/backups/<UTC-timestamp>/` and returns the backup path.
+
+### Rotate the Ed25519 identity
+
+Takes effect on the next handshake. No restart needed.
+
+```erlang
+{ok, Info} = mycelium_rotate:rotate_identity().
+%% Info = #{cert_file := PubPath,
+%%          key_file := PrivPath,
+%%          backup_dir := BackupPath,
+%%          restart_required := false}
+```
+
+Caveats:
+
+- Peers running in **strict** trust mode will reject the new identity
+  until you re-pin it (manually distribute the new public key, or use
+  `mycelium_dist_keys:store_key/2` on each peer).
+- Peers running in **tofu** mode will pin the new identity on first
+  handshake. Existing trust entries for the old key remain in their
+  store and should be cleaned up if you want to disallow rollback.
+- The logged warning includes the new SHA-256 fingerprint; record it.
+
+### Rotate the QUIC TLS cert
+
+Requires a node restart for the listener to load the new credentials.
+
+```erlang
+{ok, Info} = mycelium_rotate:rotate_cert().
+%% Info#{restart_required := true}
+```
+
+Recommended sequence per node:
+
+1. Drain by calling `mycelium:leave/0` so peers move you to passive
+   view promptly.
+2. Call `mycelium_rotate:rotate_cert/0`.
+3. `application:stop(mycelium)` followed by `init:stop/0`.
+4. Bring the node back up; it loads the new cert at listen time.
+
+Peers will see a transient `peer_down` event and re-establish on next
+demand. The Ed25519 identity is independent of the cert and is not
+touched.
+
+### Rollback
+
+The backup directory contains the previous `node.crt`/`node.key` (or
+`node.pub`/`node.key` for identity). Copy them back over the active
+files manually; for cert rotations, restart the node after the swap.
+
 ## Capacity planning checklist
 
 - One UDP port per node open in firewalls.
