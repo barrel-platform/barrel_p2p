@@ -257,8 +257,8 @@ disconnect_reconnect_test(Config) ->
     timer:sleep(200),
     ?assertNot(lists:member(Node2, rpc:call(Node1, erlang, nodes, []))),
 
-    %% mycelium_app sets dist_auto_connect=never, so ping/2 won't reopen
-    %% the dist link. connect_node/1 is the explicit re-establish call.
+    %% Re-establish via explicit connect_node/1; the test doesn't rely
+    %% on auto-connect timing.
     true = rpc:call(Node1, net_kernel, connect_node, [Node2]),
     wait_until(
         fun() ->
@@ -400,9 +400,10 @@ start_peer_nodes() ->
             [{Node1, Port1}, {Node2, Port2}]
         ),
 
-        %% mycelium_app sets dist_auto_connect=never (HyParView controls
-        %% topology). Pre-link Node1<->Node2 explicitly so the test cases
-        %% can RPC across them and `global' sees a fully-connected cluster.
+        %% Pre-link Node1 and Node2 explicitly so test cases can RPC
+        %% across them and `global' sees a fully-connected cluster
+        %% without waiting for the first `Pid ! Msg' to trigger
+        %% demand-driven auto-connect.
         true = rpc:call(Node1, net_kernel, connect_node, [Node2]),
 
         {ok, Node1, Node2}

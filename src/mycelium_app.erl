@@ -12,8 +12,12 @@ start(_StartType, _StartArgs) ->
     init_dist_cookie(),
     %% Disable global's partition prevention - mycelium manages topology
     ok = application:set_env(kernel, prevent_overlapping_partitions, false),
-    %% Disable auto-connect - HyParView controls the topology
-    ok = application:set_env(kernel, dist_auto_connect, never),
+    %% HyParView owns the bounded gossip topology (active view); OTP
+    %% owns demand-driven dist channels (`Pid ! Msg' to any cluster
+    %% node auto-connects through the mycelium discovery chain). The
+    %% two are decoupled: `mycelium_dist_gc' reaps idle non-gossip
+    %% channels so the natural fan-out stays bounded.
+    ok = application:set_env(kernel, dist_auto_connect, once),
     %% Publish ourselves through the discovery chain. quic_dist's own
     %% registration path runs before sys.config envs apply, so we
     %% redo it here now that mycelium's discovery_backends env is set.

@@ -257,9 +257,9 @@ start_peer_nodes(PrivDir) ->
             Specs
         ),
 
-        %% Pre-link the dist mesh so global stays happy and any future
-        %% RPC across nodes works (mycelium_app sets dist_auto_connect=
-        %% never).
+        %% Pre-link the dist mesh so global stays happy and the test
+        %% doesn't have to wait for demand-driven auto-connect on the
+        %% first RPC.
         [{First, _} | Rest] = Nodes,
         lists:foreach(
             fun({Other, _}) ->

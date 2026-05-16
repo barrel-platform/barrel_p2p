@@ -137,9 +137,11 @@ handle_call({join, ContactNode}, _From, State) ->
 
 handle_call(leave, _From, State) ->
     Self = State#view_state.self,
+    %% HyParView-level leave: tell every active peer we no longer
+    %% participate in gossip. Dist channels stay up; mycelium_dist_gc
+    %% will reap them once they go idle and carry no live user streams.
     maps:foreach(fun(Node, _Peer) ->
-        mycelium_protocol:send(Node, {disconnect, Self}),
-        mycelium_bridge:request_disconnect(Node)
+        mycelium_protocol:send(Node, {disconnect, Self})
     end, State#view_state.active_view),
     mycelium_hyparview_events:notify(left),
     {reply, ok, State#view_state{active_view = #{}, passive_view = #{}}};
@@ -463,9 +465,11 @@ add_to_active_view(Peer, State) ->
             Exclude = [Peer#peer.id],
             {DroppedNode, DroppedPeer} = random_active_peer_pair(Active, Exclude),
 
-            %% Send disconnect to dropped peer
+            %% Send HyParView-level disconnect: the peer learns we no
+            %% longer treat it as an active gossip peer. The dist channel
+            %% itself stays up; mycelium_dist_gc reaps it later if it goes
+            %% idle and carries no live user streams.
             mycelium_protocol:send(DroppedNode, {disconnect, State#view_state.self}),
-            mycelium_bridge:request_disconnect(DroppedNode),
             mycelium_hyparview_events:notify({peer_down, DroppedNode, dropped}),
             mycelium_registry_sync:handle_peer_down(DroppedNode),
 

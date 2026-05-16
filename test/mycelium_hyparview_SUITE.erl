@@ -67,8 +67,10 @@ end_per_testcase(_TestCase, _Config) ->
 %%====================================================================
 
 test_initial_state(_Config) ->
-    %% Verify dist_auto_connect was set
-    ?assertEqual({ok, never}, application:get_env(kernel, dist_auto_connect)),
+    %% mycelium_app sets dist_auto_connect to `once' so `Pid ! Msg' to
+    %% any cluster node auto-connects through the discovery chain;
+    %% HyParView's active view tracks gossip topology separately.
+    ?assertEqual({ok, once}, application:get_env(kernel, dist_auto_connect)),
     ok.
 
 test_active_view_empty(_Config) ->
