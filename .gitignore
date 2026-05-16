@@ -31,7 +31,6 @@ erl_crash.dump
 
 # Chat example runtime data
 examples/chat/data/
-doc/
 
 # Bench output (baseline.json is committed; results.json is per-run)
 bench/results.json

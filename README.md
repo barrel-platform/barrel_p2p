@@ -8,6 +8,16 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 
 **Experimental, pre-1.0.** APIs may change between minor releases until a `1.0` tag. The cryptographic and transport layers (Ed25519 dist auth, QUIC carrier) have unit and multi-node test coverage but have **not been independently audited**. Don't ship it where a transport-level compromise would be costly without doing your own review first. Bug reports and PRs welcome; see [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 
+## Versioning policy
+
+Mycelium is still in 0.x, so:
+
+- **Minor bumps (0.x → 0.y)** may change documented public APIs. Breaking changes land with a `CHANGELOG.md` entry and, where the API is tagged `supported`, one minor of deprecation before removal.
+- **Patch bumps (0.x.y → 0.x.y+1)** are non-breaking. Bug fixes, performance tweaks, internal refactors only.
+- **1.0** is not yet on the roadmap. It will come after an external audit of the dist auth and transport layers, and after a public 0.x release has accumulated user feedback.
+
+Public-API stability tiers (`supported`, `beta`, `experimental`) are tracked in [doc/features.md](doc/features.md). Anything not listed there is considered internal and may change without notice.
+
 ## Key Features
 
 - **HyParView Protocol** - Scalable partial membership with O(log n) connections per node

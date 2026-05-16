@@ -65,32 +65,43 @@
 
 %%====================================================================
 %% HyParView API
+%%
+%% Stability tiers per `doc/features.md'. Each export below carries a
+%% `Stability:' line so grep, ex_doc and reviewers can spot the
+%% contract level at a glance.
 %%====================================================================
 
+%% Stability: supported.
 -spec join(node()) -> ok | {error, term()}.
 join(ContactNode) ->
     mycelium_hyparview:join(ContactNode).
 
+%% Stability: supported.
 -spec leave() -> ok.
 leave() ->
     mycelium_hyparview:leave().
 
+%% Stability: supported.
 -spec active_view() -> [node()].
 active_view() ->
     mycelium_hyparview:active_view().
 
+%% Stability: supported.
 -spec passive_view() -> [node()].
 passive_view() ->
     mycelium_hyparview:passive_view().
 
+%% Stability: supported.
 -spec subscribe() -> ok.
 subscribe() ->
     mycelium_hyparview_events:subscribe(self()).
 
+%% Stability: supported.
 -spec subscribe(pid()) -> ok.
 subscribe(Pid) ->
     mycelium_hyparview_events:subscribe(Pid).
 
+%% Stability: supported.
 -spec unsubscribe(pid()) -> ok.
 unsubscribe(Pid) ->
     mycelium_hyparview_events:unsubscribe(Pid).
@@ -99,36 +110,44 @@ unsubscribe(Pid) ->
 %% Service Registry API
 %%====================================================================
 
+%% Stability: supported.
 -spec register_service(atom() | binary()) -> ok | {error, term()}.
 register_service(Name) ->
     register_service(Name, #{}).
 
+%% Stability: supported.
 -spec register_service(atom() | binary(), map()) -> ok | {error, term()}.
 register_service(Name, Meta) ->
     mycelium_registry:register_service(Name, Meta).
 
+%% Stability: supported.
 -spec unregister_service(atom() | binary()) -> ok.
 unregister_service(Name) ->
     mycelium_registry:unregister_service(Name).
 
+%% Stability: supported.
 -spec lookup(atom() | binary()) -> {ok, [tuple()]} | {error, not_found}.
 lookup(Name) ->
     mycelium_registry:lookup(Name).
 
+%% Stability: supported.
 -spec lookup_local(atom() | binary()) -> {ok, pid()} | {error, not_found}.
 lookup_local(Name) ->
     mycelium_registry:lookup_local(Name).
 
+%% Stability: supported.
 -spec list_services() -> [atom() | binary()].
 list_services() ->
     mycelium_registry:list_services().
 
 %% Find service with overlay routing fallback and transparent retry
-%% Checks local → remote cache → overlay routing
+%% Checks local, then remote cache, then overlay routing.
+%% Stability: supported.
 -spec whereis_service(atom() | binary()) -> {ok, pid()} | {ok, node(), pid()} | {error, not_found}.
 whereis_service(Name) ->
     whereis_service(Name, #{}).
 
+%% Stability: supported.
 -spec whereis_service(atom() | binary(), map()) -> {ok, pid()} | {ok, node(), pid()} | {error, not_found}.
 whereis_service(Name, Opts) ->
     Retries = maps:get(retries, Opts, ?DEFAULT_RETRIES),
@@ -165,6 +184,7 @@ do_whereis_service(Name) ->
 
 %% Register a service with global for transparency
 %% Creates a local proxy and registers it with global:register_name
+%% Stability: beta.
 -spec global_register(atom() | binary()) -> {ok, pid()} | {error, term()}.
 global_register(Name) ->
     case whereis_service(Name) of
@@ -196,6 +216,7 @@ global_register(Name) ->
     end.
 
 %% Get existing proxy for a service
+%% Stability: beta.
 -spec get_proxy(atom() | binary()) -> {ok, pid()} | not_found.
 get_proxy(Name) ->
     mycelium_registry:get_proxy(Name).
@@ -205,14 +226,17 @@ get_proxy(Name) ->
 %%====================================================================
 
 %% Subscribe to service events (register, unregister, down)
+%% Stability: beta. Event shape may evolve across 0.x minors.
 -spec subscribe_services() -> ok.
 subscribe_services() ->
     mycelium_service_events:subscribe(self()).
 
+%% Stability: beta.
 -spec subscribe_services(pid()) -> ok.
 subscribe_services(Pid) ->
     mycelium_service_events:subscribe(Pid).
 
+%% Stability: beta.
 -spec unsubscribe_services(pid()) -> ok.
 unsubscribe_services(Pid) ->
     mycelium_service_events:unsubscribe(Pid).
@@ -242,6 +266,7 @@ unsubscribe_services(Pid) ->
 %%       {error, not_found} -> handle_not_found()
 %%   end
 
+%% Stability: supported.
 -spec register_name(Name :: term(), Pid :: pid()) -> yes | no.
 register_name(Name, Pid) when is_pid(Pid) ->
     case mycelium_registry:register_service(Name, Pid, #{}) of
@@ -249,10 +274,12 @@ register_name(Name, Pid) when is_pid(Pid) ->
         {error, _} -> no
     end.
 
+%% Stability: supported.
 -spec unregister_name(Name :: term()) -> ok.
 unregister_name(Name) ->
     mycelium_registry:unregister_service(Name).
 
+%% Stability: supported.
 -spec whereis_name(Name :: term()) -> pid() | undefined.
 whereis_name(Name) ->
     case whereis_service(Name) of
@@ -261,6 +288,7 @@ whereis_name(Name) ->
         {error, not_found} -> undefined
     end.
 
+%% Stability: supported.
 -spec send(Name :: term(), Msg :: term()) -> pid().
 send(Name, Msg) ->
     case whereis_name(Name) of
@@ -287,10 +315,13 @@ send(Name, Msg) ->
 %% - `{error, peer_disable_migration}' — peer set the transport-param
 %%   flag forbidding migration; treat as terminal for this connection
 %% - `{error, timeout}' — path validation didn't complete in time
+%%
+%% Stability: beta. The opts map may grow keys; existing keys stay.
 -spec migrate_peer(node()) -> ok | {error, term()}.
 migrate_peer(Node) ->
     migrate_peer(Node, #{}).
 
+%% Stability: beta.
 -spec migrate_peer(node(), #{timeout => pos_integer()}) ->
     ok | {error, term()}.
 migrate_peer(Node, Opts) when is_atom(Node), is_map(Opts) ->
@@ -311,6 +342,8 @@ migrate_peer(Node, Opts) when is_atom(Node), is_map(Opts) ->
 
 %% Start a persistent process that holds a service registration
 %% Used by integration tests to avoid RPC process lifetime issues
+%% Stability: experimental. Likely to move out of `mycelium.erl' into
+%% a dedicated test-helpers module before 1.0.
 -spec start_service_holder(atom() | binary()) -> {ok, pid()} | {error, term()}.
 start_service_holder(ServiceName) ->
     Parent = self(),
@@ -324,6 +357,7 @@ start_service_holder(ServiceName) ->
     end.
 
 %% Stop a service holder process
+%% Stability: experimental.
 -spec stop_service_holder(pid()) -> ok.
 stop_service_holder(Pid) ->
     Pid ! stop,
