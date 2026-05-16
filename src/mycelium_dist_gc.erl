@@ -141,6 +141,7 @@ maybe_reap(Node, Active, MinAge, Now) ->
                         true  ->
                             _ = erlang:disconnect_node(Node),
                             ets:delete(?AGES, Node),
+                            mycelium_metrics:gc_reap(Node),
                             ok
                     end
             end
@@ -156,8 +157,7 @@ active_view_safe() ->
 has_live_streams(Node) ->
     try quic_dist:list_streams(Node) of
         []                -> false;
-        L when is_list(L) -> true;
-        _                 -> true
+        L when is_list(L) -> true
     catch _:_ ->
         %% If we cannot ask, be conservative and keep the channel.
         true

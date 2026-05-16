@@ -14,7 +14,8 @@
     {applications, [
         kernel,
         stdlib,
-        quic
+        quic,
+        instrument
     ]},
     {env, [
         {active_size, 5},

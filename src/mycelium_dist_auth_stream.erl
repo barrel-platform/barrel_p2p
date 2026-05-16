@@ -44,7 +44,7 @@ authenticate_outgoing(Conn, Timeout) ->
         false ->
             {ok, undefined};
         true ->
-            run_outgoing(Conn, Timeout)
+            with_metrics(outgoing, fun() -> run_outgoing(Conn, Timeout) end)
     end.
 
 %% @doc Run the auth protocol as the connection responder.
@@ -55,7 +55,30 @@ authenticate_incoming(Conn, Timeout) ->
         false ->
             {ok, undefined};
         true ->
-            run_incoming(Conn, Timeout)
+            with_metrics(incoming, fun() -> run_incoming(Conn, Timeout) end)
+    end.
+
+%% Time the handshake and emit attempt/duration metrics. Exceptions in
+%% the inner function are still propagated; they just record as failures.
+with_metrics(Role, F) ->
+    Start = erlang:monotonic_time(millisecond),
+    Outcome = try F() of
+        {ok, _} = Ok -> {ok, Ok};
+        Other        -> {fail, Other}
+    catch
+        Class:Reason:Stack -> {raise, Class, Reason, Stack}
+    end,
+    Duration = erlang:monotonic_time(millisecond) - Start,
+    case Outcome of
+        {ok, Result} ->
+            mycelium_metrics:auth_attempt(Role, ok, Duration),
+            Result;
+        {fail, Result} ->
+            mycelium_metrics:auth_attempt(Role, fail, Duration),
+            Result;
+        {raise, C, R, S} ->
+            mycelium_metrics:auth_attempt(Role, fail, Duration),
+            erlang:raise(C, R, S)
     end.
 
 %%====================================================================

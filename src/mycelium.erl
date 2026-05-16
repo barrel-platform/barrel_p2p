@@ -294,10 +294,16 @@ migrate_peer(Node) ->
 -spec migrate_peer(node(), #{timeout => pos_integer()}) ->
     ok | {error, term()}.
 migrate_peer(Node, Opts) when is_atom(Node), is_map(Opts) ->
-    case mycelium_path_stats:connection(Node) of
+    Result = case mycelium_path_stats:connection(Node) of
         {ok, Conn} -> quic:migrate(Conn, Opts);
         Err        -> Err
-    end.
+    end,
+    Outcome = case Result of
+        ok -> ok;
+        _  -> fail
+    end,
+    mycelium_metrics:migrate_result(Node, Outcome),
+    Result.
 
 %%====================================================================
 %% Test Helpers

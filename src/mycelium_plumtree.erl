@@ -164,6 +164,7 @@ handle_cast(_Msg, State) ->
 
 %% Receive GOSSIP message
 handle_info({?PLUMTREE_TAG, {gossip, MsgId, Tag, Payload, Sender}}, State) ->
+    mycelium_metrics:gossip_received(Sender),
     State2 = State#state{gossip_received = State#state.gossip_received + 1},
     case maps:is_key(MsgId, State2#state.received) of
         true ->
@@ -308,6 +309,7 @@ send_gossip(MsgId, Tag, Payload, Origin, Peers, State) ->
     lists:foreach(fun(Peer) ->
         erlang:send({?SERVER, Peer}, Msg, [nosuspend])
     end, Peers),
+    mycelium_metrics:gossip_sent(length(Peers)),
     State#state{gossip_sent = State#state.gossip_sent + length(Peers)}.
 
 send_ihaves(MsgId, Peers, State) ->
@@ -315,15 +317,18 @@ send_ihaves(MsgId, Peers, State) ->
     lists:foreach(fun(Peer) ->
         erlang:send({?SERVER, Peer}, Msg, [nosuspend])
     end, Peers),
+    mycelium_metrics:ihave_sent(length(Peers)),
     State#state{ihave_sent = State#state.ihave_sent + length(Peers)}.
 
 send_graft(MsgId, Peer) ->
     Msg = {?PLUMTREE_TAG, {graft, MsgId, node()}},
-    erlang:send({?SERVER, Peer}, Msg, [nosuspend]).
+    erlang:send({?SERVER, Peer}, Msg, [nosuspend]),
+    mycelium_metrics:graft_sent(Peer).
 
 send_prune(Peer, _State) ->
     Msg = {?PLUMTREE_TAG, {prune, node()}},
-    erlang:send({?SERVER, Peer}, Msg, [nosuspend]).
+    erlang:send({?SERVER, Peer}, Msg, [nosuspend]),
+    mycelium_metrics:prune_sent(Peer).
 
 ensure_eager(Node, State) when Node =:= node() ->
     State;

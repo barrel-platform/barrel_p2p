@@ -27,6 +27,7 @@ start_link() ->
 
 -spec notify(term()) -> ok.
 notify(Event) ->
+    mycelium_metrics:hyparview_event(Event),
     gen_server:cast(?SERVER, {notify, Event}).
 
 -spec subscribe(pid()) -> ok.
