@@ -3,6 +3,26 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- Dist channels decoupled from HyParView active view. `Pid ! Msg' works
+  between any cluster nodes; OTP's demand-driven auto-connect resolves
+  through the mycelium discovery chain. HyParView active view tracks
+  only the bounded gossip topology.
+- `-proto_dist mycelium` ships as the transparent boot shim over
+  upstream `quic_dist`; three-arg vm.args replaces the prior init-arg
+  dance.
+
+### Removed
+- Multi-hop circuits (`mycelium:circuit_*` API and the
+  `mycelium_circuit_*` modules). Their stated use case ("reach a node
+  outside the active view") is now covered by raw dist; the
+  byte-perfect FRAME_RESUME property has no other consumer in scope.
+- `mycelium_router:find_path/1,2` and related path-cache internals
+  (only consumed by circuits). Service overlay routing
+  (`find_route/1`, `find_service/1`) stays.
+
 ## [0.1.0] - 2026-05-03
 
 First public release.

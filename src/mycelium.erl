@@ -43,18 +43,6 @@
     unsubscribe_services/1
 ]).
 
-%% Circuit API
--export([
-    circuit_open/1,
-    circuit_open/2,
-    circuit_send/2,
-    circuit_close/1,
-    circuit_listen/0,
-    circuit_listen/1,
-    circuit_unlisten/0,
-    circuit_unlisten/1
-]).
-
 %% Via callbacks for {via, mycelium, Name} registration
 -export([
     register_name/2,
@@ -282,56 +270,6 @@ send(Name, Msg) ->
             Pid ! Msg,
             Pid
     end.
-
-%%====================================================================
-%% Circuit API
-%%====================================================================
-%%
-%% Multi-hop streams over the existing per-peer dist QUIC connection.
-%% Thin wrapper around the `mycelium_circuit' module; see that module
-%% and `docs/external-relay.md' for details.
-
-%% @doc Open a single-hop circuit (direct stream) to `Target'.
--spec circuit_open(node()) ->
-    {ok, mycelium_circuit:circuit_ref()} | {error, term()}.
-circuit_open(Target) ->
-    mycelium_circuit:open(Target).
-
-%% @doc Open a multi-hop circuit to `Target' through the listed
-%% intermediate hops.
--spec circuit_open(node(), [node()]) ->
-    {ok, mycelium_circuit:circuit_ref()} | {error, term()}.
-circuit_open(Target, Path) ->
-    mycelium_circuit:open(Target, Path).
-
-%% @doc Send opaque application bytes on a circuit.
--spec circuit_send(mycelium_circuit:circuit_ref(), iodata()) ->
-    ok | {error, term()}.
-circuit_send(CRef, Data) ->
-    mycelium_circuit:send(CRef, Data).
-
-%% @doc Close a circuit (half-close, FIN). Both sides receive a
-%% `closed' message after the other half is also closed.
--spec circuit_close(mycelium_circuit:circuit_ref()) -> ok.
-circuit_close(CRef) ->
-    mycelium_circuit:close(CRef).
-
-%% @doc Register the calling process to receive incoming circuits.
--spec circuit_listen() -> ok.
-circuit_listen() ->
-    mycelium_circuit:listen().
-
--spec circuit_listen(pid()) -> ok.
-circuit_listen(Pid) ->
-    mycelium_circuit:listen(Pid).
-
--spec circuit_unlisten() -> ok.
-circuit_unlisten() ->
-    mycelium_circuit:unlisten().
-
--spec circuit_unlisten(pid()) -> ok.
-circuit_unlisten(Pid) ->
-    mycelium_circuit:unlisten(Pid).
 
 %%====================================================================
 %% Connection Migration

@@ -76,8 +76,8 @@ init([]) ->
         modules => [mycelium_bridge]
     },
 
-    %% Tagged user-stream multiplex; circuit_relay (started by
-    %% mycelium_circuit_sup) registers as a handler against this.
+    %% Tagged user-stream multiplex. Apps register their own tag and
+    %% get a stream-shaped channel on top of quic_dist user streams.
     Streams = #{
         id => mycelium_streams,
         start => {mycelium_streams, start_link, []},
@@ -87,14 +87,5 @@ init([]) ->
         modules => [mycelium_streams]
     },
 
-    CircuitSup = #{
-        id => mycelium_circuit_sup,
-        start => {mycelium_circuit_sup, start_link, []},
-        restart => permanent,
-        shutdown => infinity,
-        type => supervisor,
-        modules => [mycelium_circuit_sup]
-    },
-
-    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, Bridge, Streams, CircuitSup],
+    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, Bridge, Streams],
     {ok, {SupFlags, ChildSpecs}}.

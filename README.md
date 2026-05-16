@@ -6,7 +6,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 
 ## Project Status
 
-**Experimental, pre-1.0.** APIs may change between minor releases until a `1.0` tag. The cryptographic and transport layers (Ed25519 dist auth, QUIC carrier, circuit framing) have unit and multi-node test coverage but have **not been independently audited**. Don't ship it where a transport-level compromise would be costly without doing your own review first. Bug reports and PRs welcome; see [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+**Experimental, pre-1.0.** APIs may change between minor releases until a `1.0` tag. The cryptographic and transport layers (Ed25519 dist auth, QUIC carrier) have unit and multi-node test coverage but have **not been independently audited**. Don't ship it where a transport-level compromise would be costly without doing your own review first. Bug reports and PRs welcome; see [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 
 ## Key Features
 
@@ -19,7 +19,6 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **One-shot RPC tooling** - `priv/bin/mycelium_call.sh` — `erl_call`-style helper that boots a hidden probe with full Ed25519 identity and runs `rpc:call/5` against a live mycelium node. Available to any project that depends on mycelium.
 - **TLS cert helper** - `priv/bin/mycelium_gen_cert.sh` — one-shot self-signed cert generator (RSA 2048 by default) for the QUIC dist channel; idempotent.
 - **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
-- **Multi-hop circuits** - Stream-shaped channels between cluster nodes that aren't in each other's active view, spliced at intermediate hops on top of the existing dist connections (see [docs/circuits.md](docs/circuits.md))
 - **Connection migration** - One-shot RFC 9000 §9 path migration via `mycelium:migrate_peer/1,2`; rebinds the QUIC dist channel to a new local 4-tuple without rekey or HyParView churn (see [docs/migration.md](docs/migration.md))
 
 ## Quick Start
@@ -166,7 +165,6 @@ The script links the local mycelium tree as a `_checkouts` override and starts e
 - [Getting Started](docs/getting-started.md) - Installation, first-boot setup (TLS cert, Ed25519 keypair), and first cluster
 - [Building P2P Applications](docs/tutorial.md) - Tutorial with worked examples
 - [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
-- [Circuits](docs/circuits.md) - Multi-hop streams over the dist QUIC channel
 - [Connection migration](docs/migration.md) - RFC 9000 §9 path migration via `migrate_peer/1,2`
 - [External Relay](docs/external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
 - [Comparison with Partisan](docs/partisan-comparison.md) - When to use which

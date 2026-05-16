@@ -7,29 +7,21 @@ This document covers the internal architecture, protocols, and implementation de
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                            Application                                │
-│  mycelium:join/1  register_service/2  whereis_service  circuit_open  │
+│  mycelium:join/1  register_service/2  whereis_service  Pid ! Msg     │
 └───────────────────────────────┬──────────────────────────────────────┘
                                 │
 ┌───────────────────────────────┴──────────────────────────────────────┐
 │                          mycelium.erl (API)                           │
-└──────┬──────────────┬────────────────┬────────────────┬──────────────┘
-       │              │                │                │
-       ▼              ▼                ▼                ▼
-┌────────────┐ ┌────────────┐  ┌──────────────┐ ┌────────────────┐
-│  HyParView │ │  Registry  │  │   Plumtree   │ │ Circuits v2    │
-│ Membership │ │ (OR-Map)   │  │  Broadcast   │ │ (mycelium_     │
-│            │ │            │  │              │ │  circuit*)     │
-└─────┬──────┘ └──────┬─────┘  └──────┬───────┘ └────────┬───────┘
-      │               │               │                  │
-      │               │               │                  ▼
-      │               │               │         ┌────────────────┐
-      │               │               │         │ mycelium_      │
-      │               │               │         │  router        │
-      │               │               │         │ (RTT paths)    │
-      │               │               │         └────────┬───────┘
-      │               │               │                  │
-      └───────────────┴───────────────┴──────┬───────────┘
-                                             ▼
+└──────┬──────────────┬────────────────┬──────────────────────────────┘
+       │              │                │
+       ▼              ▼                ▼
+┌────────────┐ ┌────────────┐  ┌──────────────┐
+│  HyParView │ │  Registry  │  │   Plumtree   │
+│ Membership │ │ (OR-Map)   │  │  Broadcast   │
+└─────┬──────┘ └──────┬─────┘  └──────┬───────┘
+      │               │               │
+      └───────────────┴───────┬───────┘
+                              ▼
                                   ┌────────────────────┐
                                   │ mycelium_streams   │
                                   │ (tagged user-      │
@@ -92,15 +84,10 @@ mycelium_sup (one_for_one)
 │       └── Remote service proxies
 │
 ├── mycelium_router (gen_server)
-│   └── RTT-aware path discovery (mycelium_path_cache ETS)
+│   └── Service overlay routing (mycelium_route_cache ETS)
 │
 ├── mycelium_streams (gen_server)
 │   └── Single tagged-stream acceptor; demuxes user streams by tag
-│
-├── mycelium_circuit_sup (supervisor)
-│   └── mycelium_circuit_relay (gen_server)
-│       └── Acceptor for <<"mycelium:circuit">> streams; splices
-│           relay-role hops, dispatches endpoint pipes
 │
 └── mycelium_bridge (gen_server)
     └── Erlang distribution connection manager
@@ -507,8 +494,6 @@ Every mycelium-managed user stream starts with:
 
 Reserved tags:
 
-- `<<"mycelium:circuit">>` — circuit traffic (handled by
-  `mycelium_circuit_relay`)
 - `<<"mycelium:", _/binary>>` — reserved for future internals
 
 Applications use any other tag (`<<"chat:rooms">>`, `<<"acme.kv">>`).
@@ -526,36 +511,12 @@ the demuxer is off the data path. The acceptor pid receives one
 `{mstream, StreamRef, opened, FromNode}` message and then native
 `{quic_dist_stream, StreamRef, _}` events.
 
-## Router and Multi-hop Path Selection
+## Service Overlay Routing
 
-`mycelium_router` discovers RTT-aware paths through the overlay for
-both circuit setup and overlay RPC.
-
-### Path stats
-
-`mycelium_path_stats:srtt/1` wraps `quic:get_path_stats/1` (upstream)
-to return the smoothed RTT (microseconds) on the QUIC connection
-backing each peer's dist channel. Each forwarding peer contributes
-its local `srtt(NextHop)` to a probe accumulator.
-
-### Find-path
-
-```erlang
-{ok, Path, EstRttUs} = mycelium_router:find_path(Target).
-{ok, Path, EstRttUs} = mycelium_router:find_path(Target,
-    #{max_hops => 4, exclude => [DeadHop], timeout => 200}).
-```
-
-Algorithm:
-
-1. `Target =:= node()` -> `{ok, [], 0}`.
-2. `Target` in active view -> `{ok, [], srtt(self, Target)}`.
-3. Otherwise broadcast `?route_probe` to active peers (excluding
-   `exclude`); each forwarder adds `srtt(NextHop)` to the accumulator
-   before relaying; terminal peers reply with `{Path, AccRtt}`.
-4. Initiator picks the lowest-AccRtt reply, adds its own `srtt` to
-   the responder, caches in `mycelium_path_cache` (separate from the
-   service-name `mycelium_route_cache`).
+`mycelium_router` keeps a service-name route cache that the registry
+proxies use to forward `whereis_service` requests through the active
+view when the target isn't local. `find_service/1` walks the overlay
+with a TTL (default 5 hops) and caches the via-peer on success.
 
 ### Service Proxy
 
@@ -565,46 +526,6 @@ Algorithm:
 {ok, Pid} = mycelium:whereis_service(remote_service).
 %% Pid is local proxy that forwards to remote node
 ```
-
-## Circuits v2
-
-`mycelium_circuit:open/1,2` builds a stream-shaped channel between
-two cluster nodes that may not be in each other's active view. Layered
-on `mycelium_streams` with the reserved tag `<<"mycelium:circuit">>`.
-
-### Layers
-
-1. `mycelium_streams` — tagged user-stream multiplex (above).
-2. `mycelium_circuit_proto` — five frames: `CREATE`, `RESUME`,
-   `DATA(Seq:48, Len:32, Payload)`, `ACK(CumSeq:48)`, `FIN(Seq:48)`.
-3. `mycelium_circuit_link` — windowed reliability (per-direction
-   `tx_unacked_buffer`, `rx_next_expected`, cumulative ACKs, replay
-   on RESUME). Both DATA and FIN consume one sequence number.
-4. `mycelium_circuit_pipe` — endpoint owner; one pipe per circuit
-   end, drives the link, exposes `{circuit, CRef, _}` events to the
-   caller.
-5. `mycelium_circuit_relay` — singleton acceptor; relay-role hops
-   splice bytes between two streams without per-circuit state.
-
-### Byte-perfect migration
-
-When an intermediate hop's stream dies, the initiator-side pipe asks
-the router for a fresh path (excluding the dead hop), opens a new
-circuit stream, and writes `FRAME_RESUME(CircuitId, RxNext,
-NewPath)`. Relays on the new path treat RESUME like CREATE for
-routing — they pop the head of `NewPath`, open the next downstream,
-and rewrite RESUME with the tail. The destination matches by
-`CircuitId`, attaches the new stream to the existing pipe, and writes
-its own symmetric `FRAME_RESUME` back upstream. Both sides prune
-their unacked buffers (drop frames with `Seq < peer's RxNext`) and
-replay the remainder preserving original frame type (DATA vs FIN).
-No bytes are lost.
-
-### Auto-routing
-
-`open/1` (no path) calls `mycelium_router:find_path/1` — the lowest
-RTT path is picked automatically. `open/2` accepts an explicit path
-or an options map `#{path => P, repath => false, max_hops => N}`.
 
 ## Performance Tuning
 

@@ -2,9 +2,8 @@
 %%%
 %%% Mycelium tagged-stream multiplex
 %%%
-%%% Single user-stream acceptor for mycelium nodes. Replaces direct
-%%% `quic_dist:accept_streams' calls from mycelium-internal layers
-%%% (e.g. circuit_relay) and lets apps coexist on the same dist QUIC
+%%% Single user-stream acceptor for mycelium nodes. Wraps
+%%% `quic_dist:accept_streams' so apps coexist on the same dist QUIC
 %%% connection.
 %%%
 %%% Wire: every mycelium-managed user stream begins with

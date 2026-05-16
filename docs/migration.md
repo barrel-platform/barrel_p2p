@@ -7,10 +7,6 @@ changes) without losing keys, streams, or ordering. Mycelium exposes
 that as a one-shot trigger; deciding *when* to migrate is left to the
 caller.
 
-This is unrelated to the multi-hop **circuit** migration described in
-[circuits.md](circuits.md), which handles intermediate-hop failure on
-top of multiple connections.
-
 ## API
 
 ```erlang
@@ -25,10 +21,10 @@ ok                     = mycelium:migrate_peer(Node, #{timeout => 5000}).
 {error, timeout}              %% path validation didn't complete
 ```
 
-`migrate_peer/1,2` is synchronous — it blocks until path validation
+`migrate_peer/1,2` is synchronous; it blocks until path validation
 completes (or the configured timeout elapses, default 5000 ms). On
-success the dist channel and any open circuits ride through with no
-app-visible interruption and no HyParView churn.
+success the dist channel and any open user streams ride through
+with no app-visible interruption and no HyParView churn.
 
 ## Custom triggers
 
