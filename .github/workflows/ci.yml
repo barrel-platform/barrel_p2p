@@ -63,3 +63,39 @@ jobs:
           name: ct-logs-otp${{ matrix.otp }}
           path: _build/test/logs
           retention-days: 7
+
+  bench:
+    name: Bench vs baseline
+    runs-on: ubuntu-24.04
+    # Soft gate: don't block merge if the runner is slower than the
+    # committed baseline. The script still surfaces regressions in the
+    # job log; pin tighter when hardware variance settles.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.24.0'
+
+      - name: Start epmd
+        run: epmd -daemon
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run bench
+        run: ./bench/run.sh 1000
+
+      - name: Compare against baseline
+        run: ./bench/compare.sh 20
+
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench/results.json
+          retention-days: 14

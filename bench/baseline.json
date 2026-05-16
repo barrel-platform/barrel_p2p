@@ -1,0 +1,10 @@
+{
+  "iterations": 500,
+  "otp": "28",
+  "note": "Hand-recorded baseline. Measured on Darwin 25.4 / Apple Silicon laptop, ms-scale ops in a single-node mycelium VM. Treat as an order-of-magnitude reference, not a hard threshold across hardware.",
+  "results": {
+    "registration": {"us_per_op": 12.0},
+    "events":       {"us_per_op": 20.0},
+    "broadcast":    {"us_per_op": 18.0}
+  }
+}
