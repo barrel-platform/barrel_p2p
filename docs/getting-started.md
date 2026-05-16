@@ -6,20 +6,24 @@ This guide walks you through setting up Mycelium in your Erlang project and runn
 
 - Erlang/OTP 27 or later
 - rebar3 build tool
-- `-proto_dist quic -epmd_module quic_epmd -start_epmd false` in your
-  boot args. Mycelium runs on upstream `quic_dist` (EPMD-less) and
-  plugs in via the `auth_callback` and `discovery_module` options.
-  The default `config/sys.config` wires those.
+- `-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false`
+  in your boot args. That's the whole dist setup; `mycelium_dist`
+  layers on top of upstream `quic_dist` and fills in defaults at
+  listen time.
 
 ## First-boot setup: TLS cert and Ed25519 keypair
 
 Each node carries two pieces of identity material on disk.
 
 **1. QUIC TLS certificate (`data/quic/node.crt`, `node.key`).**
-The kernel app starts distribution *before* mycelium's application
-code runs, so the cert must already exist when the BEAM boots —
-`quic_dist:listen/2` fails with `{credentials, no_credentials}`
-otherwise. Generate a self-signed pair with the bundled script:
+`mycelium_dist` generates a self-signed pair on first listen, so
+there's nothing to do for the default path. Override the directory
+with `{mycelium, [{quic_cert_dir, "..."}]}` in `sys.config`, or
+provide a different cert via `{quic, [{dist, [{cert_file, ...},
+{key_file, ...}]}]}`.
+
+If you want to pre-generate the material out-of-band (release
+build, ansible, etc.), the bundled CLI script is idempotent:
 
 ```bash
 _build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh
@@ -27,16 +31,7 @@ _build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh
 
 Flags: `--out-dir DIR` (default `./data/quic`), `--cn NAME`
 (default `mycelium`), `--days N`, `--key-bits N`, `--force` to
-overwrite. The script is idempotent — re-running it is a no-op
-when the files already exist.
-
-If you'd rather not depend on the `openssl` CLI, the in-BEAM helper
-does the same thing:
-
-```bash
-erl -noshell -pa _build/default/lib/*/ebin \
-    -eval 'application:load(mycelium), mycelium_quic_cert:ensure_cert("data/quic"), halt().'
-```
+overwrite.
 
 **2. Ed25519 identity keypair (`data/keys/`).** Used by the dist auth
 callback for peer authentication. The keypair is **generated lazily**
@@ -121,11 +116,11 @@ Create or update your `config/sys.config`:
 
 ### Option 1: Interactive Shell
 
-Make sure `data/quic/node.{crt,key}` exist (see "First-boot setup"
-above), then:
+Boot a node — the cert is created on first listen, no preflight
+needed:
 
 ```bash
-ERL_AFLAGS="-proto_dist quic" \
+ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node1
 ```
 
@@ -156,13 +151,13 @@ Start two nodes and have them find each other:
 
 **Terminal 1 - First Node (Seed)**
 ```bash
-ERL_AFLAGS="-proto_dist quic" \
+ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
 rebar3 shell --sname seed --config config/sys.config
 ```
 
 **Terminal 2 - Second Node**
 ```bash
-ERL_AFLAGS="-proto_dist quic" \
+ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
 rebar3 shell --sname node1 --config config/sys.config
 ```
 

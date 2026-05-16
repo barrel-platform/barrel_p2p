@@ -37,6 +37,12 @@ This document covers the internal architecture, protocols, and implementation de
                                   └─────────┬──────────┘
                                             │
                                   ┌─────────┴──────────┐
+                                  │  mycelium_dist     │
+                                  │ (alt-dist shim:    │
+                                  │  cert + defaults)  │
+                                  └─────────┬──────────┘
+                                            │
+                                  ┌─────────┴──────────┐
                                   │ quic_dist (upstream)│
                                   │  + auth_callback    │
                                   │  + discovery_module │
@@ -429,11 +435,14 @@ mycelium_dist_keys:is_trusted(Node, PubKey).
 
 ## Distribution Carrier
 
-Mycelium runs on upstream `quic_dist`. Boot with `-proto_dist quic`.
-The carrier opens a single QUIC connection per peer and carries the
-Erlang distribution channel on it.
+Boot with `-proto_dist mycelium -epmd_module mycelium_epmd
+-start_epmd false`. The carrier opens a single QUIC connection per
+peer and carries the Erlang distribution channel on it.
 
-Mycelium plugs into three `quic_dist` extension points:
+`mycelium_dist` is a thin alt-dist shim over upstream `quic_dist`.
+At `listen/1` it auto-generates the TLS material (`data/quic/
+node.{crt,key}`) if missing and projects three defaults into the
+`{quic, dist, ...}` app env before delegating:
 
 - `auth_callback => {mycelium_dist_auth_callback, authenticate}` runs
   the Ed25519 challenge-response on a uni-stream pair between the
@@ -449,8 +458,14 @@ Mycelium plugs into three `quic_dist` extension points:
   the DNS host fallback). Lookups try each backend in order; first
   hit wins. Registration fans out so a node's filesystem entry is
   visible to siblings on the same host with no stock-EPMD daemon.
-- Boot args `-epmd_module quic_epmd -start_epmd false` route OTP's
-  port-please through the discovery chain instead of stock EPMD.
+- `mycelium_app:start/2` itself republishes the node into the
+  discovery chain once sys.config envs are live, using the full atom
+  node name; the listen-time register-with-epmd path is left
+  disabled so the bare name string never reaches the file backend.
+
+User-supplied values under `{quic, [{dist, [...]}]}' or
+`-quic_dist_*' init args win over these defaults; the shim only
+fills in keys the user didn't set.
 
 NAT traversal is out of scope. When a direct path is unavailable,
 `quic_dist:set_connect_options/2` lets callers register a per-peer

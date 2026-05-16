@@ -34,47 +34,23 @@ if [ -d "_build/default/lib" ] && [ ! -e "_build/default/lib/mycelium" ]; then
     ln -sf ../../../_checkouts/mycelium/_build/default/lib/mycelium _build/default/lib/mycelium
 fi
 
-# Pre-generate the QUIC TLS cert if missing. The kernel app starts
-# distribution before mycelium_app:start/2 runs, so the cert MUST
-# exist on disk at boot — quic_dist:listen/2 fails otherwise. The
-# Ed25519 identity keypair under data/keys/ is generated lazily by
-# mycelium_dist_keys on first start; no setup needed.
-ensure_cert() {
-    "$CHAT_DIR/../../priv/bin/mycelium_gen_cert.sh" \
-        --out-dir data/quic --cn mycelium-chat
-}
-
-# Build the -quic_dist_* init args. The kernel boots distribution
-# before sys.config envs apply, so port / discovery / auth callback
-# must come through init args. We use upstream `quic_epmd` as the
-# epmd_module so no stock epmd daemon is required; mycelium nodes
-# auto-publish each other through the filesystem-backed discovery
-# backend (data/discovery/<node>.endpoint).
+# Pass the listen port via -mycelium_dist_port. mycelium_dist
+# auto-generates the QUIC TLS cert (data/quic/node.{crt,key}) on
+# first listen and wires the auth callback + discovery module into
+# quic_dist for us; no extra init args are needed.
 dist_args() {
     local port=$1
-    cat <<EOF
--proto_dist quic \
--epmd_module quic_epmd \
--start_epmd false \
--quic_dist_cert $PWD/data/quic/node.crt \
--quic_dist_key $PWD/data/quic/node.key \
--quic_dist_port $port \
--quic_dist_register_with_epmd true \
--quic_dist_discovery_module mycelium_discovery \
--quic_dist_auth_callback mycelium_dist_auth_callback:authenticate
-EOF
+    echo "-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false -mycelium_dist_port $port"
 }
 
 case "${1:-}" in
     build)
         echo "Building chat application..."
         rebar3 compile
-        ensure_cert
         echo "Done."
         ;;
 
     seed)
-        ensure_cert
         echo "Starting seed node..."
         ERL_AFLAGS="$(dist_args 9100)" \
         rebar3 shell --sname seed --setcookie chat \
@@ -82,7 +58,6 @@ case "${1:-}" in
         ;;
 
     node)
-        ensure_cert
         NODE_NUM="${2:-1}"
         SEED_HOST=$(hostname -s)
         PORT=$((9100 + NODE_NUM))

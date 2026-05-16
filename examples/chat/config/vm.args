@@ -1,5 +1,7 @@
 -name chat@127.0.0.1
 -setcookie mycelium_chat
--proto_dist quic
+-proto_dist mycelium
+-epmd_module mycelium_epmd
+-start_epmd false
 +K true
 +A 10

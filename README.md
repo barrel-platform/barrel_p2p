@@ -15,7 +15,7 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 - **Plumtree Broadcast** - Efficient epidemic broadcast with O(n) message complexity
 - **Hybrid Logical Clocks** - Causally consistent timestamps for conflict resolution
 - **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
-- **QUIC Distribution** - Runs on upstream `quic_dist` with the EPMD-less `quic_epmd` lookup module; one QUIC connection per peer carries the Erlang distribution channel. Mycelium plugs in via the `quic_dist_auth` callback for Ed25519 identity and a composing discovery chain (static config + on-disk file registry + DNS) so nodes auto-find each other on a shared filesystem.
+- **QUIC Distribution** - `-proto_dist mycelium` plugs straight into Erlang/OTP's alt-dist. One QUIC connection per peer carries the dist channel, with Ed25519 identity check between handshakes, no stock EPMD daemon, lazy self-signed TLS, and a composing discovery chain (static config + on-disk file registry + DNS).
 - **One-shot RPC tooling** - `priv/bin/mycelium_call.sh` — `erl_call`-style helper that boots a hidden probe with full Ed25519 identity and runs `rpc:call/5` against a live mycelium node. Available to any project that depends on mycelium.
 - **TLS cert helper** - `priv/bin/mycelium_gen_cert.sh` — one-shot self-signed cert generator (RSA 2048 by default) for the QUIC dist channel; idempotent.
 - **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
@@ -121,38 +121,27 @@ Configure in your `sys.config`:
 
 ### Distribution carrier
 
-Mycelium runs on upstream `quic_dist`. Add to your `vm.args`:
+Add to your `vm.args`:
 
 ```
--proto_dist quic
+-proto_dist mycelium
+-epmd_module mycelium_epmd
+-start_epmd false
 ```
 
-The default `sys.config` wires the mycelium hooks into `quic_dist`:
+That's the entire dist setup. `mycelium_dist` runs on top of
+upstream `quic_dist`; it auto-generates the TLS material under
+`data/quic/node.{crt,key}` on first listen and wires the Ed25519
+auth callback + composing discovery module into the underlying
+`quic` app env. Override any default by setting it explicitly under
+`{quic, [{dist, [...]}]}` in `sys.config`.
 
-```erlang
-{quic, [{dist, [
-    {auth_callback, {mycelium_dist_auth_callback, authenticate}},
-    {discovery_module, mycelium_discovery},
-    {cert_file, <<"data/quic/node.crt">>},
-    {key_file, <<"data/quic/node.key">>}
-]}]}.
-```
-
-Boot args wire the EPMD-less lookup path:
-`-proto_dist quic -epmd_module quic_epmd -start_epmd false`. No stock
-`epmd` daemon is required.
-
-All inter-node traffic flows over a single QUIC connection per peer.
-Mycelium does not bundle NAT traversal or relay; nodes are expected to
-reach each other directly. When a tunnel/relay is needed, register an
-external socket adapter with `quic_dist:set_connect_options/2` (see
+No stock `epmd` daemon is required. All inter-node traffic flows
+over a single QUIC connection per peer. Mycelium does not bundle
+NAT traversal or relay; nodes are expected to reach each other
+directly. When a tunnel/relay is needed, register an external
+socket adapter with `quic_dist:set_connect_options/2` (see
 [docs/external-relay.md](docs/external-relay.md)).
-
-Generate the QUIC TLS material once before the first boot:
-
-```erlang
-mycelium_quic_cert:ensure_cert().
-```
 
 ## Testing
 
@@ -170,7 +159,7 @@ cd examples/chat
 ./scripts/run-demo.sh node 1                  # terminal 2
 ```
 
-The script generates a QUIC TLS cert under `data/quic/` on first run, links the local mycelium tree as a `_checkouts` override, and starts each node with `-proto_dist quic`. See `examples/chat/README.md` for the three-node walkthrough and the docker compose stack.
+The script links the local mycelium tree as a `_checkouts` override and starts each node with `-proto_dist mycelium`; the TLS cert under `data/quic/` is generated on first listen. See `examples/chat/README.md` for the three-node walkthrough and the docker compose stack.
 
 ## Documentation
 
