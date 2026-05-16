@@ -96,12 +96,22 @@ ensure_modules_loaded() ->
 %% yet. quic_dist:load_credentials runs straight after this and will
 %% fail with {credentials, no_credentials} if the files are missing.
 ensure_cert() ->
-    case mycelium_quic_cert:ensure_cert() of
+    CertDir = cert_dir(),
+    case mycelium_quic_cert:ensure_cert(CertDir) of
         ok ->
             ok;
         {error, Reason} ->
             logger:error("mycelium_dist: cert ensure failed: ~p", [Reason]),
             ok
+    end.
+
+%% Resolve the cert dir at listen time. App env may not be set yet,
+%% so check init args first, fall through to app env, then default.
+cert_dir() ->
+    case init:get_argument(mycelium_dist_cert_dir) of
+        {ok, [[CD] | _]} -> CD;
+        _ ->
+            application:get_env(mycelium, quic_cert_dir, "data/quic")
     end.
 
 %% Project mycelium defaults into the {quic, dist, ...} app env that
@@ -115,7 +125,7 @@ project_defaults() ->
     ok.
 
 build_defaults() ->
-    CertDir = application:get_env(mycelium, quic_cert_dir, "data/quic"),
+    CertDir = cert_dir(),
     CertFile = filename:join(CertDir, "node.crt"),
     KeyFile = filename:join(CertDir, "node.key"),
     AuthTimeout = application:get_env(mycelium, auth_handshake_timeout, 10000),
