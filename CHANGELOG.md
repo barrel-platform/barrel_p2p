@@ -5,6 +5,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Idle dist-channel GC (`mycelium_dist_gc`). Always-on reaper that
+  drops dist channels which are not part of the HyParView active view,
+  carry no live `mycelium_streams` user stream, and have aged past
+  `dist_gc_min_age_ms`. Sweep period and min-age are tunable; the GC
+  itself has no enable/disable flag.
+- `mycelium_metrics` emits counters and histograms through the
+  `instrument` library at HyParView, dist auth, plumtree, GC and
+  migrate seams. Cached lazily in `persistent_term`; emit sites stay
+  off the hot path.
+- `mycelium_rotate:rotate_cert/0,1` and `rotate_identity/0,1` for
+  QUIC TLS material and Ed25519 identity keys. Atomic backup under
+  `<dir>/backups/<UTC-timestamp>/`; identity rotation takes effect on
+  the next handshake, cert rotation requires a node restart.
+- Property-based tests (PropEr) for the OR-Map CRDT laws, HLC
+  monotonicity and binary round-trip, dist-protocol encode/decode
+  round-trip plus fuzz survival, and the `mycelium_streams` demuxer
+  under random fragmentation.
+- Soak suite gated on `MYCELIUM_CT_SOAK=1`. `broadcast_burst` drives
+  a burst of plumtree broadcasts across a 5-node cluster and asserts
+  every subscriber receives the marker.
+- Bench harness: `bench/run.sh` runs `mycelium_sync_bench` and emits
+  `bench/results.json`; `bench/compare.sh` diffs against
+  `bench/baseline.json` and fails on regression. Soft CI gate
+  (`continue-on-error`) until hardware variance settles.
+- `doc/features.md` catalogs every public feature with a stability
+  tier (`supported`, `beta`, `experimental`) and CT/EUnit coverage.
+- `docs/observability.md`, `docs/troubleshooting.md`,
+  `docs/deployment.md`.
+- README "Versioning policy" section formalising the 0.x semver
+  contract.
+
 ### Changed
 - Dist channels decoupled from HyParView active view. `Pid ! Msg' works
   between any cluster nodes; OTP's demand-driven auto-connect resolves
@@ -13,6 +45,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `-proto_dist mycelium` ships as the transparent boot shim over
   upstream `quic_dist`; three-arg vm.args replaces the prior init-arg
   dance.
+- HyParView's `handle_join/2` now emits `peer_up` for newly accepted
+  peers. The broadcast tree previously missed nodes that joined
+  through this code path.
+- `mycelium_path_stats` extracts the QUIC conn pid defensively. The
+  fast path still reads element 2 from the dist controller state;
+  the fallback scans the tuple for a pid that answers
+  `quic:get_path_stats/1`.
+- Every public export in `src/mycelium.erl` carries a `Stability:`
+  tag matching `doc/features.md`.
 
 ### Removed
 - Multi-hop circuits (`mycelium:circuit_*` API and the
