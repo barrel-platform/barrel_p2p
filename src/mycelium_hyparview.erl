@@ -263,6 +263,18 @@ handle_join(Sender, State) ->
     %% Add sender to active view
     State1 = add_to_active_view(Sender, State0),
 
+    %% Surface the new peer to subscribers (plumtree's eager_peers list,
+    %% registry_sync, etc). Without this, broadcast trees miss any peer
+    %% that joined via the JOIN handshake.
+    case maps:is_key(Sender#peer.id, State#view_state.active_view) of
+        true ->
+            %% Already had them; no transition.
+            ok;
+        false ->
+            mycelium_hyparview_events:notify({peer_up, Sender#peer.id}),
+            mycelium_registry_sync:handle_peer_up(Sender#peer.id)
+    end,
+
     %% Forward join to all active peers (except sender)
     TTL = State1#view_state.arwl,
     Self = State1#view_state.self,
