@@ -64,6 +64,43 @@ file_unregister_test_() ->
         ?assertEqual(ok, mycelium_discovery_file:unregister('a@h'))
     end).
 
+%% Upstream `quic_dist' may pass a bare name string (no `@host') on
+%% the listen-time register-with-epmd path. Accept it without
+%% crashing.
+file_register_string_input_test_() ->
+    with(fun(_Dir) ->
+        {ok, _} = mycelium_discovery_file:init(#{}),
+        ?assertMatch({ok, _},
+                     mycelium_discovery_file:register("smoke", 9100, undefined)),
+        ?assertEqual({ok, {"127.0.0.1", 9100}},
+                     mycelium_discovery_file:lookup("smoke", "h"))
+    end).
+
+file_register_binary_input_test_() ->
+    with(fun(_Dir) ->
+        {ok, _} = mycelium_discovery_file:init(#{}),
+        ?assertMatch({ok, _},
+                     mycelium_discovery_file:register(<<"smoke@h">>, 9100, undefined)),
+        ?assertEqual({ok, {"h", 9100}},
+                     mycelium_discovery_file:lookup(<<"smoke@h">>, "h"))
+    end).
+
+%%====================================================================
+%% dns backend
+%%====================================================================
+
+%% Same input-shape contract as the file backend.
+dns_extract_host_string_input_test_() ->
+    %% Bare name (no @host) should not crash; lookup falls back to
+    %% the Host argument.
+    ?_assertMatch({ok, _},
+                  mycelium_discovery_dns:lookup("smoke", "127.0.0.1")).
+
+dns_extract_host_binary_input_test_() ->
+    ?_assertMatch({ok, _},
+                  mycelium_discovery_dns:lookup(<<"smoke@127.0.0.1">>,
+                                                "unreachable.invalid")).
+
 %%====================================================================
 %% static backend
 %%====================================================================

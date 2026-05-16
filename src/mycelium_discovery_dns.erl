@@ -33,11 +33,21 @@ lookup(Node, Host) ->
 %% Internal
 %%====================================================================
 
+%% Accept either a node atom (`name@host') or a bare name string
+%% (`"name"') as upstream `quic_dist' may pass either depending on
+%% the path. Bare names have no host part to extract; return error
+%% so the caller falls back to the host argument.
 extract_host(Node) when is_atom(Node) ->
-    case string:split(atom_to_list(Node), "@") of
+    extract_host(atom_to_list(Node));
+extract_host(Node) when is_binary(Node) ->
+    extract_host(binary_to_list(Node));
+extract_host(Node) when is_list(Node) ->
+    case string:split(Node, "@") of
         [_, Host] -> {ok, Host};
         _         -> {error, invalid_node_name}
-    end.
+    end;
+extract_host(_) ->
+    {error, invalid_node_name}.
 
 resolve_host(Host) when is_list(Host) ->
     case inet:parse_address(Host) of

@@ -40,9 +40,10 @@ init(_Opts) ->
 
 register(Node, Port, _State) ->
     Dir = discovery_dir(),
-    Host = host_of(Node),
+    NodeStr = node_to_string(Node),
+    Host = host_of(NodeStr),
     Term = io_lib:format("~p.~n", [{Host, Port}]),
-    Path = endpoint_path(Dir, Node),
+    Path = endpoint_path(Dir, NodeStr),
     Tmp  = Path ++ ".tmp",
     ok = filelib:ensure_dir(Path),
     case file:write_file(Tmp, iolist_to_binary(Term)) of
@@ -55,7 +56,7 @@ register(Node, Port, _State) ->
     end.
 
 lookup(Node, _Host) ->
-    Path = endpoint_path(discovery_dir(), Node),
+    Path = endpoint_path(discovery_dir(), node_to_string(Node)),
     case file:consult(Path) of
         {ok, [{Host, Port}]} when is_integer(Port) ->
             {ok, {Host, Port}};
@@ -87,9 +88,9 @@ list_nodes(_Host) ->
 
 %% @doc Remove this node's endpoint file. Useful in `init:stop'-style
 %% shutdown hooks.
--spec unregister(node()) -> ok | {error, term()}.
+-spec unregister(node() | string() | binary()) -> ok | {error, term()}.
 unregister(Node) ->
-    case file:delete(endpoint_path(discovery_dir(), Node)) of
+    case file:delete(endpoint_path(discovery_dir(), node_to_string(Node))) of
         ok              -> ok;
         {error, enoent} -> ok;
         Err             -> Err
@@ -102,11 +103,17 @@ unregister(Node) ->
 discovery_dir() ->
     application:get_env(mycelium, discovery_dir, "data/discovery").
 
-endpoint_path(Dir, Node) when is_atom(Node) ->
-    filename:join(Dir, atom_to_list(Node) ++ ".endpoint").
+%% Normalise atoms, binaries, and strings to a single string form
+%% so callers (upstream quic_dist + mycelium_app) can pass either.
+node_to_string(Node) when is_atom(Node)   -> atom_to_list(Node);
+node_to_string(Node) when is_binary(Node) -> binary_to_list(Node);
+node_to_string(Node) when is_list(Node)   -> Node.
 
-host_of(Node) when is_atom(Node) ->
-    case string:split(atom_to_list(Node), "@") of
+endpoint_path(Dir, NodeStr) when is_list(NodeStr) ->
+    filename:join(Dir, NodeStr ++ ".endpoint").
+
+host_of(NodeStr) when is_list(NodeStr) ->
+    case string:split(NodeStr, "@") of
         [_, Host] -> Host;
         _         -> "127.0.0.1"
     end.
