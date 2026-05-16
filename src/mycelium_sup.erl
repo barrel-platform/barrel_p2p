@@ -87,5 +87,18 @@ init([]) ->
         modules => [mycelium_streams]
     },
 
-    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup, Bridge, Streams],
+    %% Idle dist-channel GC. Reaps QUIC connections that are not in
+    %% the HyParView active view and carry no live user streams.
+    %% Architectural pillar of the decoupled design - not optional.
+    DistGc = #{
+        id => mycelium_dist_gc,
+        start => {mycelium_dist_gc, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_dist_gc]
+    },
+
+    ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup,
+                  Bridge, Streams, DistGc],
     {ok, {SupFlags, ChildSpecs}}.
