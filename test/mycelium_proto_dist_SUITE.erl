@@ -143,26 +143,27 @@ active_eviction_keeps_dist(Config) ->
                           [Evicted, NodesB])).
 
 gc_skips_live_streams(Config) ->
-    GcOpts = #{gc_min_age_ms => 100, gc_sweep_period_ms => 200},
+    %% Large sweep_period_ms so the periodic sweep never fires during
+    %% the test window; the only sweep that runs is the explicit
+    %% sweep_now/0 below. min_age_ms stays low so the channel passes
+    %% the age check by the time we explicitly sweep.
+    GcOpts = #{gc_min_age_ms => 100, gc_sweep_period_ms => 60000},
     {Pa, _NodeA, _, C1} = start_peer("a", Config, GcOpts),
     {Pb, NodeB, _, _}   = start_peer("b", C1,     GcOpts),
-    true = peer:call(Pa, net_kernel, connect_node, [NodeB]),
+    %% First connect_node call can race with the dist controller's
+    %% init_state and the peer's auth handshake; use a connect_node
+    %% timeout larger than peer:call's default 5s, and retry via
+    %% wait_until in case the very first attempt times out.
     wait_until(fun() ->
-        lists:member(NodeB, peer:call(Pa, erlang, nodes, []))
-    end, 5000),
+        true =:= peer:call(Pa, net_kernel, connect_node, [NodeB], 15000)
+            andalso lists:member(NodeB, peer:call(Pa, erlang, nodes, []))
+    end, 30000),
     Tag = <<"gctest">>,
     ok = peer:call(Pb, ?MODULE, register_acceptor, [Tag]),
-    %% Retry open in case the QUIC user-stream subsystem isn't quite
-    %% ready right after nodeup (dist controller may still be in
-    %% setup); persistent holder retains ownership.
     {ok, _Holder} = wait_for_persistent_stream(Pa, Tag, NodeB, 5000),
-    %% Wait for the stream to register with quic_dist on Pa's side
-    %% (open returns once the local stream ref exists, but the
-    %% accounting that list_streams walks may take a tick longer).
     wait_until(fun() ->
         peer:call(Pa, quic_dist, list_streams, [NodeB]) =/= []
     end, 5000),
-    %% Wait past the GC min-age threshold, then force a sweep.
     timer:sleep(200),
     ok = peer:call(Pa, mycelium_dist_gc, sweep_now, []),
     NodesA = peer:call(Pa, erlang, nodes, []),
@@ -195,7 +196,11 @@ echo_to(TargetNode, Msg) ->
     end.
 
 register_acceptor(Tag) ->
-    Self = spawn(fun() -> receive _ -> ok end end),
+    %% Long-lived acceptor: it must survive the first stream-opened
+    %% notification so the QUIC stream's remote owner stays alive and
+    %% quic_dist:list_streams on the opening side keeps returning the
+    %% stream until the test explicitly tears it down.
+    Self = spawn(fun Loop() -> receive _ -> Loop() end end),
     mycelium_streams:register_acceptor(Tag, Self),
     ok.
 
