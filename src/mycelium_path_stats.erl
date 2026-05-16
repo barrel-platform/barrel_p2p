@@ -32,9 +32,11 @@
 %% NB: `quic_dist:get_controller/1' returns the dist controller
 %% gen_statem, not the underlying QUIC connection. `quic:get_path_stats/1'
 %% expects the connection. Until upstream exposes a get-path-stats
-%% wrapper on the dist controller itself, we extract the conn pid
-%% via `sys:get_state' on the dist controller. This is fragile to
-%% upstream record shape changes; see TODO at module top.
+%% wrapper on the dist controller itself, we extract the conn pid by
+%% inspecting the controller's gen_statem state. The accessor is
+%% structurally defensive: it first tries the known field position,
+%% then falls back to probing every pid in the state tuple with a
+%% test call to `quic:get_path_stats/1'.
 -spec summary(node()) -> {ok, summary()} | {error, term()}.
 summary(Node) when is_atom(Node) ->
     case connection(Node) of
@@ -55,21 +57,75 @@ connection(Node) when is_atom(Node) ->
     end.
 
 %% Reach into the dist controller's gen_statem state and pluck the
-%% `conn' field. Position-2 in the `#state{}' record (the first field
-%% after the record tag, per `quic_dist_controller.erl' line 102).
-%% Catches any failure and returns a generic `{error, no_conn}' so
-%% callers don't propagate dialyzer-noisy reasons.
+%% connection pid. Strategy:
+%%
+%%   1. Try the known field position (2 in upstream `#state{}' as of
+%%      `quic_dist_controller.erl', conn :: pid()).
+%%   2. If that does not look like a live QUIC connection, scan every
+%%      element of the state tuple for a live pid that
+%%      `quic:get_path_stats/1' answers for.
+%%
+%% Step 2 makes us robust to upstream record reorderings without
+%% making mycelium depend on the internal record header.
 extract_conn(DistCtrl) ->
     try
         State = sys:get_state(DistCtrl, 1000),
-        Conn = element(2, State),
-        case is_pid(Conn) andalso erlang:is_process_alive(Conn) of
-            true  -> {ok, Conn};
+        case tuple_size(State) >= 2 of
+            true  -> probe_pid(State, element(2, State));
             false -> {error, no_conn}
         end
     catch
         _:_ -> {error, no_conn}
     end.
+
+probe_pid(State, FastPath) ->
+    case is_live_pid(FastPath) of
+        true ->
+            %% Fast path: position-2 is a live pid, trust it. The
+            %% process that owns the connection is the only thing
+            %% quic:get_path_stats/1 talks to anyway.
+            {ok, FastPath};
+        false ->
+            %% Upstream record may have been reshuffled; scan the
+            %% rest of the tuple for a pid that actually answers
+            %% get_path_stats.
+            scan_state(State)
+    end.
+
+scan_state(State) ->
+    Size = tuple_size(State),
+    %% Position 1 is the record tag, skip it; scan the rest.
+    case find_first(2, Size, State) of
+        {ok, _Pid} = Ok -> Ok;
+        none           -> {error, no_conn}
+    end.
+
+find_first(Pos, Size, _State) when Pos > Size ->
+    none;
+find_first(Pos, Size, State) ->
+    Candidate = element(Pos, State),
+    case answers_get_path_stats(Candidate) of
+        true  -> {ok, Candidate};
+        false -> find_first(Pos + 1, Size, State)
+    end.
+
+is_live_pid(P) when is_pid(P) -> erlang:is_process_alive(P);
+is_live_pid(_)                -> false.
+
+answers_get_path_stats(Pid) when is_pid(Pid) ->
+    case erlang:is_process_alive(Pid) of
+        true ->
+            try quic:get_path_stats(Pid) of
+                {ok, _} -> true;
+                _       -> false
+            catch
+                _:_     -> false
+            end;
+        false ->
+            false
+    end;
+answers_get_path_stats(_) ->
+    false.
 
 %% @doc Smoothed RTT in microseconds, or `{error, _}' if unavailable.
 -spec srtt(node()) -> {ok, non_neg_integer()} | {error, term()}.
