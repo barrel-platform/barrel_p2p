@@ -24,7 +24,9 @@
     gc_reap/1,
     migrate_result/2,
     router_request_dropped/0,
-    proxy_cast_dropped/0
+    proxy_cast_dropped/0,
+    pending_timeout/1,
+    streams_preamble_dropped/0
 ]).
 
 -define(METER_KEY, {?MODULE, meter}).
@@ -95,6 +97,14 @@ router_request_dropped() ->
 -spec proxy_cast_dropped() -> ok.
 proxy_cast_dropped() ->
     add(<<"mycelium.service_proxy.cast_dropped">>, 1, #{}).
+
+-spec pending_timeout(node()) -> ok.
+pending_timeout(Peer) ->
+    add(<<"mycelium.hyparview.pending_timeout">>, 1, #{peer => Peer}).
+
+-spec streams_preamble_dropped() -> ok.
+streams_preamble_dropped() ->
+    add(<<"mycelium.streams.preamble_dropped">>, 1, #{}).
 
 %%====================================================================
 %% Internal: instrument cache + safe emit

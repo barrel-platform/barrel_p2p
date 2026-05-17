@@ -373,7 +373,12 @@ service_holder_init(ServiceName, Parent) ->
             Parent ! {self(), {error, Reason}}
     end.
 
-%% Internal: service holder loop
+%% Internal: service holder loop. The holder is documented as
+%% experimental test-helper API; its lifecycle is governed solely by
+%% the explicit `stop' message and an idle backstop. We avoid
+%% monitoring the spawning process because callers reach this code
+%% via `rpc:call/4', which means `Parent' is a short-lived RPC worker
+%% that dies immediately after the call returns.
 service_holder_loop(ServiceName) ->
     receive
         stop ->

@@ -175,3 +175,31 @@ fin_only_after_tag_preserves_close_test_() ->
         after 1000 -> ?assert(false)
         end
     end).
+
+%% A peer that opens many streams and never completes any tag
+%% preamble must not grow `pending' without bound. After 64 incomplete
+%% preambles are parked, the next new stream is refused.
+pending_stream_cap_refuses_new_streams_test_() ->
+    with_streams(fun () ->
+        Self = self(),
+        meck:expect(quic_dist, close_stream,
+                    fun(SR0) -> Self ! {close, SR0}, ok end),
+        Demuxer = whereis(mycelium_streams),
+        %% Park 64 incomplete preambles (single-byte data, no Tag).
+        %% Each delivers TagLen=255 (or similar) without enough bytes
+        %% to complete, so each enters `pending'.
+        [Demuxer ! {quic_dist_stream,
+                    {quic_dist_stream, 'p@h', I},
+                    {data, <<255>>, false}}
+         || I <- lists:seq(1, 64)],
+        _ = sys:get_state(Demuxer),
+        %% The 65th new stream should be refused; no `mstream' event
+        %% reaches us and the demuxer calls quic_dist:close_stream.
+        Excess = {quic_dist_stream, 'p@h', 999},
+        Demuxer ! {quic_dist_stream, Excess, {data, <<255>>, false}},
+        receive
+            {close, Excess} -> ok
+        after 1000 ->
+            ?assert(false)
+        end
+    end).

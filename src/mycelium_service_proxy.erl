@@ -12,7 +12,7 @@
 
 %% API
 -export([start_link/2]).
--export([relay/3]).
+-export([relay/3, relay/4]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -23,6 +23,10 @@
 %% Cap on concurrent overlay-cast helpers. Each cast through a
 %% `{via, NextHop}' route used to spawn an unbounded process.
 -define(DEFAULT_MAX_IN_FLIGHT, 32).
+
+%% Maximum overlay hops a relayed call may traverse. Matches the
+%% route-lookup TTL in mycelium_router.
+-define(DEFAULT_TTL, 5).
 
 -record(state, {
     name :: atom() | binary(),
@@ -39,17 +43,34 @@
 start_link(Name, TargetNode) ->
     gen_server:start_link(?MODULE, [Name, TargetNode], []).
 
-%% Relay a call through this node to the target
+%% Relay a call through this node to the target. The 3-arity form
+%% starts a fresh hop budget; the 4-arity form is what every relay
+%% hop calls recursively, carrying the TTL and visited list.
 -spec relay(atom() | binary(), node(), term()) -> term().
 relay(Name, TargetNode, Request) ->
-    %% Called via RPC from another node
+    relay(Name, TargetNode, Request,
+          #{ttl => ?DEFAULT_TTL, visited => [node()]}).
+
+-spec relay(atom() | binary(), node(), term(), map()) -> term().
+relay(_Name, _TargetNode, _Request, #{ttl := TTL}) when TTL =< 0 ->
+    {error, ttl_expired};
+relay(Name, TargetNode, Request, #{visited := Visited} = Ctx) ->
     case mycelium_router:find_route(TargetNode) of
         {direct, _} ->
-            %% We can reach target directly
             gen_server:call({Name, TargetNode}, Request, ?CALL_TIMEOUT);
         {via, NextHop} ->
-            %% Forward to next hop
-            rpc:call(NextHop, ?MODULE, relay, [Name, TargetNode, Request], ?CALL_TIMEOUT);
+            case lists:member(NextHop, Visited) of
+                true ->
+                    {error, relay_loop};
+                false ->
+                    NextCtx = Ctx#{
+                        ttl     => maps:get(ttl, Ctx) - 1,
+                        visited => [node() | Visited]
+                    },
+                    rpc:call(NextHop, ?MODULE, relay,
+                             [Name, TargetNode, Request, NextCtx],
+                             ?CALL_TIMEOUT)
+            end;
         no_route ->
             {error, no_route}
     end.
@@ -125,8 +146,11 @@ forward_call(Name, Target, Request) ->
                 exit:{timeout, _} -> {error, timeout}
             end;
         {via, NextHop} ->
-            %% Route through overlay
-            case rpc:call(NextHop, ?MODULE, relay, [Name, Target, Request], ?CALL_TIMEOUT) of
+            %% Route through overlay. Start the hop with a fresh
+            %% TTL and visited list seeded with our own node.
+            Ctx = #{ttl => ?DEFAULT_TTL, visited => [node()]},
+            case rpc:call(NextHop, ?MODULE, relay,
+                          [Name, Target, Request, Ctx], ?CALL_TIMEOUT) of
                 {badrpc, Reason} -> {error, Reason};
                 Result -> Result
             end;

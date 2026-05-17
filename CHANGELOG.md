@@ -22,6 +22,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mycelium.service_proxy.cast_dropped`. Tunables:
   `router_max_in_flight` (default 256) and
   `proxy_cast_max_in_flight` (default 32).
+- Overlay relay (`mycelium_service_proxy:relay/4`) now carries a TTL
+  and visited list, refusing hops that loop back to a visited node
+  or exhaust the hop budget. Mismatched route caches can no longer
+  ping-pong calls between nodes.
+- `mycelium_router` runs a periodic route-cache sweep
+  (`route_cache_sweep_period_ms`, default 60s). Stale entries are
+  evicted even when no caller re-reads them.
+- `mycelium_hyparview` arms a backstop timer
+  (`pending_timeout_ms`, default 30s) for every pending
+  join/connect/neighbor entry. A peer that goes silent during
+  handshake no longer leaks a pending entry. Metric:
+  `mycelium.hyparview.pending_timeout`.
+- `mycelium_streams` caps the number of inbound streams parked
+  awaiting tag-preamble completion at 64. Excess streams are reset
+  with `mycelium.streams.preamble_dropped`.
 - Peer node names are validated for format and length (255 byte cap,
   `name@host` shape, restricted charset) before the atom table is
   touched. `AUTH_HELLO` frames and on-disk trust-store filenames no

@@ -20,7 +20,8 @@
     test_passive_view_empty/1,
     test_leave_clears_views/1,
     test_event_subscription/1,
-    test_shuffle_no_peers/1
+    test_shuffle_no_peers/1,
+    test_pending_timeout_drops_stale_connect/1
 ]).
 
 %%====================================================================
@@ -38,7 +39,8 @@ groups() ->
             test_passive_view_empty,
             test_leave_clears_views,
             test_event_subscription,
-            test_shuffle_no_peers
+            test_shuffle_no_peers,
+            test_pending_timeout_drops_stale_connect
         ]}
     ].
 
@@ -104,3 +106,25 @@ test_shuffle_no_peers(_Config) ->
     mycelium_hyparview_shuffle:trigger_shuffle(),
     timer:sleep(50),
     ok.
+
+%% A join that never produces peer_connected or peer_failed leaves a
+%% pending entry. The backstop timer drops it; before the fix the
+%% entry leaked forever.
+test_pending_timeout_drops_stale_connect(_Config) ->
+    application:set_env(mycelium, pending_timeout_ms, 100),
+    %% Initiate a join to a phantom node. The bridge will try to
+    %% connect_node and (silently) fail; no peer_connected fires.
+    _ = mycelium:join('phantom@host'),
+    %% Pending starts populated.
+    Pending0 = pending_map(),
+    ?assert(maps:is_key('phantom@host', Pending0)),
+    %% Wait past the backstop and verify the entry is gone.
+    timer:sleep(400),
+    Pending1 = pending_map(),
+    ?assertNot(maps:is_key('phantom@host', Pending1)),
+    application:unset_env(mycelium, pending_timeout_ms),
+    ok.
+
+pending_map() ->
+    State = sys:get_state(mycelium_hyparview),
+    State#view_state.pending.

@@ -39,6 +39,11 @@
 %% excess requests with a metric.
 -define(DEFAULT_MAX_IN_FLIGHT, 256).
 
+%% Default route-cache sweep period. Entries are also evicted lazily
+%% by get_cached_route/1; the sweep is a backstop for keys that are
+%% inserted once and never looked up again.
+-define(DEFAULT_SWEEP_PERIOD_MS, 60000).
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -110,6 +115,7 @@ init([]) ->
     Max = application:get_env(
         mycelium, router_max_in_flight, ?DEFAULT_MAX_IN_FLIGHT
     ),
+    schedule_sweep(),
     {ok, #state{max_in_flight = Max}}.
 
 handle_call(_Request, _From, State) ->
@@ -154,6 +160,11 @@ handle_info(
     #state{in_flight = N} = State
 ) when N > 0 ->
     {noreply, State#state{in_flight = N - 1}};
+
+handle_info(sweep_cache, State) ->
+    sweep_cache(),
+    schedule_sweep(),
+    {noreply, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -254,3 +265,28 @@ reply_dropped({Caller, Ref}) ->
 %% Shuffle a list randomly. Callers only pass non-empty lists.
 shuffle(List) ->
     [X || {_, X} <- lists:sort([{rand:uniform(), E} || E <- List])].
+
+%% Schedule the next periodic sweep of the route cache. A backstop
+%% for entries that get inserted once and never re-read.
+schedule_sweep() ->
+    Period = application:get_env(
+        mycelium, route_cache_sweep_period_ms, ?DEFAULT_SWEEP_PERIOD_MS
+    ),
+    erlang:send_after(Period, self(), sweep_cache),
+    ok.
+
+%% Drop every entry whose wall-time age exceeds the cache TTL.
+sweep_cache() ->
+    NowWall = mycelium_hlc:wall_time(mycelium_hlc:now()),
+    Expired = ets:foldl(
+        fun({Key, _Via, CacheHLC}, Acc) ->
+            case NowWall - mycelium_hlc:wall_time(CacheHLC) >= ?CACHE_TTL_MS of
+                true  -> [Key | Acc];
+                false -> Acc
+            end
+        end,
+        [],
+        ?ROUTE_CACHE
+    ),
+    lists:foreach(fun(K) -> ets:delete(?ROUTE_CACHE, K) end, Expired),
+    ok.

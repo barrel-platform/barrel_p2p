@@ -129,8 +129,9 @@ handle_call({join, ContactNode}, _From, State) ->
         true ->
             {reply, {error, cannot_join_self}, State};
         false ->
-            Ref = make_ref(),
-            Pending = maps:put(ContactNode, {join, Ref}, State#view_state.pending),
+            Pending = insert_pending(
+                ContactNode, join, State#view_state.pending
+            ),
             mycelium_bridge:request_connect(ContactNode),
             {reply, ok, State#view_state{pending = Pending}}
     end;
@@ -163,16 +164,18 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({peer_connected, Node, _DHandle}, State) ->
     case maps:take(Node, State#view_state.pending) of
-        {{join, _Ref}, NewPending} ->
+        {{join, _Ref, TimerRef}, NewPending} ->
             %% Initial join - send JOIN message
+            cancel_pending_timer(TimerRef),
             Peer = make_peer(Node),
             Active = maps:put(Node, Peer, State#view_state.active_view),
             mycelium_protocol:send(Node, {join, State#view_state.self}),
             mycelium_hyparview_events:notify({peer_up, Node}),
             mycelium_registry_sync:handle_peer_up(Node),
             {noreply, State#view_state{active_view = Active, pending = NewPending}};
-        {{connect, _Ref}, NewPending} ->
+        {{connect, _Ref, TimerRef}, NewPending} ->
             %% Regular connect from passive promotion
+            cancel_pending_timer(TimerRef),
             Peer = make_peer(Node),
             State1 = add_to_active_view(Peer, State#view_state{pending = NewPending}),
             mycelium_hyparview_events:notify({peer_up, Node}),
@@ -246,10 +249,48 @@ handle_cast({protocol_msg, {shuffle_reply, Peers, _Sender}, _From}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info({pending_timeout, Node}, State) ->
+    %% Backstop: a peer never produced peer_connected or peer_failed.
+    %% Drop the pending entry so it doesn't leak across long uptime.
+    case maps:take(Node, State#view_state.pending) of
+        {_Entry, NewPending} ->
+            mycelium_metrics:pending_timeout(Node),
+            {noreply, State#view_state{pending = NewPending}};
+        error ->
+            {noreply, State}
+    end;
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
+    ok.
+
+%%====================================================================
+%% Pending-entry helpers
+%%====================================================================
+
+%% Default backstop for pending entries. Backstop must be longer
+%% than `auth_handshake_timeout' (default 10s) so the happy-path
+%% peer_connected/peer_failed reach us first.
+-define(DEFAULT_PENDING_TIMEOUT_MS, 30000).
+
+%% Insert a `{Kind, Ref, TimerRef}' entry into the pending map.
+insert_pending(Node, Kind, Pending) ->
+    Ref = make_ref(),
+    Timeout = application:get_env(
+        mycelium, pending_timeout_ms, ?DEFAULT_PENDING_TIMEOUT_MS
+    ),
+    TimerRef = erlang:send_after(Timeout, self(), {pending_timeout, Node}),
+    maps:put(Node, {Kind, Ref, TimerRef}, Pending).
+
+pending_timer({_Kind, _Ref, TimerRef}) -> TimerRef;
+pending_timer(_)                       -> undefined.
+
+cancel_pending_timer(TimerRef) when is_reference(TimerRef) ->
+    _ = erlang:cancel_timer(TimerRef),
+    ok;
+cancel_pending_timer(_) ->
     ok.
 
 %%====================================================================
@@ -317,8 +358,9 @@ handle_forward_join(NewPeer, TTL, Sender, State) ->
     case ActiveSize < State1#view_state.active_size of
         true ->
             %% Room in active view - connect to new peer
-            Ref = make_ref(),
-            Pending = maps:put(NewPeer#peer.id, {connect, Ref}, State1#view_state.pending),
+            Pending = insert_pending(
+                NewPeer#peer.id, connect, State1#view_state.pending
+            ),
             mycelium_bridge:request_connect(NewPeer#peer.id),
             State1#view_state{pending = Pending};
         false ->
@@ -441,14 +483,15 @@ handle_peer_removal(Node, Reason, Type, State) ->
         false ->
             %% Check if this was a pending connection that failed
             case maps:take(Node, State0#view_state.pending) of
-                {{neighbor, _Ref}, NewPending} ->
+                {{neighbor, _Ref, TimerRef}, NewPending} ->
                     %% Failed neighbor request - track failure and try another
+                    cancel_pending_timer(TimerRef),
                     Passive = record_peer_failure(Node, State0),
                     State1 = State0#view_state{pending = NewPending, passive_view = Passive},
                     State2 = maybe_promote_passive(State1),
                     {noreply, State2};
-                {_, NewPending} ->
-                    %% Other pending types
+                {Entry, NewPending} ->
+                    cancel_pending_timer(pending_timer(Entry)),
                     Passive = record_peer_failure(Node, State0),
                     {noreply, State0#view_state{pending = NewPending, passive_view = Passive}};
                 error ->
@@ -529,8 +572,9 @@ maybe_promote_passive(State) ->
                         _ -> low
                     end,
 
-                    Ref = make_ref(),
-                    Pending = maps:put(Node, {neighbor, Ref}, State#view_state.pending),
+                    Pending = insert_pending(
+                        Node, neighbor, State#view_state.pending
+                    ),
                     mycelium_protocol:send(Node, {neighbor, Priority, State#view_state.self}),
                     mycelium_bridge:request_connect(Node),
                     State#view_state{passive_view = Passive, pending = Pending};

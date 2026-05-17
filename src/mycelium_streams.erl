@@ -36,6 +36,12 @@
 
 -define(SERVER, ?MODULE).
 -define(MAX_TAG_LEN, 255).
+%% Hard cap on the number of inbound streams parked in `pending'
+%% awaiting tag-preamble completion. A peer that opens many streams
+%% and dribbles bytes can hold one buffer per stream; this cap stops
+%% the demuxer from growing without bound. Real handshakes complete
+%% within one or two data chunks.
+-define(MAX_PENDING_STREAMS, 64).
 %% Stream-refused application error code, used when no acceptor is
 %% registered for an inbound stream's tag.
 -define(REFUSED_CODE, 16#100).
@@ -252,10 +258,20 @@ try_dispatch(SR, <<TagLen:8, R0/binary>>, Fin, S)
     <<Tag:TagLen/binary, Rest/binary>> = R0,
     S2 = S#state{pending = maps:remove(SR, S#state.pending)},
     dispatch(SR, Tag, Rest, Fin, S2);
-try_dispatch(SR, Buf, _Fin, S) ->
-    %% Either buf < 1 byte (no TagLen yet) or have TagLen but
-    %% incomplete Tag. Save and wait.
-    {noreply, S#state{pending = (S#state.pending)#{SR => Buf}}}.
+try_dispatch(SR, Buf, _Fin, S = #state{pending = Pending}) ->
+    %% Incomplete preamble. Park the buffer if we have room; refuse
+    %% the stream when too many incomplete preambles are already
+    %% parked.
+    case maps:is_key(SR, Pending) of
+        true ->
+            {noreply, S#state{pending = Pending#{SR => Buf}}};
+        false when map_size(Pending) >= ?MAX_PENDING_STREAMS ->
+            _ = quic_dist:close_stream(SR),
+            mycelium_metrics:streams_preamble_dropped(),
+            {noreply, S};
+        false ->
+            {noreply, S#state{pending = Pending#{SR => Buf}}}
+    end.
 
 dispatch(SR, Tag, Rest, Fin, S = #state{acceptors = A}) ->
     case maps:find(Tag, A) of

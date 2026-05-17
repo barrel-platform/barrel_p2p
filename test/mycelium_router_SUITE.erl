@@ -24,7 +24,8 @@
     test_invalidate_all/1,
     test_route_cache_expiry/1,
     test_route_request_drops_over_cap/1,
-    test_route_request_releases_slot_on_completion/1
+    test_route_request_releases_slot_on_completion/1,
+    test_sweep_evicts_expired_entries/1
 ]).
 
 %%====================================================================
@@ -45,7 +46,8 @@ groups() ->
             test_invalidate_all,
             test_route_cache_expiry,
             test_route_request_drops_over_cap,
-            test_route_request_releases_slot_on_completion
+            test_route_request_releases_slot_on_completion,
+            test_sweep_evicts_expired_entries
         ]}
     ].
 
@@ -217,4 +219,26 @@ test_route_request_releases_slot_on_completion(_Config) ->
     timer:sleep(100),
     {state, NFinal, _} = sys:get_state(mycelium_router),
     ?assertEqual(0, NFinal),
+    ok.
+
+%% Periodic sweep evicts cache entries whose HLC wall-time is older
+%% than the cache TTL, even if no caller ever re-reads them.
+test_sweep_evicts_expired_entries(_Config) ->
+    Fresh = fresh_route_test,
+    Stale = stale_route_test,
+    ok = mycelium_router:cache_route(Fresh, 'fresh@host'),
+    %% Manually insert a stale entry. Build an HLC timestamp anchored
+    %% one full TTL window in the past.
+    NowWall = mycelium_hlc:wall_time(mycelium_hlc:now()),
+    StaleHLC = #timestamp{wall_time = NowWall - 2 * 1800000,
+                          logical = 0},
+    true = ets:insert(mycelium_route_cache,
+                      {Stale, 'stale@host', StaleHLC}),
+    %% Trigger the sweep synchronously by sending the handler message
+    %% then sync via get_state.
+    mycelium_router ! sweep_cache,
+    _ = sys:get_state(mycelium_router),
+    ?assertEqual([], ets:lookup(mycelium_route_cache, Stale)),
+    ?assertMatch([{Fresh, _, _}],
+                 ets:lookup(mycelium_route_cache, Fresh)),
     ok.

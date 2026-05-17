@@ -15,17 +15,23 @@
 
 -export([
     test_forward_cast_drops_over_cap/1,
-    test_forward_cast_releases_slot/1
+    test_forward_cast_releases_slot/1,
+    test_relay_refuses_ttl_zero/1,
+    test_relay_refuses_visited_node/1
 ]).
 
 all() ->
-    [{group, fan_out}].
+    [{group, fan_out}, {group, relay}].
 
 groups() ->
     [{fan_out, [sequence], [
         test_forward_cast_drops_over_cap,
         test_forward_cast_releases_slot
-    ]}].
+     ]},
+     {relay, [sequence], [
+        test_relay_refuses_ttl_zero,
+        test_relay_refuses_visited_node
+     ]}].
 
 init_per_suite(Config) ->
     Config.
@@ -93,4 +99,33 @@ test_forward_cast_releases_slot(_Config) ->
     {state, _, _, InFlight, _} = sys:get_state(Proxy),
     ?assertEqual(0, InFlight),
     mycelium_proxy_sup:stop_proxy(Name),
+    ok.
+
+%% relay/4 with TTL=0 refuses the hop. Closes the rpc-loop hazard
+%% where mismatched route caches could relay forever.
+test_relay_refuses_ttl_zero(_Config) ->
+    Ctx = #{ttl => 0, visited => [node()]},
+    ?assertEqual(
+        {error, ttl_expired},
+        mycelium_service_proxy:relay(
+            some_svc, 'fake_target@host', request, Ctx
+        )
+    ),
+    ok.
+
+%% relay/4 refuses to forward to a node already in the visited list.
+test_relay_refuses_visited_node(_Config) ->
+    %% Re-stub find_route to return a NextHop that's in visited.
+    Stuck = 'already_visited@host',
+    meck:expect(
+        mycelium_router, find_route,
+        fun(_) -> {via, Stuck} end
+    ),
+    Ctx = #{ttl => 5, visited => [node(), Stuck]},
+    ?assertEqual(
+        {error, relay_loop},
+        mycelium_service_proxy:relay(
+            some_svc, 'fake_target@host', request, Ctx
+        )
+    ),
     ok.
