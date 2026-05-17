@@ -43,6 +43,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer mint atoms from peer-controlled bytes.
 
 ### Security
+- Auth handshake now enforces a wall deadline across all recv
+  sites. A peer dribbling bytes can no longer extend the handshake
+  beyond `auth_handshake_timeout` by restarting the timer on each
+  chunk arrival.
+- Replay-window check is now responder-side monotonic and
+  cross-host wall-clock. The responder's window comparison uses
+  `erlang:monotonic_time/1`, so an NTP step during a slow handshake
+  cannot cause a spurious failure. A new `validate_peer_ts/1`
+  rejects peer-supplied timestamps that are wildly skewed from
+  local wall time (defense in depth against replays carrying old
+  CHALLENGEs).
+- `mycelium_dist:project_defaults/0` now refuses to boot when
+  `mycelium.auth_enabled = true` but the projected `auth_callback`
+  is `undefined` (a silent user override that previously shipped an
+  unauthenticated cluster).
 - Reject TOFU re-pin attempts. When a node is already pinned, the
   handshake refuses any peer presenting a different Ed25519 key,
   regardless of trust mode. Both the server side and the client side

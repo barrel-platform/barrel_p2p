@@ -39,7 +39,10 @@
     test_conflicting_key_rejected/1,
     test_lookup_pin_tri_state/1,
     test_wrong_signature_rejected/1,
-    test_key_persistence_to_disk/1
+    test_key_persistence_to_disk/1,
+    test_verify_response_uses_monotonic/1,
+    test_peer_ts_outside_window_rejected/1,
+    test_peer_ts_within_window_accepted/1
 ]).
 
 %% Test cases - Whitelist
@@ -91,7 +94,10 @@ groups() ->
             test_conflicting_key_rejected,
             test_lookup_pin_tri_state,
             test_wrong_signature_rejected,
-            test_key_persistence_to_disk
+            test_key_persistence_to_disk,
+            test_verify_response_uses_monotonic,
+            test_peer_ts_outside_window_rejected,
+            test_peer_ts_within_window_accepted
         ]},
         {whitelist_tests, [sequence], [
             test_whitelist_exact_match,
@@ -176,9 +182,10 @@ test_sign_verify_roundtrip(_Config) ->
     ok = mycelium_dist_auth:ensure_keypair(),
 
     %% Create a challenge
-    {Nonce, Timestamp} = mycelium_dist_auth:create_challenge(),
+    {Nonce, Timestamp, MonoStart} = mycelium_dist_auth:create_challenge(),
     ?assertEqual(32, byte_size(Nonce)),
     ?assert(is_integer(Timestamp)),
+    ?assert(is_integer(MonoStart)),
 
     %% Sign the challenge
     {ok, Signature} = mycelium_dist_auth:sign_challenge(Nonce, Timestamp),
@@ -186,20 +193,22 @@ test_sign_verify_roundtrip(_Config) ->
 
     %% Verify with our own public key
     {ok, PubKey} = mycelium_dist_auth:get_public_key(),
-    ?assert(mycelium_dist_auth:verify_response(Signature, PubKey, {Nonce, Timestamp})),
+    ?assert(mycelium_dist_auth:verify_response(
+        Signature, PubKey, {Nonce, Timestamp, MonoStart})),
     ok.
 
 test_invalid_signature_rejected(_Config) ->
     ok = mycelium_dist_auth:ensure_keypair(),
     {ok, PubKey} = mycelium_dist_auth:get_public_key(),
 
-    {Nonce, Timestamp} = mycelium_dist_auth:create_challenge(),
+    {Nonce, Timestamp, MonoStart} = mycelium_dist_auth:create_challenge(),
 
     %% Create a bogus signature
     BogusSignature = crypto:strong_rand_bytes(64),
 
     %% Should fail verification
-    ?assertNot(mycelium_dist_auth:verify_response(BogusSignature, PubKey, {Nonce, Timestamp})),
+    ?assertNot(mycelium_dist_auth:verify_response(
+        BogusSignature, PubKey, {Nonce, Timestamp, MonoStart})),
     ok.
 
 test_replay_attack_prevented(_Config) ->
@@ -207,32 +216,38 @@ test_replay_attack_prevented(_Config) ->
     {ok, PubKey} = mycelium_dist_auth:get_public_key(),
 
     %% Create a valid challenge and signature
-    {Nonce, Timestamp} = mycelium_dist_auth:create_challenge(),
+    {Nonce, Timestamp, MonoStart} = mycelium_dist_auth:create_challenge(),
     {ok, Signature} = mycelium_dist_auth:sign_challenge(Nonce, Timestamp),
 
     %% Verify with correct timestamp - should pass
-    ?assert(mycelium_dist_auth:verify_response(Signature, PubKey, {Nonce, Timestamp})),
+    ?assert(mycelium_dist_auth:verify_response(
+        Signature, PubKey, {Nonce, Timestamp, MonoStart})),
 
     %% Modify the nonce - should fail
     ModifiedNonce = crypto:strong_rand_bytes(32),
-    ?assertNot(mycelium_dist_auth:verify_response(Signature, PubKey, {ModifiedNonce, Timestamp})),
+    ?assertNot(mycelium_dist_auth:verify_response(
+        Signature, PubKey, {ModifiedNonce, Timestamp, MonoStart})),
     ok.
 
 test_timestamp_window_enforced(_Config) ->
     ok = mycelium_dist_auth:ensure_keypair(),
     {ok, PubKey} = mycelium_dist_auth:get_public_key(),
 
-    %% Create a challenge with a very old timestamp
+    %% Manufacture a stale handshake: MonoStart far in the past
+    %% means the elapsed check rejects regardless of NTP drift.
     Nonce = crypto:strong_rand_bytes(32),
-    OldTimestamp = erlang:system_time(millisecond) - 60000,  %% 60 seconds ago
+    WallTs = erlang:system_time(millisecond),
+    StaleMono = erlang:monotonic_time(millisecond) - 60000,
 
-    %% Sign with old timestamp
+    %% Sign with the wall-time portion (peer would do the same).
     {ok, PrivKey} = mycelium_dist_auth:get_private_key(),
-    Message = <<Nonce/binary, OldTimestamp:64/big, PubKey/binary>>,
+    Message = <<Nonce/binary, WallTs:64/big, PubKey/binary>>,
     Signature = crypto:sign(eddsa, none, Message, [PrivKey, ed25519]),
 
-    %% Verification should fail due to timestamp
-    ?assertNot(mycelium_dist_auth:verify_response(Signature, PubKey, {Nonce, OldTimestamp})),
+    %% Verification rejects because Elapsed > window even though the
+    %% signature would otherwise be valid.
+    ?assertNot(mycelium_dist_auth:verify_response(
+        Signature, PubKey, {Nonce, WallTs, StaleMono})),
     ok.
 
 %%====================================================================
@@ -361,16 +376,59 @@ test_lookup_pin_tri_state(_Config) ->
                  mycelium_dist_keys:store_key_if_new(Peer, Other)),
     ok.
 
+%% Window check uses monotonic time. An NTP step on the wall clock
+%% during the handshake should not cause a spurious failure.
+test_verify_response_uses_monotonic(_Config) ->
+    ok = mycelium_dist_auth:ensure_keypair(),
+    {ok, PubKey} = mycelium_dist_auth:get_public_key(),
+    {Nonce, WallTs, MonoStart} = mycelium_dist_auth:create_challenge(),
+    {ok, Signature} = mycelium_dist_auth:sign_challenge(Nonce, WallTs),
+    %% Use a WallTs far in the future; if the check still used wall
+    %% clock, the assertion below would fail. Monotonic elapsed is
+    %% near zero so verify still succeeds.
+    FutureWall = WallTs + 60_000_000,
+    {ok, PrivKey} = mycelium_dist_auth:get_private_key(),
+    Msg = <<Nonce/binary, FutureWall:64/big, PubKey/binary>>,
+    Sig2 = crypto:sign(eddsa, none, Msg, [PrivKey, ed25519]),
+    ?assert(mycelium_dist_auth:verify_response(
+        Sig2, PubKey, {Nonce, FutureWall, MonoStart})),
+    %% Sanity: the original wall-time signature still verifies too.
+    ?assert(mycelium_dist_auth:verify_response(
+        Signature, PubKey, {Nonce, WallTs, MonoStart})),
+    ok.
+
+%% A peer-supplied wall timestamp far from local wall time is
+%% refused by validate_peer_ts/1 (defense in depth against replay).
+test_peer_ts_outside_window_rejected(_Config) ->
+    Now = erlang:system_time(millisecond),
+    Window = application:get_env(mycelium, auth_timestamp_window, 30000),
+    %% 3x the window puts us clearly outside the 2x tolerance.
+    Far = Now - 3 * Window - 5000,
+    ?assertEqual({error, peer_ts_skew},
+                 mycelium_dist_auth:validate_peer_ts(Far)),
+    ?assertEqual({error, peer_ts_skew},
+                 mycelium_dist_auth:validate_peer_ts(Now + 3 * Window + 5000)),
+    ok.
+
+%% A peer-supplied wall timestamp within tolerance is accepted.
+test_peer_ts_within_window_accepted(_Config) ->
+    Now = erlang:system_time(millisecond),
+    ?assertEqual(ok, mycelium_dist_auth:validate_peer_ts(Now)),
+    ?assertEqual(ok, mycelium_dist_auth:validate_peer_ts(Now - 1000)),
+    ?assertEqual(ok, mycelium_dist_auth:validate_peer_ts(Now + 1000)),
+    ok.
+
 %% Peer signs the challenge with the wrong key -> verify_response rejects.
 test_wrong_signature_rejected(_Config) ->
     ok = mycelium_dist_auth:ensure_keypair(),
-    {Nonce, Timestamp} = mycelium_dist_auth:create_challenge(),
+    {Nonce, Timestamp, MonoStart} = mycelium_dist_auth:create_challenge(),
 
     %% Sign with our own key, then claim a different public key as origin.
     {ok, Signature} = mycelium_dist_auth:sign_challenge(Nonce, Timestamp),
     {WrongPubKey, _WrongPriv} = mycelium_dist_auth:generate_keypair(),
 
-    ?assertNot(mycelium_dist_auth:verify_response(Signature, WrongPubKey, {Nonce, Timestamp})),
+    ?assertNot(mycelium_dist_auth:verify_response(
+        Signature, WrongPubKey, {Nonce, Timestamp, MonoStart})),
     ok.
 
 test_key_persistence_to_disk(Config) ->

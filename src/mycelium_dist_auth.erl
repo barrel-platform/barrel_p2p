@@ -23,7 +23,8 @@
 -export([
     create_challenge/0,
     sign_challenge/2,
-    verify_response/3
+    verify_response/3,
+    validate_peer_ts/1
 ]).
 
 %% Internal exports for testing.
@@ -94,12 +95,17 @@ get_private_key() ->
 %% Challenge-Response Protocol
 %%====================================================================
 
-%% @doc Build a fresh (nonce, timestamp) challenge.
--spec create_challenge() -> {binary(), integer()}.
+%% @doc Build a fresh challenge. The wall-clock timestamp is what
+%% the peer signs and what is compared cross-host. The monotonic
+%% start lets the responder measure the handshake duration without
+%% an NTP-induced spurious failure.
+-spec create_challenge() ->
+    {Nonce :: binary(), WallTs :: integer(), MonoStart :: integer()}.
 create_challenge() ->
     Nonce = crypto:strong_rand_bytes(?NONCE_SIZE),
-    Timestamp = erlang:system_time(millisecond),
-    {Nonce, Timestamp}.
+    WallTs = erlang:system_time(millisecond),
+    MonoStart = erlang:monotonic_time(millisecond),
+    {Nonce, WallTs, MonoStart}.
 
 %% @doc Sign a challenge built locally. The message format
 %% `Nonce | Timestamp | OwnPubKey' binds the signature to the
@@ -120,18 +126,25 @@ sign_challenge(Nonce, Timestamp) when byte_size(Nonce) =:= ?NONCE_SIZE ->
     end.
 
 %% @doc Verify a peer's response. Rebuilds the signed message as
-%% `Nonce | Timestamp | ResponderPubKey' and checks the signature.
--spec verify_response(binary(), binary(), {binary(), integer()}) ->
-    boolean().
-verify_response(Signature, ResponderPubKey, {Nonce, Timestamp})
+%% `Nonce | WallTs | ResponderPubKey' and checks the signature. The
+%% handshake-elapsed window is measured against the monotonic clock
+%% captured by `create_challenge/0', so an NTP step during the
+%% handshake cannot spuriously fail (or pass) the duration check.
+-spec verify_response(
+    binary(), binary(),
+    {binary(), integer(), integer()}
+) -> boolean().
+verify_response(Signature, ResponderPubKey, {Nonce, WallTs, MonoStart})
   when byte_size(Signature)       =:= ?SIGNATURE_SIZE,
        byte_size(ResponderPubKey) =:= ?PUBLIC_KEY_SIZE,
-       byte_size(Nonce)           =:= ?NONCE_SIZE ->
-    Now = erlang:system_time(millisecond),
-    case abs(Now - Timestamp) =< get_timestamp_window() of
+       byte_size(Nonce)           =:= ?NONCE_SIZE,
+       is_integer(WallTs),
+       is_integer(MonoStart) ->
+    Elapsed = erlang:monotonic_time(millisecond) - MonoStart,
+    case Elapsed =< get_timestamp_window() of
         true ->
             Message =
-                <<Nonce/binary, Timestamp:64/big, ResponderPubKey/binary>>,
+                <<Nonce/binary, WallTs:64/big, ResponderPubKey/binary>>,
             crypto:verify(
                 eddsa, none, Message, Signature, [ResponderPubKey, ed25519]
             );
@@ -140,6 +153,21 @@ verify_response(Signature, ResponderPubKey, {Nonce, Timestamp})
     end;
 verify_response(_, _, _) ->
     false.
+
+%% @doc Reject a peer-supplied wall timestamp that is too far from
+%% local wall time. Defense-in-depth against an attacker replaying
+%% an old peer CHALLENGE: the nonce alone protects against replay
+%% within a single signing session, this widens that to gross
+%% clock skew.
+-spec validate_peer_ts(integer()) -> ok | {error, peer_ts_skew}.
+validate_peer_ts(PeerTs) when is_integer(PeerTs) ->
+    Now = erlang:system_time(millisecond),
+    case abs(Now - PeerTs) =< 2 * get_timestamp_window() of
+        true  -> ok;
+        false -> {error, peer_ts_skew}
+    end;
+validate_peer_ts(_) ->
+    {error, peer_ts_skew}.
 
 %%====================================================================
 %% Key Generation

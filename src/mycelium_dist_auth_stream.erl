@@ -50,9 +50,10 @@ authenticate_outgoing(Conn, TargetNode, Timeout) ->
         false ->
             {ok, undefined};
         true ->
+            Deadline = deadline(Timeout),
             with_metrics(
                 outgoing,
-                fun() -> run_outgoing(Conn, TargetNode, Timeout) end
+                fun() -> run_outgoing(Conn, TargetNode, Deadline) end
             )
     end.
 
@@ -64,8 +65,24 @@ authenticate_incoming(Conn, Timeout) ->
         false ->
             {ok, undefined};
         true ->
-            with_metrics(incoming, fun() -> run_incoming(Conn, Timeout) end)
+            Deadline = deadline(Timeout),
+            with_metrics(incoming, fun() -> run_incoming(Conn, Deadline) end)
     end.
+
+%% Convert a relative timeout to a monotonic deadline. The
+%% `infinity' case yields a sentinel that `time_left/1' interprets
+%% as no cap.
+deadline(infinity) ->
+    infinity;
+deadline(Timeout) when is_integer(Timeout), Timeout >= 0 ->
+    erlang:monotonic_time(millisecond) + Timeout.
+
+%% How long remains on the handshake deadline. Bottoms out at 0 so a
+%% blown deadline never produces a negative receive timeout.
+time_left(infinity) ->
+    infinity;
+time_left(Deadline) ->
+    max(0, Deadline - erlang:monotonic_time(millisecond)).
 
 %% Time the handshake and emit attempt/duration metrics. Exceptions in
 %% the inner function are still propagated; they just record as failures.
@@ -92,6 +109,12 @@ with_metrics(Role, F) ->
 
 %%====================================================================
 %% Outgoing (client) side
+%%
+%% Internal helpers below thread `Timeout' as the *monotonic deadline*
+%% computed at the public entries, not as a per-call timeout. The
+%% three receive sites convert it back to a remaining-ms via
+%% `time_left/1', so a slow peer dribbling bytes cannot extend the
+%% handshake beyond the operator-configured budget.
 %%====================================================================
 
 run_outgoing(Conn, TargetNode, Timeout) ->
@@ -188,30 +211,37 @@ trust_check(Node, PubKey) ->
     end.
 
 client_send_challenge(Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
-    {MyNonce, MyTs} = mycelium_dist_auth:create_challenge(),
+    {MyNonce, MyTs, MyMono} = mycelium_dist_auth:create_challenge(),
     Msg = mycelium_dist_protocol:encode_challenge(MyNonce, MyTs),
     case stream_send(Conn, MyStream, Msg) of
         ok ->
             client_recv_challenge(
                 Conn, MyStream, PeerStream, Buffer,
-                PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+                PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
             );
         {error, Reason} ->
             {error, {send_challenge_failed, Reason}}
     end.
 
 client_recv_challenge(
-    Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+    Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey,
+    MyNonce, MyTs, MyMono, Timeout
 ) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, Bin, Rest} ->
             case mycelium_dist_protocol:decode(Bin) of
                 {challenge, PeerNonce, PeerTs} ->
-                    client_send_response(
-                        Conn, MyStream, PeerStream, Rest,
-                        PeerNode, PeerPubKey,
-                        MyNonce, MyTs, PeerNonce, PeerTs, Timeout
-                    );
+                    case mycelium_dist_auth:validate_peer_ts(PeerTs) of
+                        ok ->
+                            client_send_response(
+                                Conn, MyStream, PeerStream, Rest,
+                                PeerNode, PeerPubKey,
+                                MyNonce, MyTs, MyMono,
+                                PeerNonce, PeerTs, Timeout
+                            );
+                        {error, _} = E ->
+                            E
+                    end;
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -223,7 +253,7 @@ client_recv_challenge(
 
 client_send_response(
     Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey,
-    MyNonce, MyTs, PeerNonce, PeerTs, Timeout
+    MyNonce, MyTs, MyMono, PeerNonce, PeerTs, Timeout
 ) ->
     case sign_for_peer(PeerNonce, PeerTs, PeerPubKey) of
         {ok, MySig} ->
@@ -232,7 +262,7 @@ client_send_response(
                 ok ->
                     client_recv_response(
                         Conn, PeerStream, Buffer,
-                        PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+                        PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
                     );
                 {error, Reason} ->
                     {error, {send_response_failed, Reason}}
@@ -241,14 +271,15 @@ client_send_response(
             Error
     end.
 
-client_recv_response(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, MyNonce, MyTs, Timeout) ->
+client_recv_response(Conn, PeerStream, Buffer, PeerNode, PeerPubKey,
+                     MyNonce, MyTs, MyMono, Timeout) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, Bin, Rest} ->
             case mycelium_dist_protocol:decode(Bin) of
                 {response, PeerSig} ->
                     case
                         mycelium_dist_auth:verify_response(
-                            PeerSig, PeerPubKey, {MyNonce, MyTs}
+                            PeerSig, PeerPubKey, {MyNonce, MyTs, MyMono}
                         )
                     of
                         true ->
@@ -391,13 +422,13 @@ server_send_hello(Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, Time
     end.
 
 server_send_challenge(Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
-    {MyNonce, MyTs} = mycelium_dist_auth:create_challenge(),
+    {MyNonce, MyTs, MyMono} = mycelium_dist_auth:create_challenge(),
     Msg = mycelium_dist_protocol:encode_challenge(MyNonce, MyTs),
     case stream_send(Conn, MyStream, Msg) of
         ok ->
             server_recv_challenge(
                 Conn, MyStream, PeerStream, Buffer,
-                PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+                PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
             );
         {error, Reason} ->
             {error, {send_challenge_failed, Reason}}
@@ -405,17 +436,23 @@ server_send_challenge(Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, 
 
 server_recv_challenge(
     Conn, MyStream, PeerStream, Buffer,
-    PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+    PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
 ) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, Bin, Rest} ->
             case mycelium_dist_protocol:decode(Bin) of
                 {challenge, PeerNonce, PeerTs} ->
-                    server_send_response(
-                        Conn, MyStream, PeerStream, Rest,
-                        PeerNode, PeerPubKey,
-                        MyNonce, MyTs, PeerNonce, PeerTs, Timeout
-                    );
+                    case mycelium_dist_auth:validate_peer_ts(PeerTs) of
+                        ok ->
+                            server_send_response(
+                                Conn, MyStream, PeerStream, Rest,
+                                PeerNode, PeerPubKey,
+                                MyNonce, MyTs, MyMono,
+                                PeerNonce, PeerTs, Timeout
+                            );
+                        {error, _} = E ->
+                            E
+                    end;
                 Other ->
                     {error, {unexpected_message, Other}}
             end;
@@ -425,7 +462,7 @@ server_recv_challenge(
 
 server_send_response(
     Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey,
-    MyNonce, MyTs, PeerNonce, PeerTs, Timeout
+    MyNonce, MyTs, MyMono, PeerNonce, PeerTs, Timeout
 ) ->
     case sign_for_peer(PeerNonce, PeerTs, PeerPubKey) of
         {ok, MySig} ->
@@ -434,7 +471,7 @@ server_send_response(
                 ok ->
                     server_recv_response(
                         Conn, MyStream, PeerStream, Buffer,
-                        PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+                        PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
                     );
                 {error, Reason} ->
                     {error, {send_response_failed, Reason}}
@@ -445,7 +482,7 @@ server_send_response(
 
 server_recv_response(
     Conn, MyStream, PeerStream, Buffer,
-    PeerNode, PeerPubKey, MyNonce, MyTs, Timeout
+    PeerNode, PeerPubKey, MyNonce, MyTs, MyMono, Timeout
 ) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, Bin, _Rest} ->
@@ -453,7 +490,7 @@ server_recv_response(
                 {response, PeerSig} ->
                     case
                         mycelium_dist_auth:verify_response(
-                            PeerSig, PeerPubKey, {MyNonce, MyTs}
+                            PeerSig, PeerPubKey, {MyNonce, MyTs, MyMono}
                         )
                     of
                         true ->
@@ -515,7 +552,7 @@ recv_more(Conn, StreamId, Timeout) ->
             {error, {connection_closed, Reason}};
         {quic, Conn, {transport_error, Code, Reason}} ->
             {error, {transport_error, Code, Reason}}
-    after Timeout ->
+    after time_left(Timeout) ->
         {error, auth_stream_timeout}
     end.
 
@@ -532,7 +569,7 @@ wait_for_peer_stream(Conn, Timeout) ->
             {error, {connection_closed, Reason}};
         {quic, Conn, {transport_error, Code, Reason}} ->
             {error, {transport_error, Code, Reason}}
-    after Timeout ->
+    after time_left(Timeout) ->
         {error, auth_stream_timeout}
     end.
 
@@ -544,7 +581,7 @@ recv_first_chunk(Conn, StreamId, Timeout) ->
             {error, {stream_reset, Code}};
         {quic, Conn, {closed, Reason}} ->
             {error, {connection_closed, Reason}}
-    after Timeout ->
+    after time_left(Timeout) ->
         {error, auth_stream_timeout}
     end.
 

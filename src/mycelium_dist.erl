@@ -33,7 +33,9 @@
     close/1,
     select/1,
     address/0,
-    is_node_name/1
+    is_node_name/1,
+    project_defaults/0,
+    validate_auth_config/1
 ]).
 
 %%====================================================================
@@ -135,7 +137,23 @@ project_defaults() ->
     Defaults = build_defaults(),
     Merged = merge_defaults(User, Defaults),
     application:set_env(quic, dist, Merged),
+    validate_auth_config(Merged),
     ok.
+
+%% Refuse to boot if mycelium auth is enabled but the projected
+%% quic.dist config has no auth_callback (or has it explicitly set
+%% to undefined). The PR-1 default flip means an unset auth_enabled
+%% is `true', so a user who silently overrides auth_callback would
+%% otherwise ship unauthenticated peers without warning.
+validate_auth_config(QuicDist) ->
+    AuthEnabled = application:get_env(mycelium, auth_enabled, true),
+    Callback = proplists:get_value(auth_callback, QuicDist),
+    case AuthEnabled andalso (Callback =:= undefined) of
+        true ->
+            erlang:error({mycelium_dist, auth_enabled_without_callback});
+        false ->
+            ok
+    end.
 
 build_defaults() ->
     CertDir = cert_dir(),
