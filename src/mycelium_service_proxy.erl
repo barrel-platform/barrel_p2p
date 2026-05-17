@@ -20,9 +20,15 @@
 -define(CALL_TIMEOUT, 10000).
 -define(RELAY_TAG, '$mycelium_relay').
 
+%% Cap on concurrent overlay-cast helpers. Each cast through a
+%% `{via, NextHop}' route used to spawn an unbounded process.
+-define(DEFAULT_MAX_IN_FLIGHT, 32).
+
 -record(state, {
     name :: atom() | binary(),
-    target_node :: node()
+    target_node :: node(),
+    in_flight = 0  :: non_neg_integer(),
+    max_in_flight  :: pos_integer()
 }).
 
 %%====================================================================
@@ -57,15 +63,19 @@ init([Name, TargetNode]) ->
     %% service dies. mycelium:subscribe/1 routes to HyParView events,
     %% which never carry service_* notifications.
     mycelium:subscribe_services(self()),
-    {ok, #state{name = Name, target_node = TargetNode}}.
+    Max = application:get_env(
+        mycelium, proxy_cast_max_in_flight, ?DEFAULT_MAX_IN_FLIGHT
+    ),
+    {ok, #state{name = Name, target_node = TargetNode,
+                max_in_flight = Max}}.
 
 handle_call(Request, _From, #state{name = Name, target_node = Target} = State) ->
     Result = forward_call(Name, Target, Request),
     {reply, Result, State}.
 
 handle_cast(Request, #state{name = Name, target_node = Target} = State) ->
-    forward_cast(Name, Target, Request),
-    {noreply, State}.
+    State1 = forward_cast(Name, Target, Request, State),
+    {noreply, State1}.
 
 handle_info(
     {mycelium_service_event, {service_down, Name, _Node, _Reason}},
@@ -84,6 +94,12 @@ handle_info(
 ) ->
     %% Internal sync-broadcast path; kept as a sibling channel.
     {stop, normal, State};
+
+handle_info(
+    {'DOWN', _Ref, process, _Pid, _Reason},
+    #state{in_flight = N} = State
+) when N > 0 ->
+    {noreply, State#state{in_flight = N - 1}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -118,15 +134,27 @@ forward_call(Name, Target, Request) ->
             {error, no_route}
     end.
 
-forward_cast(Name, Target, Request) ->
+forward_cast(Name, Target, Request, State) ->
     case mycelium_router:find_route(Target) of
         {direct, _} ->
-            gen_server:cast({Name, Target}, Request);
+            gen_server:cast({Name, Target}, Request),
+            State;
         {via, NextHop} ->
-            %% Fire and forget through overlay
-            spawn(fun() ->
-                rpc:call(NextHop, gen_server, cast, [{Name, Target}, Request])
-            end);
+            spawn_overlay_cast(NextHop, Name, Target, Request, State);
         no_route ->
-            ok
+            State
     end.
+
+%% Fire-and-forget overlay cast, bounded by `max_in_flight'. Excess
+%% casts are dropped with a metric.
+spawn_overlay_cast(_NextHop, _Name, _Target, _Request,
+                   #state{in_flight = N, max_in_flight = Max} = State)
+  when N >= Max ->
+    mycelium_metrics:proxy_cast_dropped(),
+    State;
+spawn_overlay_cast(NextHop, Name, Target, Request,
+                   #state{in_flight = N} = State) ->
+    {_Pid, _Ref} = spawn_monitor(fun() ->
+        rpc:call(NextHop, gen_server, cast, [{Name, Target}, Request])
+    end),
+    State#state{in_flight = N + 1}.

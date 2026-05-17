@@ -22,7 +22,9 @@
     test_cache_route/1,
     test_invalidate_route/1,
     test_invalidate_all/1,
-    test_route_cache_expiry/1
+    test_route_cache_expiry/1,
+    test_route_request_drops_over_cap/1,
+    test_route_request_releases_slot_on_completion/1
 ]).
 
 %%====================================================================
@@ -41,7 +43,9 @@ groups() ->
             test_cache_route,
             test_invalidate_route,
             test_invalidate_all,
-            test_route_cache_expiry
+            test_route_cache_expiry,
+            test_route_request_drops_over_cap,
+            test_route_request_releases_slot_on_completion
         ]}
     ].
 
@@ -147,4 +151,70 @@ test_route_cache_expiry(_Config) ->
     ?assertMatch(#timestamp{}, HLC),
     %% HLC should be >= the time before we cached
     ?assertNotEqual(lt, mycelium_hlc:compare(HLC, BeforeHLC)),
+    ok.
+
+%% When in_flight has saturated max_in_flight, the next route_request
+%% is refused with `{error, overloaded}' instead of spawning another
+%% helper. Uses sys:replace_state/2 to saturate the counter without
+%% needing a busy real handler.
+test_route_request_drops_over_cap(_Config) ->
+    sys:replace_state(mycelium_router, fun({state, _N, _Max}) ->
+        {state, 1, 1}
+    end),
+    Self = self(),
+    Ref = make_ref(),
+    mycelium_router !
+        {'$mycelium_route',
+         {route_request, undefined, {Self, Ref}}},
+    receive
+        {Ref, {error, overloaded}} -> ok
+    after 1000 ->
+        ct:fail("Expected overloaded reply when at cap")
+    end,
+    %% Reset to defaults so the next case starts clean.
+    sys:replace_state(mycelium_router, fun({state, _, Max}) ->
+        {state, 0, Max}
+    end),
+    ok.
+
+%% A completed handler must decrement in_flight so the next request
+%% is accepted. Issue a handful of requests; with max=2 we should see
+%% all of them reply (since each finishes quickly).
+test_route_request_releases_slot_on_completion(_Config) ->
+    sys:replace_state(mycelium_router, fun({state, _, _}) ->
+        {state, 0, 2}
+    end),
+    Self = self(),
+    Refs = [make_ref() || _ <- lists:seq(1, 5)],
+    lists:foreach(
+        fun(Ref) ->
+            Req = #route_req{
+                service_name = nonexistent_svc,
+                ttl = 1,
+                origin = node(),
+                visited = [node()]
+            },
+            mycelium_router !
+                {'$mycelium_route',
+                 {route_request, Req, {Self, Ref}}}
+        end,
+        Refs
+    ),
+    %% Drain all replies. Some can be `{error, not_found}' (no peers),
+    %% some can be `{error, overloaded}'; the test only asserts that
+    %% none hang.
+    lists:foreach(
+        fun(Ref) ->
+            receive
+                {Ref, _} -> ok
+            after 2000 ->
+                ct:fail({no_reply, Ref})
+            end
+        end,
+        Refs
+    ),
+    %% After all handlers exit, in_flight should be back at 0.
+    timer:sleep(100),
+    {state, NFinal, _} = sys:get_state(mycelium_router),
+    ?assertEqual(0, NFinal),
     ok.

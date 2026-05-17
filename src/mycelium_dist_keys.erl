@@ -236,21 +236,23 @@ load_trusted_key_file(Dir, File) ->
             FilePath = filename:join(Dir, File),
             case file:read_file(FilePath) of
                 {ok, PubKey} when byte_size(PubKey) =:= ?PUBLIC_KEY_SIZE ->
-                    %% Extract node name from filename (e.g., "node1@host.pub")
-                    NodeStr = filename:rootname(File),
-                    try
-                        Node = list_to_atom(NodeStr),
-                        Now = erlang:system_time(millisecond),
-                        Record = #peer_key{
-                            node = Node,
-                            public_key = PubKey,
-                            added_at = Now,
-                            last_seen = Now,
-                            trust_level = permanent
-                        },
-                        ets:insert(?TABLE, Record)
-                    catch
-                        _:_ ->
+                    %% Filenames are operator-controlled but apply the
+                    %% same shape check the wire path uses, so a stray
+                    %% file cannot inject arbitrary atoms at boot.
+                    NodeBin = list_to_binary(filename:rootname(File)),
+                    case mycelium_dist_protocol:validate_node_name(NodeBin) of
+                        ok ->
+                            Node = binary_to_atom(NodeBin, utf8),
+                            Now = erlang:system_time(millisecond),
+                            Record = #peer_key{
+                                node = Node,
+                                public_key = PubKey,
+                                added_at = Now,
+                                last_seen = Now,
+                                trust_level = permanent
+                            },
+                            ets:insert(?TABLE, Record);
+                        {error, _} ->
                             error_logger:warning_msg(
                                 "Invalid node name in key file: ~p~n", [File])
                     end;

@@ -13,6 +13,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   matches the real `service_down` shape; dead remote proxies are
   reaped instead of leaking.
 
+### Changed
+- `mycelium_router` and `mycelium_service_proxy` bound concurrent
+  in-flight handlers. Over-cap route requests reply with
+  `{error, overloaded}`; over-cap overlay casts are dropped. Both
+  counters are exposed through `instrument` as
+  `mycelium.router.request_dropped` and
+  `mycelium.service_proxy.cast_dropped`. Tunables:
+  `router_max_in_flight` (default 256) and
+  `proxy_cast_max_in_flight` (default 32).
+- Peer node names are validated for format and length (255 byte cap,
+  `name@host` shape, restricted charset) before the atom table is
+  touched. `AUTH_HELLO` frames and on-disk trust-store filenames no
+  longer mint atoms from peer-controlled bytes.
+
 ### Security
 - Reject TOFU re-pin attempts. When a node is already pinned, the
   handshake refuses any peer presenting a different Ed25519 key,

@@ -29,7 +29,15 @@
 %% Timeout for remote lookups (ms)
 -define(LOOKUP_TIMEOUT, 5000).
 
--record(state, {}).
+-record(state, {
+    in_flight = 0    :: non_neg_integer(),
+    max_in_flight    :: pos_integer()
+}).
+
+%% Cap on concurrent route_request handlers. A peer flood used to
+%% spawn an unbounded number of helpers; the gen_server now drops
+%% excess requests with a metric.
+-define(DEFAULT_MAX_IN_FLIGHT, 256).
 
 %%====================================================================
 %% API
@@ -99,7 +107,10 @@ init([]) ->
         set,
         {read_concurrency, true}
     ]),
-    {ok, #state{}}.
+    Max = application:get_env(
+        mycelium, router_max_in_flight, ?DEFAULT_MAX_IN_FLIGHT
+    ),
+    {ok, #state{max_in_flight = Max}}.
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -120,10 +131,29 @@ handle_cast(invalidate_all, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({?ROUTE_TAG, {route_request, Req, ReplyTo}}, State) ->
-    %% Handle incoming route request from another node
-    spawn(fun() -> handle_route_request(Req, ReplyTo) end),
+handle_info(
+    {?ROUTE_TAG, {route_request, _Req, ReplyTo}},
+    #state{in_flight = N, max_in_flight = Max} = State
+) when N >= Max ->
+    %% Shed load: refuse over-cap requests rather than spawn an
+    %% unbounded helper per inbound message.
+    mycelium_metrics:router_request_dropped(),
+    reply_dropped(ReplyTo),
     {noreply, State};
+handle_info(
+    {?ROUTE_TAG, {route_request, Req, ReplyTo}},
+    #state{in_flight = N} = State
+) ->
+    {_Pid, _Ref} = spawn_monitor(
+        fun() -> handle_route_request(Req, ReplyTo) end
+    ),
+    {noreply, State#state{in_flight = N + 1}};
+
+handle_info(
+    {'DOWN', _Ref, process, _Pid, _Reason},
+    #state{in_flight = N} = State
+) when N > 0 ->
+    {noreply, State#state{in_flight = N - 1}};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -215,6 +245,11 @@ handle_route_request(Req, {Caller, Ref}) ->
     Result = route_lookup(Req),
     %% Send reply back to caller
     erlang:send(Caller, {Ref, Result}, [noconnect]).
+
+%% Tell the caller we shed the request. Caller treats it as a
+%% lookup error and falls through to the next candidate.
+reply_dropped({Caller, Ref}) ->
+    erlang:send(Caller, {Ref, {error, overloaded}}, [noconnect]).
 
 %% Shuffle a list randomly. Callers only pass non-empty lists.
 shuffle(List) ->

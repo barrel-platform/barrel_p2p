@@ -14,7 +14,8 @@
     encode_ok/0,
     encode_fail/1,
     encode_key_exchange/1,
-    decode/1
+    decode/1,
+    validate_node_name/1
 ]).
 
 %% Protocol version
@@ -33,6 +34,10 @@
 -define(X25519_KEY_SIZE, 32).
 -define(NONCE_SIZE, 32).
 -define(SIGNATURE_SIZE, 64).
+
+%% Hard cap on a peer-claimed node name. Erlang nodes are usually
+%% well under 100 bytes; 255 is generous.
+-define(MAX_NODE_NAME_LEN, 255).
 
 %%====================================================================
 %% Encoding Functions
@@ -95,11 +100,9 @@ encode_key_exchange(EphemeralPubKey) when byte_size(EphemeralPubKey) =:= ?X25519
 decode(<<?AUTH_HELLO:8, ?PROTOCOL_VERSION:8, NodeLen:16/big, Rest/binary>>) ->
     case Rest of
         <<NodeBin:NodeLen/binary, PubKey:?PUBLIC_KEY_SIZE/binary>> ->
-            try
-                NodeName = binary_to_atom(NodeBin, utf8),
-                {hello, NodeName, PubKey}
-            catch
-                _:_ -> {error, invalid_node_name}
+            case materialise_node(NodeBin) of
+                {ok, NodeName} -> {hello, NodeName, PubKey};
+                {error, _} = E -> E
             end;
         _ ->
             {error, invalid_hello_payload}
@@ -135,3 +138,60 @@ decode(<<Type:8, _/binary>>) ->
 
 decode(_) ->
     {error, malformed_message}.
+
+%%====================================================================
+%% Node-name validation
+%%====================================================================
+
+%% @doc Validate a node name binary. Returns `ok' if the bytes form
+%% a well-shaped `name@host' atom by Erlang dist conventions.
+-spec validate_node_name(binary()) -> ok | {error, invalid_node_name}.
+validate_node_name(Bin)
+  when is_binary(Bin), byte_size(Bin) > 0, byte_size(Bin) =< ?MAX_NODE_NAME_LEN ->
+    case binary:split(Bin, <<"@">>, [global]) of
+        [Name, Host] when byte_size(Name) > 0, byte_size(Host) > 0 ->
+            case is_valid_part(Name) andalso is_valid_part(Host) of
+                true  -> ok;
+                false -> {error, invalid_node_name}
+            end;
+        _ ->
+            {error, invalid_node_name}
+    end;
+validate_node_name(_) ->
+    {error, invalid_node_name}.
+
+%% Atomise a node-name binary only after format validation. Prefers
+%% an existing atom; mints a new one only when the format check
+%% passes. Keeps the atom table safe from peer-controlled bytes
+%% during the auth handshake.
+materialise_node(NodeBin) ->
+    case validate_node_name(NodeBin) of
+        ok ->
+            try binary_to_existing_atom(NodeBin, utf8) of
+                Atom -> {ok, Atom}
+            catch _:_ ->
+                {ok, binary_to_atom(NodeBin, utf8)}
+            end;
+        Error ->
+            Error
+    end.
+
+is_valid_part(<<C, _/binary>>) when C =:= $.; C =:= $- ->
+    false;
+is_valid_part(Bin) ->
+    is_valid_chars(Bin).
+
+is_valid_chars(<<>>) -> true;
+is_valid_chars(<<C, Rest/binary>>) ->
+    case is_name_byte(C) of
+        true  -> is_valid_chars(Rest);
+        false -> false
+    end.
+
+is_name_byte(C) when C >= $a, C =< $z -> true;
+is_name_byte(C) when C >= $A, C =< $Z -> true;
+is_name_byte(C) when C >= $0, C =< $9 -> true;
+is_name_byte($_) -> true;
+is_name_byte($.) -> true;
+is_name_byte($-) -> true;
+is_name_byte(_)  -> false.

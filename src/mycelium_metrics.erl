@@ -22,7 +22,9 @@
     graft_sent/1,
     prune_sent/1,
     gc_reap/1,
-    migrate_result/2
+    migrate_result/2,
+    router_request_dropped/0,
+    proxy_cast_dropped/0
 ]).
 
 -define(METER_KEY, {?MODULE, meter}).
@@ -85,6 +87,14 @@ gc_reap(Peer) ->
 -spec migrate_result(node(), ok | fail) -> ok.
 migrate_result(Peer, Outcome) ->
     add(<<"mycelium.dist.migrate">>, 1, #{peer => Peer, outcome => Outcome}).
+
+-spec router_request_dropped() -> ok.
+router_request_dropped() ->
+    add(<<"mycelium.router.request_dropped">>, 1, #{}).
+
+-spec proxy_cast_dropped() -> ok.
+proxy_cast_dropped() ->
+    add(<<"mycelium.service_proxy.cast_dropped">>, 1, #{}).
 
 %%====================================================================
 %% Internal: instrument cache + safe emit
