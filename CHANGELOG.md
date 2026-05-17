@@ -5,6 +5,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- Reject TOFU re-pin attempts. When a node is already pinned, the
+  handshake refuses any peer presenting a different Ed25519 key,
+  regardless of trust mode. Both the server side and the client side
+  check the pin before continuing.
+- Client requires the dialed peer to be in `cookie_only_nodes` before
+  accepting an `AUTH_OK` short-circuit. A rogue server reachable
+  through the discovery chain can no longer skip the Ed25519
+  exchange.
+- `mycelium.auth_enabled` defaults to `true`. Nodes that ran with the
+  setting unset over `-proto_dist mycelium` were accepting
+  unauthenticated peers; they now refuse them.
+- Trust-store pins are written atomically (`.tmp` plus rename). A
+  crash mid-write no longer leaves a truncated pin that silently
+  drops the trust relation at the next boot.
+
+### Removed
+- Legacy socket-based dist auth handshake in `mycelium_dist_auth`.
+  The QUIC stream handshake in `mycelium_dist_auth_stream` is the
+  only path; pure helpers (key I/O, challenge build/verify,
+  `cookie_only_nodes` matching) remain.
+
 ### Added
 - Idle dist-channel GC (`mycelium_dist_gc`). Always-on reaper that
   drops dist channels which are not part of the HyParView active view,

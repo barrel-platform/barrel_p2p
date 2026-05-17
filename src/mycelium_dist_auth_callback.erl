@@ -36,4 +36,8 @@
 authenticate(Conn, server, Timeout) ->
     mycelium_dist_auth_stream:authenticate_incoming(Conn, Timeout);
 authenticate(Conn, client, Timeout) ->
-    mycelium_dist_auth_stream:authenticate_outgoing(Conn, Timeout).
+    %% mycelium_dist:setup/5 stashes the dialed node in the process
+    %% dictionary so the client side can verify cookie_only_nodes
+    %% before accepting an AUTH_OK short-circuit.
+    TargetNode = erlang:get(mycelium_dial_target),
+    mycelium_dist_auth_stream:authenticate_outgoing(Conn, TargetNode, Timeout).

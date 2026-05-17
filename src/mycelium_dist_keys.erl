@@ -11,6 +11,7 @@
     store_key/2,
     store_key_if_new/2,
     lookup_key/1,
+    lookup_pin/1,
     delete_key/1,
     is_trusted/2,
     list_trusted/0,
@@ -64,18 +65,27 @@ lookup_key(Node) ->
         [] -> {error, not_found}
     end.
 
+%% @doc Tri-state pin lookup. Distinguishes "no pin recorded" from
+%% "pin exists" so callers can refuse re-pin attempts.
+-spec lookup_pin(node() | term()) -> not_pinned | {pinned, binary()}.
+lookup_pin(Node) ->
+    case ets:lookup(?TABLE, Node) of
+        [#peer_key{public_key = PubKey}] -> {pinned, PubKey};
+        [] -> not_pinned
+    end.
+
 %% @doc Delete a trusted key
 -spec delete_key(node()) -> ok.
 delete_key(Node) ->
     gen_server:call(?SERVER, {delete_key, Node}).
 
-%% @doc Check if a node's public key is trusted
+%% @doc Check if a node's public key is trusted. Thin wrapper around
+%% lookup_pin/1 kept for back-compat with existing boolean callers.
 -spec is_trusted(node(), binary()) -> boolean().
 is_trusted(Node, PubKey) ->
-    case lookup_key(Node) of
-        {ok, PubKey} -> true;   %% Exact match
-        {ok, _Other} -> false;  %% Key mismatch - possible attack
-        {error, not_found} -> false
+    case lookup_pin(Node) of
+        {pinned, PubKey} -> true;
+        _                -> false
     end.
 
 %% @doc List all trusted nodes
@@ -256,18 +266,30 @@ load_trusted_key_file(Dir, File) ->
             ok
     end.
 
-%% @doc Save a trusted key to disk
+%% @doc Save a trusted key to disk. Writes to a `.tmp' sibling and
+%% renames into place so a crash mid-write cannot leave a truncated
+%% pin that load_trusted_key_file/2 would reject at the next boot.
 save_trusted_key(KeyDir, Node, PubKey) ->
     TrustedDir = filename:join(KeyDir, "trusted"),
     case filelib:ensure_dir(filename:join(TrustedDir, "dummy")) of
         ok ->
             FileName = atom_to_list(Node) ++ ".pub",
             FilePath = filename:join(TrustedDir, FileName),
-            case file:write_file(FilePath, PubKey) of
-                ok -> ok;
-                {error, Reason} ->
+            TmpPath  = FilePath ++ ".tmp",
+            case file:write_file(TmpPath, PubKey) of
+                ok ->
+                    case file:rename(TmpPath, FilePath) of
+                        ok -> ok;
+                        {error, RReason} ->
+                            _ = file:delete(TmpPath),
+                            error_logger:warning_msg(
+                                "Failed to rename trusted key for ~p: ~p~n",
+                                [Node, RReason])
+                    end;
+                {error, WReason} ->
                     error_logger:warning_msg(
-                        "Failed to save trusted key for ~p: ~p~n", [Node, Reason])
+                        "Failed to save trusted key for ~p: ~p~n",
+                        [Node, WReason])
             end;
         {error, Reason} ->
             error_logger:warning_msg(

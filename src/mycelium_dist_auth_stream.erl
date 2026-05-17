@@ -22,7 +22,7 @@
 -module(mycelium_dist_auth_stream).
 
 -export([
-    authenticate_outgoing/2,
+    authenticate_outgoing/3,
     authenticate_incoming/2
 ]).
 
@@ -37,14 +37,23 @@
 %% node atom claimed by the peer (verified by signature against the
 %% trusted key for that atom). The dist handshake that runs immediately
 %% after refuses the connection if that name does not match the target.
--spec authenticate_outgoing(Conn :: pid(), Timeout :: timeout()) ->
-    {ok, node() | undefined} | {error, term()}.
-authenticate_outgoing(Conn, Timeout) ->
+%%
+%% `TargetNode' is the node we dialed. It gates the AUTH_OK
+%% short-circuit: a server claiming the cookie-only path is only
+%% trusted if `TargetNode' matches the client's own
+%% `cookie_only_nodes' whitelist.
+-spec authenticate_outgoing(
+    Conn :: pid(), TargetNode :: node() | undefined, Timeout :: timeout()
+) -> {ok, node() | undefined} | {error, term()}.
+authenticate_outgoing(Conn, TargetNode, Timeout) ->
     case auth_enabled() of
         false ->
             {ok, undefined};
         true ->
-            with_metrics(outgoing, fun() -> run_outgoing(Conn, Timeout) end)
+            with_metrics(
+                outgoing,
+                fun() -> run_outgoing(Conn, TargetNode, Timeout) end
+            )
     end.
 
 %% @doc Run the auth protocol as the connection responder.
@@ -85,11 +94,11 @@ with_metrics(Role, F) ->
 %% Outgoing (client) side
 %%====================================================================
 
-run_outgoing(Conn, Timeout) ->
+run_outgoing(Conn, TargetNode, Timeout) ->
     case quic:open_unidirectional_stream(Conn) of
         {ok, MyStream} ->
             try
-                do_outgoing(Conn, MyStream, Timeout)
+                do_outgoing(Conn, MyStream, TargetNode, Timeout)
             after
                 catch quic:send_data(Conn, MyStream, <<>>, true)
             end;
@@ -97,7 +106,7 @@ run_outgoing(Conn, Timeout) ->
             {error, {open_auth_stream_failed, Reason}}
     end.
 
-do_outgoing(Conn, MyStream, Timeout) ->
+do_outgoing(Conn, MyStream, TargetNode, Timeout) ->
     case mycelium_dist_auth:get_public_key() of
         {ok, MyPubKey} ->
             MyNode = node(),
@@ -107,7 +116,8 @@ do_outgoing(Conn, MyStream, Timeout) ->
                     case wait_for_peer_stream(Conn, Timeout) of
                         {ok, PeerStream, Buffer} ->
                             client_recv_hello(
-                                Conn, MyStream, PeerStream, Buffer, Timeout
+                                Conn, MyStream, PeerStream, Buffer,
+                                TargetNode, Timeout
                             );
                         {error, Reason} ->
                             {error, Reason}
@@ -119,16 +129,17 @@ do_outgoing(Conn, MyStream, Timeout) ->
             Error
     end.
 
-client_recv_hello(Conn, MyStream, PeerStream, Buffer, Timeout) ->
+client_recv_hello(Conn, MyStream, PeerStream, Buffer, TargetNode, Timeout) ->
     case decode_with_buffer(Conn, PeerStream, Buffer, Timeout) of
         {ok, HelloBin, Rest} ->
             case mycelium_dist_protocol:decode(HelloBin) of
                 {hello, ClaimedNode, PeerPubKey} ->
                     %% Trust check is done before we issue our challenge:
                     %% in strict mode, refuse if the claimed node has no
-                    %% pinned key (or has one and it differs). The dist
-                    %% handshake that follows verifies this atom matches
-                    %% the connect target.
+                    %% pinned key. If a different key is already pinned,
+                    %% refuse regardless of mode. The dist handshake that
+                    %% follows verifies this atom matches the connect
+                    %% target.
                     case trust_check(ClaimedNode, PeerPubKey) of
                         ok ->
                             client_send_challenge(
@@ -139,10 +150,18 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, Timeout) ->
                             {error, Reason}
                     end;
                 ok ->
-                    %% Server short-circuited the handshake because we
-                    %% match its cookie_only_nodes whitelist. Trust the
-                    %% Erlang dist cookie challenge to do the rest.
-                    {ok, undefined};
+                    %% Server signalled the cookie-only short-circuit.
+                    %% Trust it only when the node we dialed matches our
+                    %% own cookie_only_nodes whitelist; otherwise a
+                    %% rogue server reachable through discovery could
+                    %% skip Ed25519.
+                    case TargetNode =/= undefined
+                         andalso mycelium_dist_auth:is_cookie_only_allowed(
+                                   TargetNode
+                                 ) of
+                        true  -> {ok, undefined};
+                        _     -> {error, unexpected_auth_ok}
+                    end;
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -152,15 +171,18 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, Timeout) ->
             {error, {recv_hello_failed, Reason}}
     end.
 
-%% Strict mode demands a pre-pinned key for `Node'. TOFU accepts the
-%% key on first contact (it gets recorded later in `record_peer/2').
+%% Tri-state trust check. A pinned key that does not match the
+%% presented one is always a hard reject (re-pin attempt). Absence of
+%% a pin falls through to mode policy.
 trust_check(Node, PubKey) ->
-    case mycelium_dist_keys:is_trusted(Node, PubKey) of
-        true ->
+    case mycelium_dist_keys:lookup_pin(Node) of
+        {pinned, PubKey} ->
             ok;
-        false ->
+        {pinned, _Other} ->
+            {error, key_mismatch};
+        not_pinned ->
             case trust_mode() of
-                tofu -> ok;
+                tofu   -> ok;
                 strict -> {error, untrusted_key}
             end
     end.
@@ -251,8 +273,10 @@ client_recv_ok(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
         {ok, Bin, _Rest} ->
             case mycelium_dist_protocol:decode(Bin) of
                 ok ->
-                    ok = record_peer(PeerNode, PeerPubKey),
-                    {ok, PeerNode};
+                    case record_peer(PeerNode, PeerPubKey) of
+                        ok                 -> {ok, PeerNode};
+                        {error, _} = Error -> Error
+                    end;
                 {fail, Reason} ->
                     {error, {auth_rejected, Reason}};
                 Other ->
@@ -298,12 +322,15 @@ server_after_hello(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) ->
         true ->
             server_send_skip(Conn, PeerNode);
         false ->
-            case mycelium_dist_keys:is_trusted(PeerNode, PeerPubKey) of
-                true ->
+            case mycelium_dist_keys:lookup_pin(PeerNode) of
+                {pinned, PeerPubKey} ->
                     server_open_my_stream(
                         Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout
                     );
-                false ->
+                {pinned, _Other} ->
+                    send_fail_via_uni(Conn, <<"key_mismatch">>),
+                    {error, key_mismatch};
+                not_pinned ->
                     case trust_mode() of
                         tofu ->
                             server_open_my_stream(
@@ -445,8 +472,10 @@ server_recv_response(
 server_send_ok(Conn, MyStream, PeerNode, PeerPubKey) ->
     case stream_send(Conn, MyStream, mycelium_dist_protocol:encode_ok()) of
         ok ->
-            ok = record_peer(PeerNode, PeerPubKey),
-            {ok, PeerNode};
+            case record_peer(PeerNode, PeerPubKey) of
+                ok                 -> {ok, PeerNode};
+                {error, _} = Error -> Error
+            end;
         {error, Reason} ->
             {error, {send_ok_failed, Reason}}
     end.
@@ -567,17 +596,11 @@ record_peer(PeerNode, PeerPubKey) ->
         strict ->
             ok;
         tofu ->
-            _ = mycelium_dist_keys:store_key_if_new(PeerNode, PeerPubKey),
-            ok
+            mycelium_dist_keys:store_key_if_new(PeerNode, PeerPubKey)
     end.
 
 auth_enabled() ->
-    %% Default false: auth is opt-in. Production sys.config sets true
-    %% explicitly. Defaulting to true would crash any node that uses
-    %% -proto_dist mycelium without first loading the mycelium app, since
-    %% get_public_key/0 reads keys from disk that only get_provisioned
-    %% when the supervision tree starts mycelium_dist_keys.
-    application:get_env(mycelium, auth_enabled, false).
+    application:get_env(mycelium, auth_enabled, true).
 
 trust_mode() ->
     application:get_env(mycelium, auth_trust_mode, tofu).

@@ -37,6 +37,7 @@
     test_strict_rejects_unknown/1,
     test_tofu_accepts_and_stores/1,
     test_conflicting_key_rejected/1,
+    test_lookup_pin_tri_state/1,
     test_wrong_signature_rejected/1,
     test_key_persistence_to_disk/1
 ]).
@@ -88,6 +89,7 @@ groups() ->
             test_strict_rejects_unknown,
             test_tofu_accepts_and_stores,
             test_conflicting_key_rejected,
+            test_lookup_pin_tri_state,
             test_wrong_signature_rejected,
             test_key_persistence_to_disk
         ]},
@@ -337,6 +339,26 @@ test_conflicting_key_rejected(_Config) ->
     ?assertNot(mycelium_dist_keys:is_trusted(Peer, ConflictingKey)),
     ?assertEqual({error, key_mismatch},
                  mycelium_dist_keys:store_key_if_new(Peer, ConflictingKey)),
+    ok.
+
+%% lookup_pin/1 distinguishes "no pin", "pin matches", "pin differs".
+%% The TOFU re-pin fix depends on this tri-state: a mismatch must be
+%% rejected even in TOFU mode.
+test_lookup_pin_tri_state(_Config) ->
+    Peer = 'tri@host',
+    ?assertEqual(not_pinned, mycelium_dist_keys:lookup_pin(Peer)),
+
+    Pinned = crypto:strong_rand_bytes(32),
+    ok = mycelium_dist_keys:store_key(Peer, Pinned),
+    ?assertEqual({pinned, Pinned}, mycelium_dist_keys:lookup_pin(Peer)),
+
+    Other = crypto:strong_rand_bytes(32),
+    ?assertNotEqual(Pinned, Other),
+    %% lookup_pin returns the *stored* key, not the presented one,
+    %% so callers can compare and reject.
+    ?assertMatch({pinned, Pinned}, mycelium_dist_keys:lookup_pin(Peer)),
+    ?assertEqual({error, key_mismatch},
+                 mycelium_dist_keys:store_key_if_new(Peer, Other)),
     ok.
 
 %% Peer signs the challenge with the wrong key -> verify_response rejects.

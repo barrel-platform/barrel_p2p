@@ -58,7 +58,20 @@ accept_connection(AcceptPid, DistCtrl, MyNode, Allowed, SetupTime) ->
     quic_dist:accept_connection(AcceptPid, DistCtrl, MyNode, Allowed, SetupTime).
 
 setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    quic_dist:setup(Node, Type, MyNode, LongOrShortNames, SetupTime).
+    %% Replicate upstream quic_dist:setup/5 but stash the dialed Node
+    %% in the setup process's dictionary. mycelium_dist_auth_callback
+    %% reads it back to gate the AUTH_OK short-circuit on the client's
+    %% own cookie_only_nodes whitelist.
+    Kernel = self(),
+    spawn_opt(
+        fun() ->
+            erlang:put(mycelium_dial_target, Node),
+            quic_dist:do_setup(
+                Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime
+            )
+        end,
+        [link, {priority, max}]
+    ).
 
 close(Listener) ->
     quic_dist:close(Listener).
