@@ -43,6 +43,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer mint atoms from peer-controlled bytes.
 
 ### Security
+- Private-key and trust-store writes now go through a shared
+  `mycelium_file:write_secure/2` helper that chmods the temp file
+  to 0600 *before* any plaintext bytes are written, then renames
+  atomically. Closes the previously-noted window where Ed25519 and
+  QUIC TLS keys were briefly world-readable on disk.
+- Cert serial numbers are drawn from `crypto:strong_rand_bytes/1`
+  (127-bit positive integer) instead of `rand:uniform/1`.
+- X.509 validity dates with year >= 2050 are now encoded as
+  GeneralizedTime per RFC 5280. Long-lived self-signed certs no
+  longer roll back to 1950 on the wire.
+- `mycelium_dist_auth:load_keypair/1` verifies that the on-disk
+  public key derives from the on-disk private key. A crash mid
+  rotation that left a mismatched pair is now detected with
+  `{error, keypair_mismatch}` rather than silently using
+  inconsistent material.
 - Auth handshake now enforces a wall deadline across all recv
   sites. A peer dribbling bytes can no longer extend the handshake
   beyond `auth_handshake_timeout` by restarting the timer on each

@@ -179,7 +179,11 @@ generate_keypair() ->
     {PubKey, PrivKey} = crypto:generate_key(eddsa, ed25519),
     {PubKey, PrivKey}.
 
-%% @doc Load a keypair from disk.
+%% @doc Load a keypair from disk. Verifies that the public key on
+%% disk is the one derived from the private key: a crash between the
+%% two file renames in save_keypair/3 could otherwise leave a
+%% mismatched pair, and load would silently return inconsistent
+%% material.
 -spec load_keypair(string()) ->
     {ok, binary(), binary()} | {error, term()}.
 load_keypair(KeyDir) ->
@@ -189,7 +193,12 @@ load_keypair(KeyDir) ->
         {{ok, PrivKey}, {ok, PubKey}}
           when byte_size(PrivKey) =:= ?PRIVATE_KEY_SIZE,
                byte_size(PubKey)  =:= ?PUBLIC_KEY_SIZE ->
-            {ok, PubKey, PrivKey};
+            case derived_pubkey(PrivKey) of
+                PubKey ->
+                    {ok, PubKey, PrivKey};
+                _Other ->
+                    {error, keypair_mismatch}
+            end;
         {{ok, _}, {ok, _}} ->
             {error, invalid_key_size};
         {{error, Reason}, _} ->
@@ -198,20 +207,37 @@ load_keypair(KeyDir) ->
             {error, {read_pubkey_failed, Reason}}
     end.
 
-%% @doc Save a keypair to disk. Private key written with 0600 perms.
+%% @doc Save a keypair to disk atomically. Each file goes through the
+%% mycelium_file:write_secure/2 chmod-before-write+rename helper, so
+%% neither key is ever world-readable mid-write. Two separate renames
+%% are not collectively atomic, but load_keypair/1 detects the
+%% mismatched-pair window and refuses to load.
 -spec save_keypair(string(), binary(), binary()) -> ok | {error, term()}.
 save_keypair(KeyDir, PubKey, PrivKey) ->
     PrivKeyFile = filename:join(KeyDir, "node.key"),
     PubKeyFile  = filename:join(KeyDir, "node.pub"),
-    case file:write_file(PrivKeyFile, PrivKey) of
+    case mycelium_file:write_secure(PrivKeyFile, PrivKey) of
         ok ->
-            file:change_mode(PrivKeyFile, 8#600),
-            case file:write_file(PubKeyFile, PubKey) of
+            case mycelium_file:write_secure(PubKeyFile, PubKey) of
                 ok -> ok;
                 {error, Reason} -> {error, {write_pubkey_failed, Reason}}
             end;
         {error, Reason} ->
             {error, {write_privkey_failed, Reason}}
+    end.
+
+%% Derive the Ed25519 public key from a private key. Used by
+%% load_keypair/1 to detect a torn rotation.
+derived_pubkey(PrivKey) ->
+    try
+        case crypto:generate_key(eddsa, ed25519, PrivKey) of
+            {Pub, _Priv} when byte_size(Pub) =:= ?PUBLIC_KEY_SIZE ->
+                Pub;
+            _ ->
+                undefined
+        end
+    catch _:_ ->
+        undefined
     end.
 
 %%====================================================================

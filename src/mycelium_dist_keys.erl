@@ -268,30 +268,21 @@ load_trusted_key_file(Dir, File) ->
             ok
     end.
 
-%% @doc Save a trusted key to disk. Writes to a `.tmp' sibling and
-%% renames into place so a crash mid-write cannot leave a truncated
-%% pin that load_trusted_key_file/2 would reject at the next boot.
+%% @doc Save a trusted key to disk. Delegates to mycelium_file's
+%% atomic+0600 helper.
 save_trusted_key(KeyDir, Node, PubKey) ->
     TrustedDir = filename:join(KeyDir, "trusted"),
     case filelib:ensure_dir(filename:join(TrustedDir, "dummy")) of
         ok ->
             FileName = atom_to_list(Node) ++ ".pub",
             FilePath = filename:join(TrustedDir, FileName),
-            TmpPath  = FilePath ++ ".tmp",
-            case file:write_file(TmpPath, PubKey) of
+            case mycelium_file:write_secure(FilePath, PubKey) of
                 ok ->
-                    case file:rename(TmpPath, FilePath) of
-                        ok -> ok;
-                        {error, RReason} ->
-                            _ = file:delete(TmpPath),
-                            error_logger:warning_msg(
-                                "Failed to rename trusted key for ~p: ~p~n",
-                                [Node, RReason])
-                    end;
-                {error, WReason} ->
+                    ok;
+                {error, Reason} ->
                     error_logger:warning_msg(
                         "Failed to save trusted key for ~p: ~p~n",
-                        [Node, WReason])
+                        [Node, Reason])
             end;
         {error, Reason} ->
             error_logger:warning_msg(

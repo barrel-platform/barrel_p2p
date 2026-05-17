@@ -126,18 +126,20 @@ create_certificate(PrivateKey, PublicKey) ->
             }]
         ]},
 
-        %% Validity period
+        %% Validity period. Each bound is encoded as UTCTime for
+        %% years <2050 and GeneralizedTime for 2050+ per RFC 5280.
         Now = calendar:universal_time(),
-        NotBefore = format_time(Now),
-        NotAfter = format_time(add_days(Now, ?DEFAULT_DAYS)),
-
         Validity = #'Validity'{
-            notBefore = {utcTime, NotBefore},
-            notAfter = {utcTime, NotAfter}
+            notBefore = validity_time(Now),
+            notAfter  = validity_time(add_days(Now, ?DEFAULT_DAYS))
         },
 
-        %% Serial number (random)
-        Serial = rand:uniform(16#7FFFFFFF),
+        %% Serial number: positive 127-bit integer drawn from a
+        %% cryptographic PRNG. Mask off the top bit so the ASN.1
+        %% INTEGER encoding stays positive without an extra byte.
+        SerialBytes = crypto:strong_rand_bytes(16),
+        Serial = binary:decode_unsigned(SerialBytes)
+                 band ((1 bsl 127) - 1),
 
         %% Subject public key info
         SubjectPKInfo = #'SubjectPublicKeyInfo'{
@@ -211,36 +213,42 @@ create_extensions() ->
     ].
 
 %% @private
-%% Write certificate and key to PEM files.
+%% Write certificate and key to PEM files. The private key goes
+%% through the atomic chmod-before-write helper so it never lives on
+%% disk world-readable while it contains secret material.
 write_cert_files(CertFile, KeyFile, Cert, PrivateKey) ->
     try
-        %% Encode certificate to DER
         CertDer = public_key:der_encode('Certificate', Cert),
         CertPem = public_key:pem_encode([{'Certificate', CertDer, not_encrypted}]),
-
-        %% Encode private key to DER
         KeyDer = public_key:der_encode('RSAPrivateKey', PrivateKey),
         KeyPem = public_key:pem_encode([{'RSAPrivateKey', KeyDer, not_encrypted}]),
-
-        %% Write files
         ok = file:write_file(CertFile, CertPem),
-        ok = file:write_file(KeyFile, KeyPem),
-
-        %% Set restrictive permissions on key file
-        file:change_mode(KeyFile, 8#600),
-        ok
+        case mycelium_file:write_secure(KeyFile, KeyPem) of
+            ok                 -> ok;
+            {error, _} = Error -> Error
+        end
     catch
         _:Reason ->
             {error, {file_write_failed, Reason}}
     end.
 
 %% @private
-%% Format datetime for X.509 UTCTime (YYMMDDHHMMSSZ).
-format_time({{Year, Month, Day}, {Hour, Min, Sec}}) ->
-    %% UTCTime uses 2-digit year
+%% Build an X.509 validity bound. Years < 2050 use UTCTime
+%% (YYMMDDHHMMSSZ); years >= 2050 use GeneralizedTime
+%% (YYYYMMDDHHMMSSZ) per RFC 5280 4.1.2.5.
+validity_time({{Year, _, _}, _} = DateTime) when Year >= 2050 ->
+    {generalTime, format_general_time(DateTime)};
+validity_time(DateTime) ->
+    {utcTime, format_utc_time(DateTime)}.
+
+format_utc_time({{Year, Month, Day}, {Hour, Min, Sec}}) ->
     Y = Year rem 100,
     lists:flatten(io_lib:format("~2..0w~2..0w~2..0w~2..0w~2..0w~2..0wZ",
                                 [Y, Month, Day, Hour, Min, Sec])).
+
+format_general_time({{Year, Month, Day}, {Hour, Min, Sec}}) ->
+    lists:flatten(io_lib:format("~4..0w~2..0w~2..0w~2..0w~2..0w~2..0wZ",
+                                [Year, Month, Day, Hour, Min, Sec])).
 
 %% @private
 %% Add days to a datetime.
