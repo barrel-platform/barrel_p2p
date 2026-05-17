@@ -33,7 +33,10 @@
     test_whereis_name/1,
     test_send/1,
     test_send_not_found/1,
-    test_via_gen_server/1
+    test_via_gen_server/1,
+    %% Service proxy event wiring
+    test_service_proxy_reaps_on_remote_service_down/1,
+    test_service_proxy_ignores_unrelated_service_down/1
 ]).
 
 %%====================================================================
@@ -64,7 +67,9 @@ groups() ->
             test_whereis_name,
             test_send,
             test_send_not_found,
-            test_via_gen_server
+            test_via_gen_server,
+            test_service_proxy_reaps_on_remote_service_down,
+            test_service_proxy_ignores_unrelated_service_down
         ]}
     ].
 
@@ -281,4 +286,40 @@ test_via_gen_server(_Config) ->
     %% Verify it's unregistered after stopping
     timer:sleep(50),
     ?assertEqual(undefined, mycelium:whereis_name(Name)),
+    ok.
+
+%% A service_down event for the proxy's own service must terminate
+%% the proxy. The producer at mycelium_registry emits the 4-tuple
+%% form on the service event bus; the proxy used to subscribe to the
+%% hyparview bus and match a 3-tuple, so dead proxies never reaped.
+test_service_proxy_reaps_on_remote_service_down(_Config) ->
+    Name = proxy_reap_svc,
+    Target = 'fake_target@host',
+    {ok, Proxy} = mycelium_proxy_sup:start_proxy(Name, Target),
+    Ref = monitor(process, Proxy),
+    mycelium_service_events:notify({service_down, Name, Target, killed}),
+    receive
+        {'DOWN', Ref, process, Proxy, _} -> ok
+    after 1000 ->
+        ct:fail("Proxy did not terminate on service_down")
+    end,
+    ok.
+
+%% A service_down event for a different service must NOT terminate
+%% the proxy.
+test_service_proxy_ignores_unrelated_service_down(_Config) ->
+    Name = proxy_keep_svc,
+    Other = some_other_svc,
+    Target = 'fake_target@host',
+    {ok, Proxy} = mycelium_proxy_sup:start_proxy(Name, Target),
+    Ref = monitor(process, Proxy),
+    mycelium_service_events:notify({service_down, Other, Target, killed}),
+    receive
+        {'DOWN', Ref, process, Proxy, _} ->
+            ct:fail("Proxy terminated on unrelated service_down")
+    after 200 ->
+        ok
+    end,
+    true = is_process_alive(Proxy),
+    mycelium_proxy_sup:stop_proxy(Name),
     ok.

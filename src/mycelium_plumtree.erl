@@ -256,8 +256,10 @@ handle_info({mycelium_event, {peer_up, Node}}, State) ->
     State2 = ensure_eager(Node, State),
     {noreply, State2};
 
-handle_info({mycelium_event, {peer_down, Node}}, State) ->
-    %% Peer left - remove from all lists
+handle_info({mycelium_event, {peer_down, Node, _Reason}}, State) ->
+    %% Peer left - remove from all lists. mycelium_hyparview emits the
+    %% 3-tuple form unconditionally; matching only on the 2-tuple let
+    %% the broadcast tree keep dead peers in eager/lazy.
     EagerPeers = State#state.eager_peers -- [Node],
     LazyPeers = State#state.lazy_peers -- [Node],
     {noreply, State#state{eager_peers = EagerPeers, lazy_peers = LazyPeers}};

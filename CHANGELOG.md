@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `mycelium_plumtree` removes peers from both eager and lazy lists on
+  `peer_down`. The handler clause silently dropped events because of
+  an arity mismatch with the producer.
+- `mycelium_service_proxy` subscribes to the service event bus and
+  matches the real `service_down` shape; dead remote proxies are
+  reaped instead of leaking.
+
 ### Security
 - Reject TOFU re-pin attempts. When a node is already pinned, the
   handshake refuses any peer presenting a different Ed25519 key,

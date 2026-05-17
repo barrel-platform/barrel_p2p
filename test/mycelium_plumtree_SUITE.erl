@@ -19,7 +19,8 @@
     test_message_deduplication/1,
     test_stats/1,
     test_broadcast_with_tag/1,
-    test_multiple_subscribers/1
+    test_multiple_subscribers/1,
+    test_peer_down_removes_from_eager_and_lazy/1
 ]).
 
 %%====================================================================
@@ -37,7 +38,8 @@ groups() ->
             test_message_deduplication,
             test_stats,
             test_broadcast_with_tag,
-            test_multiple_subscribers
+            test_multiple_subscribers,
+            test_peer_down_removes_from_eager_and_lazy
         ]}
     ].
 
@@ -192,6 +194,26 @@ test_multiple_subscribers(_Config) ->
 
     Sub1 ! stop,
     Sub2 ! stop,
+    ok.
+
+%% Verifies that a peer_down event from mycelium_hyparview removes
+%% the node from both eager and lazy peer lists. The hyparview event
+%% is a 3-tuple `{peer_down, Node, Reason}'; matching only on the
+%% 2-tuple form silently dropped the event.
+test_peer_down_removes_from_eager_and_lazy(_Config) ->
+    Pid = whereis(mycelium_plumtree),
+    Fake = 'phantom@host',
+    Pid ! {mycelium_event, {peer_up, Fake}},
+    %% Synchronise on the gen_server to drain the mailbox.
+    _ = sys:get_state(Pid),
+    StatsUp = mycelium_plumtree:get_stats(),
+    Pid ! {mycelium_event, {peer_down, Fake, shutdown}},
+    _ = sys:get_state(Pid),
+    StatsDown = mycelium_plumtree:get_stats(),
+    ?assertEqual(
+        maps:get(eager_peers, StatsUp) - 1,
+        maps:get(eager_peers, StatsDown)
+    ),
     ok.
 
 %%====================================================================

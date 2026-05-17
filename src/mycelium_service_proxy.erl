@@ -53,8 +53,10 @@ relay(Name, TargetNode, Request) ->
 %%====================================================================
 
 init([Name, TargetNode]) ->
-    %% Subscribe to service events for cleanup
-    mycelium:subscribe(self()),
+    %% Subscribe to the service event bus so we hear when the remote
+    %% service dies. mycelium:subscribe/1 routes to HyParView events,
+    %% which never carry service_* notifications.
+    mycelium:subscribe_services(self()),
     {ok, #state{name = Name, target_node = TargetNode}}.
 
 handle_call(Request, _From, #state{name = Name, target_node = Target} = State) ->
@@ -65,16 +67,22 @@ handle_cast(Request, #state{name = Name, target_node = Target} = State) ->
     forward_cast(Name, Target, Request),
     {noreply, State}.
 
-handle_info({mycelium_event, {service_down, Name, _Reason}}, #state{name = Name} = State) ->
-    %% Service died on remote node, proxy should terminate
+handle_info(
+    {mycelium_service_event, {service_down, Name, _Node, _Reason}},
+    #state{name = Name} = State
+) ->
+    %% Service died on remote node, proxy should terminate.
     {stop, normal, State};
 
-handle_info({mycelium_event, _}, State) ->
-    %% Ignore other events
+handle_info({mycelium_service_event, _}, State) ->
+    %% Other service events are not relevant to this proxy.
     {noreply, State};
 
-handle_info({'$mycelium_registry_sync', {service_down, Name, _Reason}}, #state{name = Name} = State) ->
-    %% Service died on remote node (via sync broadcast)
+handle_info(
+    {'$mycelium_registry_sync', {service_down, Name, _Reason}},
+    #state{name = Name} = State
+) ->
+    %% Internal sync-broadcast path; kept as a sibling channel.
     {stop, normal, State};
 
 handle_info(_Info, State) ->
