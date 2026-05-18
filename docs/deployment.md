@@ -1,186 +1,265 @@
 # Deployment
 
-Practical guidance for running mycelium in production. Pair with
-[`getting-started.md`](getting-started.md) for the initial bring-up.
+Practical guidance for running a mycelium cluster in production.
+Pair this with [getting-started.md](getting-started.md) for the
+initial bring-up and [troubleshooting.md](troubleshooting.md) for
+the symptoms-and-fixes table.
 
-## Sizing
+The structure: sizing, network, secrets, configuration, logging,
+shutdown, rotation, and a final checklist.
 
-HyParView keeps a bounded **active view** of size `active_size` (default
-5) and a **passive view** of size `passive_size` (default 30). The
-active view is what gossip traverses; passive members are warm spares.
+## Sizing the cluster
 
-`active_size` need not grow with the cluster: HyParView is designed so
-each node keeps an O(log n) active view and the gossip tree (Plumtree)
-covers the whole cluster from any starting point. As a rule of thumb:
+The two parameters that matter most are `active_size` and
+`passive_size`. The active view is the small bounded set of peers
+each node currently exchanges gossip with; the passive view is a
+warm-spare cache of additional known peers.
 
-| Cluster size | Suggested `active_size` | Suggested `passive_size` |
-|--------------|-------------------------|--------------------------|
-| 3–10         | 3                       | 10                       |
-| 10–50        | 5 (default)             | 30 (default)             |
-| 50–200       | 6                       | 40                       |
-| 200+         | 7                       | 60                       |
+The HyParView protocol does not require the active view to grow
+with the cluster. Five peers per node is enough to cover a cluster
+of a few thousand. The trade-off is that a slightly larger active
+view reduces the number of hops a broadcast takes, at the cost of
+more direct connections to maintain.
+
+Suggested starting points:
+
+| Cluster size | `active_size` | `passive_size` |
+|--------------|---------------|----------------|
+| 3 to 10      | 3             | 10             |
+| 10 to 50     | 5 (default)   | 30 (default)   |
+| 50 to 200    | 6             | 40             |
+| 200+         | 7             | 60             |
 
 `Pid ! Msg` works to any cluster member regardless of active-view
-membership; `mycelium_dist_gc` reaps the resulting idle dist channels.
+membership. The dist GC reaps the resulting idle dist channels,
+so the per-node connection count stays bounded even if your
+application talks to many peers ad hoc.
 
-Set per node via sys.config:
+To set these:
 
 ```erlang
 {mycelium, [
     {active_size, 5},
     {passive_size, 30}
-]}
+]}.
 ```
 
 ## Network surface
 
-| Port purpose                | Default | Protocol | Direction       |
-|-----------------------------|---------|----------|-----------------|
-| QUIC distribution           | `listen_port` env (or auto-assign) | UDP | Bidirectional, peer-to-peer |
-| Prometheus scrape (optional)| 9568    | TCP      | Inbound from your scraper |
+A mycelium node opens one UDP socket. That is the whole
+externally-visible network footprint, aside from any metrics
+exporter you wire in.
 
-No EPMD. No separate TCP control channel. Open one UDP port per node;
-the QUIC handshake handles encryption, multiplexing, and connection
-migration.
+| Port purpose                  | Default                | Protocol | Direction                  |
+|-------------------------------|------------------------|----------|----------------------------|
+| QUIC distribution             | `listen_port` env or 0 | UDP      | Bidirectional, peer-to-peer |
+| Prometheus scrape (optional)  | 9568                   | TCP      | Inbound from your scraper   |
 
-## TLS material and secrets
+No EPMD. No separate TCP control channel. The QUIC handshake
+handles encryption, multiplexing, and connection migration on the
+single UDP port.
 
-| Asset                                       | Location                              | Sensitivity                |
-|---------------------------------------------|---------------------------------------|----------------------------|
-| QUIC node certificate                       | `quic_cert_dir/node.crt` (default `data/quic/`) | Public; per-node           |
-| QUIC node private key                       | `quic_cert_dir/node.key`              | **Private** — `chmod 0600` |
-| Ed25519 identity public key                 | `key_dir/pub.key`                     | Public; advertised in handshake |
-| Ed25519 identity private key                | `key_dir/priv.key`                    | **Private** — `chmod 0600` |
-| Trusted peer keys (TOFU / pinned)           | `key_dir/trusted/<node>.pub`          | Public; reviewable         |
-| Erlang dist cookie                          | `mycelium.dist_cookie` env, default `mycelium` | **Private** — pre-shared secret |
+For production, pin the dist port (do not leave it at `0`):
 
-Recommended file mode for the directories: `0700` owner-only.
+```erlang
+{mycelium, [{listen_port, 9100}]}.
+```
 
-Both directories can be regenerated on a fresh boot; lose the QUIC key
-and peers will reject the new cert until you re-pin (or run in `tofu`
-mode). Lose the Ed25519 private key and the node loses its identity
-across reconnects.
+Open that port between every pair of cluster nodes in your
+firewall.
 
-## Configuration knobs
+## Secrets and on-disk material
 
-Set under `{mycelium, [...]}` in sys.config:
+A node carries four pieces of material on disk. They are listed
+here with their default location and sensitivity:
 
-| Key                            | Default       | Purpose                                                  |
-|--------------------------------|---------------|----------------------------------------------------------|
-| `listen_port`                  | `0` (random)  | UDP port for QUIC dist                                   |
-| `active_size`                  | `5`           | HyParView active-view bound                              |
-| `passive_size`                 | `30`          | HyParView passive-view bound                             |
-| `shuffle_period`               | `10000`       | ms between shuffle rounds                                |
-| `auth_enabled`                 | `false`       | Turn on Ed25519 challenge-response                       |
-| `auth_trust_mode`              | `tofu`        | `tofu` accepts unknown keys on first contact; `strict` does not |
-| `auth_handshake_timeout`       | `10000`       | ms before an in-progress auth gives up                   |
-| `cookie_only_nodes`            | `[]`          | Whitelist of patterns exempt from Ed25519 (test probes)  |
-| `dist_cookie`                  | `mycelium`    | Erlang cookie applied at app start                       |
-| `dist_gc_sweep_period_ms`      | `60000`       | Idle GC sweep cadence                                    |
-| `dist_gc_min_age_ms`           | `300000`      | Minimum channel age before GC may reap                   |
-| `discovery_backends`           | `[]`          | List of `{Module, Args}` for the discovery chain         |
+| Asset                                             | Default location                                | Sensitivity                                       |
+|---------------------------------------------------|-------------------------------------------------|--------------------------------------------------|
+| QUIC node certificate                             | `data/quic/node.crt` (`quic_cert_dir` env)      | Public; per-node                                   |
+| QUIC node private key                             | `data/quic/node.key`                            | **Private**; chmod 0600                            |
+| Ed25519 identity public key                       | `data/keys/node.pub` (`auth_key_dir` env)       | Public; advertised in handshake                    |
+| Ed25519 identity private key                      | `data/keys/node.key`                            | **Private**; chmod 0600                            |
+| Trusted peer keys                                 | `data/keys/trusted/<node>.pub`                  | Public; reviewable                                 |
+| Erlang dist cookie                                | `mycelium.dist_cookie` env (default `mycelium`) | **Private**; pre-shared secret                     |
 
-The dist GC has no enable/disable flag: it is a load-bearing part of
-the decoupled design. See [`internals.md`](internals.md).
+Recommended file mode for the parent directories: 0700 (owner
+only).
 
-## Log ingestion
+Two recovery properties worth knowing:
 
-Mycelium logs to standard `logger`. Important callsites are listed in
-[`troubleshooting.md`](troubleshooting.md). For ingestion, no special
-handler is needed; any structured-logger formatter that emits JSON or
-logfmt will surface the messages.
+- Both private keys can be regenerated on a fresh boot. Lose the
+  QUIC private key and your peers will reject the new certificate
+  until you re-pin (or run in `tofu` mode). Lose the Ed25519
+  private key and the node loses its identity across reconnects.
+- The trust store is rebuildable from the peers' public keys; you
+  do not need to back it up if you can re-derive it.
 
-Levels used:
+Mycelium writes new secrets atomically (write to a temp file with
+0600 perms, then rename). A crash during a key rotation will not
+leave a permissive transient on disk; the on-disk file is either
+the old one or the new one, never something in between.
 
-- `error` — operational failure (cert generation, listener bind).
-- `warning` — recoverable anomaly worth a human glance (key mismatch,
-  discovery lookup miss).
-- `info` — lifecycle (app start/stop).
-- `debug` — protocol-level traces; off in production by default.
+## Configuration reference
+
+Every key below goes under `{mycelium, [...]}` in `sys.config`.
+
+| Key                              | Default          | Purpose                                                                  |
+|----------------------------------|------------------|--------------------------------------------------------------------------|
+| `listen_port`                    | `0` (random)     | UDP port for QUIC dist                                                    |
+| `active_size`                    | `5`              | HyParView active-view bound                                              |
+| `passive_size`                   | `30`             | HyParView passive-view bound                                             |
+| `arwl`                           | `6`              | Active random walk length (join propagation)                              |
+| `prwl`                           | `3`              | Passive random walk length                                                |
+| `shuffle_length`                 | `8`              | Peers exchanged per shuffle round                                         |
+| `shuffle_period`                 | `10000` ms       | Time between shuffle rounds                                               |
+| `max_fail_count`                 | `5`              | Failures before a peer is demoted to passive                              |
+| `base_backoff_ms`                | `1000`           | Initial backoff after a failure                                           |
+| `passive_max_age_ms`             | `300000`         | Maximum age before passive entries are dropped                            |
+| `auth_enabled`                   | `true`           | Ed25519 challenge-response between peers                                  |
+| `auth_trust_mode`                | `tofu`           | `tofu` or `strict`                                                        |
+| `auth_handshake_timeout`         | `10000` ms       | Total budget for the Ed25519 handshake                                    |
+| `auth_timestamp_window`          | `30000` ms       | Acceptable peer wall-clock skew                                           |
+| `cookie_only_nodes`              | `[]`             | Patterns of node atoms exempt from Ed25519                                |
+| `dist_cookie`                    | `mycelium`       | Erlang dist cookie applied at app start                                   |
+| `dist_gc_sweep_period_ms`        | `60000`          | Idle GC sweep cadence                                                     |
+| `dist_gc_min_age_ms`             | `300000`         | Minimum age before GC may reap a channel                                  |
+| `pending_timeout_ms`             | `30000`          | Backstop for HyParView pending entries (silent peers)                     |
+| `router_max_in_flight`           | `256`            | Cap on concurrent overlay route-request handlers                          |
+| `proxy_cast_max_in_flight`       | `32`             | Per-proxy cap on concurrent overlay-cast helpers                          |
+| `route_cache_sweep_period_ms`    | `60000`          | Periodic sweep of stale route-cache entries                               |
+| `contact_nodes`                  | `[]`             | Bootstrap node atoms tried on application start                           |
+| `discovery_backends`             | (default chain)  | List of `{Module, Args}` for the discovery chain                          |
+
+The dist GC has no enable/disable flag: the decoupled-from-active-view
+design depends on it (`Pid ! Msg` to any peer opens an ad-hoc
+channel; the GC keeps the overall connection count bounded). The
+sweep cadence and minimum age are tunable.
+
+## Logging
+
+Mycelium logs to standard `logger`. The levels we use:
+
+- `error` for operational failure (cert generation, listener bind
+  failure, keypair load mismatch).
+- `warning` for recoverable anomalies worth a human glance (key
+  mismatch, discovery lookup miss, pending-entry backstop fire).
+- `info` for lifecycle (app start/stop).
+- `debug` for protocol-level traces; off in production by default.
+
+No special handler is required. Any structured-logger formatter
+that emits JSON or logfmt will surface the messages.
+
+The important log call-sites are listed in
+[troubleshooting.md](troubleshooting.md); use it as a grep
+reference when investigating an alert.
 
 ## Graceful shutdown
 
-The expected order for stopping a node cleanly:
+The clean shutdown order is three steps:
 
-1. `mycelium:leave/0` — sends HyParView `disconnect` to every active
-   peer so they move you to passive view immediately instead of
-   waiting for a `nodedown` failure.
-2. `application:stop(mycelium)` — tears down the supervision tree.
-3. `init:stop/0` — terminates the VM.
+1. `mycelium:leave/0`. Sends a HyParView `disconnect` to every
+   active peer so they move you to passive view immediately
+   instead of waiting for a `nodedown` failure.
+2. `application:stop(mycelium)`. Tears down the supervision tree
+   in reverse order; the dist GC will reap the remaining
+   channels from the *other* side over the next sweep window.
+3. `init:stop/0`. Terminates the VM.
 
-The dist GC will then reap any leftover channels on the surviving
-peers within `dist_gc_min_age_ms`.
-
-Skipping step 1 is safe but causes a brief failure-shaped churn event
-on every peer that had you in active view (`peer_down` with reason
-`nodedown`).
+Skipping step 1 is safe but causes a brief failure-shaped churn
+event on every peer that had you in active view (`peer_down` with
+reason `nodedown`). For an orchestrator-driven restart, step 1
+is worth the few extra milliseconds.
 
 ## Rotation runbook
 
-`mycelium_rotate` handles both QUIC TLS material and Ed25519 identity
-keys. Each call atomically backs the old material up under
-`<dir>/backups/<UTC-timestamp>/` and returns the backup path.
+`mycelium_rotate` handles both QUIC TLS material and Ed25519
+identity keys. Each call atomically backs the old material up
+under `<dir>/backups/<UTC-timestamp>/`.
 
-### Rotate the Ed25519 identity
+### Identity rotation (no restart needed)
 
-Takes effect on the next handshake. No restart needed.
+Takes effect on the next handshake:
 
 ```erlang
 {ok, Info} = mycelium_rotate:rotate_identity().
-%% Info = #{cert_file := PubPath,
-%%          key_file := PrivPath,
-%%          backup_dir := BackupPath,
+%% Info = #{key_file        := PrivPath,
+%%          cert_file       := PubPath,
+%%          backup_dir      := BackupPath,
 %%          restart_required := false}
 ```
 
 Caveats:
 
-- Peers running in **strict** trust mode will reject the new identity
-  until you re-pin it (manually distribute the new public key, or use
-  `mycelium_dist_keys:store_key/2` on each peer).
-- Peers running in **tofu** mode will pin the new identity on first
-  handshake. Existing trust entries for the old key remain in their
-  store and should be cleaned up if you want to disallow rollback.
-- The logged warning includes the new SHA-256 fingerprint; record it.
+- **Strict peers** will reject the new identity until you have
+  provisioned the new public key on each of them.
+- **TOFU peers** will pin the new identity on first handshake.
+  Their old pin remains in the trust store; clean it up if you
+  want to prevent rollback.
+- The log line on a successful rotation includes the new
+  fingerprint. Record it for audit.
 
-### Rotate the QUIC TLS cert
+### Certificate rotation (restart required)
 
-Requires a node restart for the listener to load the new credentials.
+QUIC TLS material is loaded at listener start. Rotating requires
+a restart:
 
-```erlang
-{ok, Info} = mycelium_rotate:rotate_cert().
-%% Info#{restart_required := true}
-```
+1. `mycelium:leave/0` so peers move you to passive view promptly.
+2. `mycelium_rotate:rotate_cert/0`.
+3. `application:stop(mycelium)`; `init:stop/0`.
+4. Boot the node back up; the listener picks up the new cert.
 
-Recommended sequence per node:
-
-1. Drain by calling `mycelium:leave/0` so peers move you to passive
-   view promptly.
-2. Call `mycelium_rotate:rotate_cert/0`.
-3. `application:stop(mycelium)` followed by `init:stop/0`.
-4. Bring the node back up; it loads the new cert at listen time.
-
-Peers will see a transient `peer_down` event and re-establish on next
-demand. The Ed25519 identity is independent of the cert and is not
-touched.
+Peers see one `peer_down` and re-establish on next demand. The
+Ed25519 identity is independent of the cert; it is not touched
+by this path.
 
 ### Rollback
 
-The backup directory contains the previous `node.crt`/`node.key` (or
-`node.pub`/`node.key` for identity). Copy them back over the active
-files manually; for cert rotations, restart the node after the swap.
+The backup directory keeps the previous `node.crt` / `node.key`
+(cert rotation) or `node.pub` / `node.key` (identity rotation).
+Copy them back over the active files. For cert rotations,
+restart the node after the swap.
 
 ## Capacity planning checklist
 
-- One UDP port per node open in firewalls.
-- Discovery directory shared across hosts (file backend) or DNS records
-  in place (DNS backend).
-- `active_size` and `passive_size` sized to cluster.
-- `auth_enabled=true` in any environment that doesn't trust the network.
-- `dist_cookie` rotated to a high-entropy secret.
-- Cert/key directories on persistent storage backed up.
+A quick checklist before promoting a cluster to production:
+
+- One UDP port pinned and open between every node pair in the
+  firewall.
+- Discovery configured: shared directory for the file backend, or
+  DNS records for the DNS backend, or static topology for the
+  static backend.
+- `active_size` and `passive_size` sized to the cluster.
+- `auth_enabled = true` (the default).
+- `dist_cookie` rotated to a high-entropy secret. The default
+  cookie `mycelium` is a placeholder.
+- Cert and key directories on persistent storage; rotation
+  backup directory included in your backup policy.
 - `instrument` exporter wired to your monitoring backend.
 - Alerts on:
-  - sustained `mycelium.dist.auth.attempts{outcome=fail}` rate
-  - `mycelium.hyparview.peer_down{reason=nodedown}` spikes
-  - `mycelium.dist_gc.reap` rate vs steady-state baseline
+  - `mycelium.dist.auth.attempts{outcome=fail}` sustained rate.
+  - `mycelium.hyparview.peer_down{reason=nodedown}` spikes.
+  - `mycelium.dist_gc.reap` rate vs steady-state baseline.
+  - `mycelium.dist.auth.duration_ms` p95 trending up.
+- A documented runbook for cert rotation and identity rotation.
+- A documented procedure for adding and removing a node from the
+  cluster.
+
+## Containers and orchestrators
+
+Two notes for containerised deployments:
+
+- Mycelium needs persistent storage for `data/quic/` and
+  `data/keys/`. On Kubernetes, mount a PersistentVolumeClaim
+  per pod. On docker-compose, mount a named volume per service.
+  Re-generating these on every restart is technically supported
+  (TOFU peers will simply re-pin), but it defeats most of the
+  point of Ed25519.
+- Discovery: on Kubernetes, use a Service with a DNS name; on
+  docker-compose, use a static topology file (see
+  `docker/cluster-topology.config` in the project tree); on bare
+  metal, share the file-discovery directory between hosts.
+
+The docker-compose stack under `docker/` is the canonical
+reference for a small, fully-authenticated cluster. Read its
+`docker-compose-auth.yml` and `cluster-topology.config` if you
+want to mirror the pattern.

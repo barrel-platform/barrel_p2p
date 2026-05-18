@@ -1,65 +1,109 @@
 # Authentication
 
-Mycelium uses Ed25519 public-key cryptography to authenticate peer connections. This prevents unauthorized nodes from joining the cluster and protects against man-in-the-middle attacks.
+Mycelium authenticates every dist connection with Ed25519
+signatures. The authentication runs after the QUIC TLS handshake
+and before Erlang's dist handshake, so two nodes that have not
+proved possession of the right private key never reach the cookie
+exchange.
 
-## Overview
+This document covers what the protocol does, how trust works in
+practice, and how you operate a cluster (provisioning, rotation,
+recovery).
 
-When two nodes connect, they perform a challenge-response handshake:
+## Why a second layer of identity
+
+The QUIC TLS handshake gives us an encrypted transport, but the
+certificate is self-signed. There is no certificate authority
+mycelium expects you to trust, and a fresh node generates its own
+TLS material on first boot. So the TLS layer establishes a secure
+channel, but it does not say *who* is on the other side.
+
+The Ed25519 layer adds that. Each node has a long-lived Ed25519
+keypair stored on disk. The public key is the node's identity;
+the private key is what the node uses to prove that identity.
+Across cert rotation, across reboots, across TLS material
+regeneration, the Ed25519 keypair persists. Peers trust each
+other by pinning each other's public key under the node atom.
+
+The cluster also retains the standard Erlang dist cookie. With
+Ed25519 enabled, the cookie is a defense-in-depth layer; with
+Ed25519 disabled (which we do not recommend in production), it is
+the only authentication that remains.
+
+## The handshake
+
+When two nodes connect, immediately after the QUIC TLS handshake
+finishes, each side opens one unidirectional QUIC stream toward
+the other. The four streams (two per side, one for sending, one
+for receiving) carry the auth protocol:
 
 ```
-Node A (initiator)                    Node B (acceptor)
-       │                                     │
-       ├─── HELLO(pubkey_A, node_A) ────────►│
-       │                                     │
-       │◄── HELLO(pubkey_B, node_B) ─────────┤
-       │                                     │
-       ├─── CHALLENGE(nonce_A) ─────────────►│
-       │                                     │
-       │◄── CHALLENGE(nonce_B) ──────────────┤
-       │                                     │
-       ├─── RESPONSE(sign(nonce_B)) ────────►│
-       │                                     │
-       │◄── RESPONSE(sign(nonce_A)) ─────────┤
-       │                                     │
-       ├─── OK ─────────────────────────────►│
-       │                                     │
-                   Authenticated
+Node A (client)                          Node B (server)
+      |                                        |
+      |--HELLO(node_A, pubkey_A)-------------->|
+      |<-HELLO(node_B, pubkey_B)---------------|
+      |                                        |
+      |--CHALLENGE(nonce_A, wall_ts_A)-------->|
+      |<-CHALLENGE(nonce_B, wall_ts_B)---------|
+      |                                        |
+      |--RESPONSE(sig over nonce_B,ts_B,pub_A)>|
+      |<-RESPONSE(sig over nonce_A,ts_A,pub_B)-|
+      |                                        |
+      |--OK----------------------------------->|
+      |<-OK------------------------------------|
+                    |
+                    v
+           Erlang dist handshake
 ```
 
-Each node proves it owns the private key corresponding to its public key by signing the peer's challenge.
+Two design points are worth knowing.
 
-## Trust Modes
+**The signed message includes the responder's own public key.**
+A signature over `<<nonce, timestamp, responder_pubkey>>` is bound
+to the identity the responder claims. A signature from peer X
+cannot be replayed against peer Y to impersonate X, because the
+message X signs is different from the one Y would.
 
-Mycelium supports two trust modes:
+**The window check uses monotonic time.** The wall timestamp goes
+on the wire so peers can sanity-check each other's clocks, but the
+responder's own duration check uses `erlang:monotonic_time/1`. An
+NTP step during the handshake will not cause a spurious failure.
 
-### TOFU (Trust On First Use) - Default
+## Trust modes
 
-In TOFU mode, keys are automatically trusted on first contact:
+The interesting decision happens on the server side after HELLO:
+"have I seen this peer before, and does the key it just presented
+match the one I have on file?"
 
-1. Node A connects to Node B for the first time
-2. Node B stores Node A's public key
-3. Future connections from Node A must use the same key
-4. If a different key is presented, connection is rejected
+| Scenario                | TOFU mode                            | Strict mode                |
+|-------------------------|--------------------------------------|----------------------------|
+| No pin recorded         | accept, pin the presented key        | reject (`untrusted_key`)   |
+| Pin matches presented   | accept                               | accept                     |
+| Pin differs from presented | reject (`key_mismatch`)           | reject (`key_mismatch`)    |
+
+The "pin differs" case is rejected **in both modes**. TOFU does
+not silently re-pin, no matter what mode the peer is in. Once a
+peer is recorded, you have to remove the pin explicitly before a
+different key for the same node atom can be accepted.
+
+### TOFU (default)
 
 ```erlang
 {mycelium, [
     {auth_enabled, true},
-    {auth_trust_mode, tofu}  %% Default
+    {auth_trust_mode, tofu}
 ]}
 ```
 
-**Pros:**
-- Zero configuration required
-- Easy cluster bootstrap
-- Similar to SSH's known_hosts
+TOFU is the right default for most clusters. Joining a node is
+zero-configuration, and the first-contact window is small in
+practice: a malicious peer would have to outrace a legitimate one
+to the first handshake. In a controlled environment, that
+window is acceptable; the trade-off is operational simplicity.
 
-**Cons:**
-- First connection is vulnerable to MITM
-- No pre-verification of node identity
+The same property powers SSH's `known_hosts` model.
 
-### Strict Mode
-
-In strict mode, all peer keys must be pre-registered:
+### Strict
 
 ```erlang
 {mycelium, [
@@ -68,292 +112,325 @@ In strict mode, all peer keys must be pre-registered:
 ]}
 ```
 
-Unknown nodes are rejected with `untrusted_key` error.
+Strict mode never auto-pins. Every peer the cluster needs to
+accept must already have its public key on disk under
+`data/keys/trusted/<node-atom>.pub`. This rules out the
+first-contact window entirely; the price is that you must
+provision keys before nodes can connect.
 
-**Pros:**
-- No trust-on-first-use vulnerability
-- Full control over cluster membership
-- Required for high-security environments
+Strict mode is the right choice for clusters spanning untrusted
+network segments, for compliance-driven environments, or any
+context where the operator does not want a TOFU window to exist.
 
-**Cons:**
-- Requires key distribution infrastructure
-- More operational overhead
-
-## Key Storage
-
-Keys are stored in the `auth_key_dir` directory (default: `data/keys/`):
+## Where credentials live on disk
 
 ```
 data/keys/
-├── node.key          # This node's private key (32 bytes)
-├── node.pub          # This node's public key (32 bytes)
-└── trusted/          # Trusted peer public keys
-    ├── node1@host1.pub
+├── node.pub                      # 32 bytes, the node's Ed25519 public key
+├── node.key                      # 32 bytes, the private key (chmod 0600)
+└── trusted/
+    ├── node1@host1.pub           # 32 bytes, raw public key
     ├── node2@host2.pub
-    └── node3@host3.pub
+    └── ...
 ```
 
-### Key Generation
+The file format is the raw 32-byte public key. No PEM headers, no
+base64. This matches the on-the-wire shape; the cluster does not
+have a separate "import" step beyond placing the file.
 
-Keys are auto-generated on first start:
+A few invariants the runtime preserves:
 
-```erlang
-%% Keys generated automatically when mycelium starts
-%% Stored in data/keys/node.key and data/keys/node.pub
-```
+- The private key file is created with mode 0600. The helper that
+  writes secret material (`mycelium_file:write_secure/2`) chmods
+  the temporary file *before* any plaintext bytes are written, so
+  a co-tenant cannot race the write.
+- Writes go through a tmp file and rename, so a crash mid-write
+  never leaves a half-written pin that the next boot would
+  silently drop.
+- The keypair is consistency-checked on load: the public key on
+  disk must derive from the private key on disk. If they
+  disagree (because a previous rotation crashed mid-flight), the
+  load returns `{error, keypair_mismatch}` and the node refuses
+  to start until the operator decides which side is correct.
 
-To manually generate a keypair:
+## Provisioning
 
-```erlang
-{PubKey, PrivKey} = mycelium_dist_auth:generate_keypair().
-%% PubKey = <<32 bytes>>
-%% PrivKey = <<32 bytes>>
-```
+### TOFU: nothing to do
 
-### Exporting Your Public Key
+In TOFU mode you do not provision anything. Start the cluster;
+the first handshake of each pair pins both sides.
 
-To share your node's public key with other nodes:
+### Strict: distribute public keys ahead of time
 
-```erlang
-%% Get public key as binary
-{ok, PubKey} = mycelium_dist_auth:get_public_key().
+The minimum to get a strict cluster up is to copy every node's
+public key to every other node's `trusted/` directory.
 
-%% Display as hex for manual sharing
-io:format("~s~n", [binary:encode_hex(PubKey)]).
-
-%% Or copy the file directly
-%% data/keys/node.pub
-```
-
-## Key Provisioning (Strict Mode)
-
-### Method 1: File-Based Provisioning
-
-Place peer public keys in the `trusted/` directory before starting:
+Step 1: generate each node's keypair (the simplest way is to
+boot once and stop):
 
 ```bash
-# On node1, copy node2's public key
-mkdir -p data/keys/trusted
-cp /secure/transfer/node2@host2.pub data/keys/trusted/
-
-# File must be named: <nodename>.pub
-# Contents: 32-byte raw public key
+erl -sname node1 -eval 'application:ensure_all_started(mycelium), init:stop().'
 ```
 
-Keys are loaded on startup from `data/keys/trusted/*.pub`.
-
-### Method 2: Runtime Registration
-
-Register keys programmatically:
-
-```erlang
-%% Get peer's public key (from secure channel)
-PeerPubKey = <<...32 bytes...>>.
-
-%% Register permanently (persisted to disk)
-ok = mycelium_dist_keys:store_key('node2@host2', PeerPubKey).
-
-%% Verify registration
-{ok, PeerPubKey} = mycelium_dist_keys:lookup_key('node2@host2').
-```
-
-### Method 3: Provisioning Script
-
-Create a provisioning script for cluster setup:
-
-```erlang
-#!/usr/bin/env escript
-%% provision_keys.escript
-
-main([KeyDir, NodeList]) ->
-    Nodes = string:tokens(NodeList, ","),
-    lists:foreach(fun(NodeStr) ->
-        Node = list_to_atom(NodeStr),
-        PubKeyFile = NodeStr ++ ".pub",
-        case file:read_file(PubKeyFile) of
-            {ok, PubKey} when byte_size(PubKey) =:= 32 ->
-                TrustedFile = filename:join([KeyDir, "trusted", PubKeyFile]),
-                ok = filelib:ensure_dir(TrustedFile),
-                ok = file:write_file(TrustedFile, PubKey),
-                io:format("Registered ~s~n", [NodeStr]);
-            _ ->
-                io:format("Failed to read ~s~n", [PubKeyFile])
-        end
-    end, Nodes).
-```
-
-## API Reference
-
-### mycelium_dist_keys
-
-| Function | Description |
-|----------|-------------|
-| `store_key(Node, PubKey)` | Store a peer's public key (permanent) |
-| `store_key_if_new(Node, PubKey)` | Store only if no key exists (TOFU) |
-| `lookup_key(Node)` | Get stored public key for a node |
-| `delete_key(Node)` | Remove a trusted key |
-| `is_trusted(Node, PubKey)` | Check if key matches stored key |
-| `list_trusted()` | List all trusted peer records |
-| `set_trust_mode(Mode)` | Set trust mode (strict/tofu) at runtime |
-| `get_trust_mode()` | Get current trust mode |
-
-### mycelium_dist_auth
-
-| Function | Description |
-|----------|-------------|
-| `ensure_keypair()` | Generate keypair if not exists |
-| `get_public_key()` | Get this node's public key |
-| `get_private_key()` | Get this node's private key |
-| `generate_keypair()` | Generate new Ed25519 keypair |
-
-## Configuration Reference
-
-```erlang
-{mycelium, [
-    %% Enable/disable authentication (default: true)
-    {auth_enabled, true},
-
-    %% Trust mode: tofu | strict (default: tofu)
-    {auth_trust_mode, tofu},
-
-    %% Directory for keys (default: "data/keys")
-    {auth_key_dir, "data/keys"}
-]}
-```
-
-## Examples
-
-### Example 1: TOFU Mode (Default)
-
-No configuration needed. Nodes auto-trust on first connection:
-
-```erlang
-%% Node 1
-1> application:ensure_all_started(mycelium).
-
-%% Node 2 - joins and is automatically trusted
-1> application:ensure_all_started(mycelium).
-2> mycelium:join('node1@host1').
-ok
-
-%% Node 1 now has node2's key stored
-3> mycelium_dist_keys:list_trusted().
-[{peer_key, 'node2@host2', <<...>>, 1234567890, 1234567890, tofu}]
-```
-
-### Example 2: Strict Mode Setup
-
-**Step 1: Generate keys on each node**
+Step 2: collect the public keys:
 
 ```bash
-# On each node, start mycelium once to generate keys
-erl -sname node1 -eval "application:ensure_all_started(mycelium), init:stop()."
+scp node1:data/keys/node.pub  /tmp/keys/node1@host1.pub
+scp node2:data/keys/node.pub  /tmp/keys/node2@host2.pub
+scp node3:data/keys/node.pub  /tmp/keys/node3@host3.pub
 ```
 
-**Step 2: Collect public keys**
+Step 3: distribute each public key to every other node:
 
 ```bash
-# Copy public keys to a central location
-scp node1:data/keys/node.pub /keys/node1@host1.pub
-scp node2:data/keys/node.pub /keys/node2@host2.pub
-scp node3:data/keys/node.pub /keys/node3@host3.pub
-```
-
-**Step 3: Distribute to all nodes**
-
-```bash
-# Each node needs all other nodes' keys
 for node in node1 node2 node3; do
-    scp /keys/*.pub $node:data/keys/trusted/
+    scp /tmp/keys/*.pub $node:data/keys/trusted/
 done
 ```
 
-**Step 4: Configure strict mode**
+Step 4: flip the mode on every node:
 
 ```erlang
-%% sys.config on all nodes
+{mycelium, [{auth_trust_mode, strict}]}
+```
+
+After this, the cluster will accept only the listed peers. Adding
+a new node means provisioning *its* public key on every existing
+node and provisioning *theirs* in its `trusted/` directory.
+
+### Runtime registration
+
+If running an automation tool, you can place keys without
+restarting:
+
+```erlang
+PeerPubKey = <<...32 bytes...>>,
+ok = mycelium_dist_keys:store_key('node@host', PeerPubKey).
+```
+
+`store_key/2` writes the file atomically; the runtime is happy to
+pick up the new pin without a restart on the receiving side.
+
+### Provisioning script
+
+The same pattern as a small escript:
+
+```erlang
+#!/usr/bin/env escript
+%% provision_keys.escript: read NodeName.pub files into a trust dir.
+main([KeyDir | Nodes]) ->
+    lists:foreach(
+        fun(NodeStr) ->
+            Path = NodeStr ++ ".pub",
+            case file:read_file(Path) of
+                {ok, PubKey} when byte_size(PubKey) =:= 32 ->
+                    Target = filename:join([KeyDir, "trusted", Path]),
+                    ok = filelib:ensure_dir(Target),
+                    ok = file:write_file(Target, PubKey),
+                    io:format("provisioned ~s~n", [NodeStr]);
+                _ ->
+                    io:format("skipped ~s (bad size)~n", [NodeStr])
+            end
+        end,
+        Nodes
+    ).
+```
+
+## Key rotation
+
+Two rotations to keep distinct:
+
+- **Identity rotation** (Ed25519 keypair). Takes effect on the
+  next handshake; no restart required on the rotating node.
+  Peers must accept the new identity (either via TOFU or by
+  having the new public key provisioned).
+- **Certificate rotation** (QUIC TLS material). Requires a node
+  restart for the listener to load the new credentials.
+
+Both are wrapped by `mycelium_rotate`:
+
+```erlang
+{ok, Info} = mycelium_rotate:rotate_identity().
+%% Info = #{key_file := PrivPath,
+%%          cert_file := PubPath,
+%%          backup_dir := BackupPath,
+%%          restart_required := false}
+
+{ok, Info} = mycelium_rotate:rotate_cert().
+%% Info#{restart_required := true}
+```
+
+Each call atomically writes the new material and moves the old
+material to `<dir>/backups/<UTC-timestamp>/`. The backup directory
+is what you copy back if you decide to roll back.
+
+### Identity rotation runbook
+
+```erlang
+{ok, _} = mycelium_rotate:rotate_identity().
+```
+
+The new public key takes effect on the next handshake. What you
+do next depends on the peer side's trust mode:
+
+- **TOFU peers** will see the new identity, notice that they have
+  no pin for this node atom (because the old pin was removed when
+  the operator chose to rotate), and pin the new key. Existing
+  trust entries pointing at the *old* key remain in the peer's
+  store until you clean them out, which means rolling back to the
+  old identity would still succeed; if that is not what you want,
+  also delete the old pin on every peer.
+- **Strict peers** will reject the new identity until you have
+  provisioned the new public key on each of them. The rotation
+  log line includes the new fingerprint; record it.
+
+### Certificate rotation runbook
+
+A cert rotation requires a node restart. The recommended order
+per node:
+
+1. `mycelium:leave/0` so peers move you to passive view
+   immediately.
+2. `mycelium_rotate:rotate_cert/0`.
+3. `application:stop(mycelium)` then `init:stop/0`.
+4. Bring the node back up; the listener loads the new cert.
+
+Peers will see one `peer_down` event and re-establish on next
+demand. The Ed25519 identity is independent of the cert; it is
+not affected.
+
+### Rollback
+
+The backup directory keeps the previous `node.crt`/`node.key`
+(for cert rotation) or `node.pub`/`node.key` (for identity
+rotation). Copy them back over the active files manually. For
+cert rotations, restart the node after the swap.
+
+## Inspecting state
+
+```erlang
+%% This node's identity.
+{ok, MyPub} = mycelium_dist_auth:get_public_key().
+mycelium_dist_keys:fingerprint(MyPub).        %% SHA-256 of the pubkey
+
+%% All pinned peers.
+mycelium_dist_keys:list_trusted().
+
+%% A specific peer's pinned key, if any.
+mycelium_dist_keys:lookup_pin('peer@host').
+%% => not_pinned | {pinned, <<32 bytes>>}
+
+%% Current trust mode.
+mycelium_dist_keys:get_trust_mode().
+%% => tofu | strict
+```
+
+## Cookie-only peers
+
+A small escape hatch: `cookie_only_nodes` is a list of node-atom
+patterns that are exempt from the Ed25519 handshake. They get
+through on the strength of the dist cookie alone.
+
+```erlang
 {mycelium, [
-    {auth_trust_mode, strict}
+    {cookie_only_nodes, ['probe@*', 'monitor@trusted.example']}
 ]}
 ```
 
-**Step 5: Start cluster**
+Patterns support `*` as a wildcard on either the name or host
+half of the atom. This is meant for one specific case:
+short-lived probes (an `erl_call`-style helper, a monitoring
+agent) that cannot carry an Ed25519 keypair and that you trust
+on cookie grounds.
 
-```erlang
-%% Nodes can now connect with pre-verified keys
-mycelium:join('node1@host1').
-```
+The check is symmetric. If the cluster runs without this
+whitelist on the *client* side, the client refuses an unsolicited
+`AUTH_OK` from a server even if the server thinks the client is
+in its own cookie_only list. Both ends must list the peer for the
+short-circuit to apply.
 
-### Example 3: Adding a New Node to Strict Cluster
+## API reference
 
-```erlang
-%% On new node: get public key
-{ok, MyPubKey} = mycelium_dist_auth:get_public_key().
-io:format("~s~n", [binary:encode_hex(MyPubKey)]).
-%% Copy this to existing nodes
+### `mycelium_dist_keys`
 
-%% On existing nodes: register new node
-NewPubKey = binary:decode_hex(<<"a1b2c3...">>).
-mycelium_dist_keys:store_key('newnode@host', NewPubKey).
+| Function                  | Purpose                                       |
+|---------------------------|-----------------------------------------------|
+| `store_key/2`             | Pin a peer's public key (permanent).         |
+| `store_key_if_new/2`      | Pin only if no pin exists; TOFU primitive.    |
+| `lookup_pin/1`            | `not_pinned` or `{pinned, Key}`.              |
+| `lookup_key/1`            | `{ok, Key}` or `{error, not_found}` (legacy). |
+| `is_trusted/2`            | `true` if the presented key matches the pin. |
+| `delete_key/1`            | Remove a pin from the store.                  |
+| `list_trusted/0`          | All current pins.                             |
+| `set_trust_mode/1`        | Switch between `tofu` and `strict` at runtime.|
+| `get_trust_mode/0`        | Current trust mode.                           |
+| `fingerprint/1`           | SHA-256 of a public key, for logs.           |
 
-%% Now new node can join
-mycelium:join('existingnode@host').
-```
+### `mycelium_dist_auth`
 
-### Example 4: Key Rotation
+| Function                  | Purpose                                       |
+|---------------------------|-----------------------------------------------|
+| `ensure_keypair/0`        | Generate the local keypair if missing.        |
+| `get_public_key/0`        | Read `node.pub`.                              |
+| `get_private_key/0`       | Read `node.key`.                              |
+| `is_cookie_only_allowed/1`| Check the `cookie_only_nodes` whitelist.      |
+| `validate_peer_ts/1`      | Wall-clock skew sanity check (defense-in-depth). |
 
-```erlang
-%% On node being rotated: generate new keypair
-{NewPub, NewPriv} = mycelium_dist_auth:generate_keypair().
-mycelium_dist_auth:save_keypair("data/keys", NewPub, NewPriv).
+### `mycelium_rotate`
 
-%% Distribute new public key to all peers
-%% On each peer:
-mycelium_dist_keys:delete_key('rotated@host').
-mycelium_dist_keys:store_key('rotated@host', NewPubKey).
+| Function             | Purpose                                            |
+|----------------------|----------------------------------------------------|
+| `rotate_identity/0,1`| Replace the Ed25519 keypair. No restart needed.    |
+| `rotate_cert/0,1`    | Replace the QUIC TLS material. Restart required.   |
 
-%% Restart rotated node
-```
-
-### Example 5: Runtime Mode Switch
-
-```erlang
-%% Start in TOFU mode for easy bootstrap
-{mycelium, [{auth_trust_mode, tofu}]}
-
-%% After cluster is established, switch to strict
-mycelium_dist_keys:set_trust_mode(strict).
-
-%% New nodes will now be rejected unless pre-registered
-```
-
-## Security Considerations
-
-1. **Protect private keys** - `node.key` should have restrictive permissions (0600)
-
-2. **Secure key distribution** - Use encrypted channels (SSH, TLS) when copying keys
-
-3. **TOFU window** - In TOFU mode, the first connection is vulnerable. Consider:
-   - Using strict mode in production
-   - Manually verifying keys after TOFU establishment
-   - Using out-of-band key verification
-
-4. **Key mismatch warnings** - Always investigate `key_mismatch` errors:
-   ```
-   Key mismatch for node 'foo@bar' - existing key differs from presented key
-   ```
-   This could indicate a MITM attack or uncoordinated key rotation.
-
-5. **Clock synchronization** - Challenge timestamps have a 30-second window. Ensure nodes have synchronized clocks (NTP).
-
-## Disabling Authentication
-
-For development/testing only:
+## Configuration reference
 
 ```erlang
 {mycelium, [
-    {auth_enabled, false}
-]}
+    %% Master switch. Defaults to true. Setting this to false in
+    %% production removes the Ed25519 layer; the dist cookie
+    %% becomes the only authentication. Do not do this.
+    {auth_enabled, true},
+
+    %% Trust mode: tofu | strict.
+    {auth_trust_mode, tofu},
+
+    %% Directory holding the local keypair and the trust store.
+    {auth_key_dir, "data/keys"},
+
+    %% Handshake budget. The full Ed25519 round-trip must complete
+    %% within this many milliseconds; otherwise the connection is
+    %% closed.
+    {auth_handshake_timeout, 10000},
+
+    %% Acceptable skew (per direction) between the local clock
+    %% and the peer's wall-clock timestamps in the CHALLENGE.
+    %% The local handshake duration check uses monotonic time;
+    %% this controls the cross-host sanity check.
+    {auth_timestamp_window, 30000},
+
+    %% Short-circuit list. Each entry is a node-atom pattern with
+    %% optional `*` wildcards.
+    {cookie_only_nodes, []}
+]}.
 ```
 
-This disables the challenge-response handshake entirely. **Never use in production.**
+## Security notes
+
+- **Keep `node.key` mode 0600.** Mycelium writes new keys this
+  way; if you copy files in from elsewhere, verify the
+  permissions.
+- **Use strict mode when the network is hostile.** TOFU's
+  first-contact window is small but not zero. If your cluster
+  spans untrusted networks, provision keys before nodes meet.
+- **Treat `key_mismatch` as a security event.** The log line
+  identifies the peer and the fingerprints involved. A legitimate
+  rotation produces the line on every peer until the new pin is
+  in place; an unexpected occurrence is worth investigating.
+- **Keep clocks roughly synchronised.** The wall-time
+  cross-check is 30 seconds wide by default. NTP-level
+  synchronisation is sufficient; you do not need millisecond
+  precision.
+- **Rotate the dist cookie.** The default cookie `mycelium` is a
+  placeholder. Set `dist_cookie` to a high-entropy value in any
+  environment where you would not be comfortable disabling Ed25519.

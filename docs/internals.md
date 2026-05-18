@@ -1,570 +1,489 @@
-# Mycelium Internals
+# Internals
 
-This document covers the internal architecture, protocols, and implementation details of Mycelium. It's intended for contributors and advanced users who want to understand how the system works.
+This document describes how mycelium works underneath the API. It
+is meant for two readers: developers who have followed the
+[getting started](getting-started.md) and [tutorial](tutorial.md)
+guides and want to understand why the system behaves the way it
+does; and contributors planning a change to the protocols.
 
-## Architecture Overview
+We move from the layers closest to the application code down to
+the dist carrier and the credentials, then describe the few
+in-tree services that keep the whole picture together.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                            Application                                │
-│  mycelium:join/1  register_service/2  whereis_service  Pid ! Msg     │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │
-┌───────────────────────────────┴──────────────────────────────────────┐
-│                          mycelium.erl (API)                           │
-└──────┬──────────────┬────────────────┬──────────────────────────────┘
-       │              │                │
-       ▼              ▼                ▼
-┌────────────┐ ┌────────────┐  ┌──────────────┐
-│  HyParView │ │  Registry  │  │   Plumtree   │
-│ Membership │ │ (OR-Map)   │  │  Broadcast   │
-└─────┬──────┘ └──────┬─────┘  └──────┬───────┘
-      │               │               │
-      └───────────────┴───────┬───────┘
-                              ▼
-                                  ┌────────────────────┐
-                                  │ mycelium_streams   │
-                                  │ (tagged user-      │
-                                  │  stream multiplex) │
-                                  └─────────┬──────────┘
-                                            │
-                                  ┌─────────┴──────────┐
-                                  │  mycelium_dist     │
-                                  │ (alt-dist shim:    │
-                                  │  cert + defaults)  │
-                                  └─────────┬──────────┘
-                                            │
-                                  ┌─────────┴──────────┐
-                                  │ quic_dist (upstream)│
-                                  │  + auth_callback    │
-                                  │  + discovery_module │
-                                  │  + register_with_   │
-                                  │    epmd             │
-                                  └─────────┬──────────┘
-                                            │
-                                  ┌─────────┴──────────┐
-                                  │   erlang_quic      │
-                                  │ (transport library) │
-                                  └────────────────────┘
-```
-
-## Supervision Tree
+## Layered view
 
 ```
-mycelium_sup (one_for_one)
-│
-├── mycelium_hlc (worker)
-│   └── Hybrid Logical Clock for timestamps
-│
-├── mycelium_dist_keys (worker)
-│   └── Ed25519 key management
-│
-├── mycelium_hyparview_sup (supervisor, rest_for_one)
-│   ├── mycelium_hyparview (gen_server)
-│   │   └── HyParView protocol state machine
-│   ├── mycelium_hyparview_events (gen_server)
-│   │   └── Event subscription/notification
-│   ├── mycelium_hyparview_shuffle (worker)
-│   │   └── Periodic shuffle timer
-│   └── mycelium_hyparview_cleanup (worker)
-│       └── Passive view age-based cleanup
-│
-├── mycelium_plumtree_sup (supervisor)
-│   └── mycelium_plumtree (gen_server)
-│       └── Epidemic broadcast tree
-│
-├── mycelium_registry_sup (supervisor, rest_for_one)
-│   ├── mycelium_registry (gen_server)
-│   │   └── Local service registry with CRDT
-│   └── mycelium_registry_sync (gen_server)
-│       └── Registry replication via Plumtree
-│
-├── mycelium_proxy_sup (simple_one_for_one)
-│   └── mycelium_service_proxy (gen_server, dynamic)
-│       └── Remote service proxies
-│
-├── mycelium_router (gen_server)
-│   └── Service overlay routing (mycelium_route_cache ETS)
-│
-├── mycelium_streams (gen_server)
-│   └── Single tagged-stream acceptor; demuxes user streams by tag
-│
-└── mycelium_bridge (gen_server)
-    └── Erlang distribution connection manager
++----------------------------------------------------------+
+|                        Application                       |
+|   mycelium:register_service/2  whereis_service  Pid ! Msg|
++------------------------+---------------------------------+
+                         |
++------------------------+---------------------------------+
+|                       mycelium.erl                       |
+|   (public API: thin wrappers over the layers below)      |
++----+--------+--------------+---------------+-------------+
+     |        |              |               |
+     v        v              v               v
++--------+ +--------+ +---------------+ +-----------+
+|HyParView| |Registry| |   Plumtree    | |  Streams  |
+|Membership|(OR-Map)| |Gossip broadcast| |  multiplex|
++--------+ +--------+ +---------------+ +-----------+
+                         |
+                         v
+                +------------------+
+                |  mycelium_dist   |
+                |  (proto_dist     |
+                |   shim + cert    |
+                |   + defaults)    |
+                +--------+---------+
+                         |
+                +--------+---------+
+                |    quic_dist     |   <-- upstream
+                |   (auth callback,|
+                |   discovery, port|
+                |   pinning, etc.) |
+                +--------+---------+
+                         |
+                +--------+---------+
+                |   erlang_quic    |   <-- transport
+                +------------------+
 ```
 
-## HyParView Protocol
+The application only ever calls into `mycelium.erl`. Every other
+module in the diagram is internal; you are free to read its code,
+but you should not depend on its names from outside.
 
-HyParView (Hybrid Partial View) is a protocol for maintaining partial network membership. Each node maintains two views:
+## Supervision tree
 
-### Active View
+A running mycelium node has the following supervision shape:
 
-- Small set of currently connected peers (default: 5)
-- Symmetric connections (if A has B, B has A)
-- Used for Plumtree broadcast tree
+```
+mycelium_sup  (one_for_one)
+|
++- mycelium_hlc           hybrid logical clock for CRDT timestamps
+|
++- mycelium_dist_keys     trust store (ETS) for Ed25519 pins
+|
++- mycelium_hyparview_sup (rest_for_one)
+|  +- mycelium_hyparview          HyParView state machine
+|  +- mycelium_hyparview_events   subscriber bus for peer_up/peer_down
+|  +- mycelium_hyparview_shuffle  periodic view exchange timer
+|  +- mycelium_hyparview_cleanup  passive view aging timer
+|
++- mycelium_plumtree_sup
+|  +- mycelium_plumtree           epidemic broadcast tree
+|
++- mycelium_registry_sup  (rest_for_one)
+|  +- mycelium_registry           local registry + CRDT
+|  +- mycelium_registry_sync      replication driver (over Plumtree)
+|
++- mycelium_proxy_sup     (simple_one_for_one)
+|  +- mycelium_service_proxy * N  per-name remote proxies
+|
++- mycelium_router               service overlay routing cache
++- mycelium_streams              tagged user-stream demultiplexer
++- mycelium_bridge               dist connection bookkeeping
++- mycelium_dist_gc              idle dist channel reaper
+```
 
-### Passive View
+The vertical structure is not random. `mycelium_hlc` and
+`mycelium_dist_keys` start first because every other subsystem
+depends on monotonic timestamps and on the trust store being
+available. The HyParView subtree is restart-as-a-block
+(`rest_for_one`): if the state machine crashes, the event bus,
+shuffle timer, and cleanup timer all restart together, which keeps
+the cluster's view of the node coherent.
 
-- Larger set of known but unconnected peers (default: 30)
-- Used as backup when active connections fail
-- Refreshed through periodic shuffle
+## HyParView: how membership stays bounded
 
-### Protocol Messages
+HyParView is a partial-view membership protocol. Each node holds
+two sets:
+
+- The **active view**, a small bounded set (default 5) of peers
+  this node currently exchanges gossip with. Active links are
+  symmetric: if A has B in its active view, B has A in its active
+  view.
+- The **passive view**, a larger bounded cache (default 30) of
+  known peers that are not currently active. Members of the
+  passive view are warm spares used when an active link drops.
+
+The key property is that the active view does **not** need to grow
+with the cluster. A node with thousands of peers in its passive
+view still keeps only five active links; messages reach the rest
+of the cluster by being forwarded along the active links of other
+nodes.
+
+### Joining the cluster
+
+When a new node joins, it sends a `JOIN` message to one *contact
+node* it knows about (either explicitly through `mycelium:join/1`
+or implicitly through the `contact_nodes` config key):
+
+```
+NewNode ----JOIN----> ContactNode
+                            |
+                            +--- adds NewNode to its active view
+                            |
+                            +--- sends FORWARD_JOIN(TTL=ARWL) to a
+                                 random active peer (and so on, until
+                                 TTL=0)
+```
+
+Forwarding has two purposes. First, it spreads knowledge of the
+new node across the cluster without flooding. Second, when TTL
+reaches zero, the receiving node adds the new node to its own
+passive view, which becomes a warm spare for future use.
+
+The TTL (`arwl`, default 6) controls how widely the new node
+propagates. A smaller value means a more local join; a larger
+value spreads farther but costs more messages.
+
+### Failure handling
+
+A node failure is detected through the dist channel:
+`net_kernel` reports a `nodedown` event, which mycelium translates
+into a HyParView failure. The protocol then:
+
+1. Moves the failed peer from active to a transient "failed"
+   state with an exponential backoff timer.
+2. After `max_fail_count` consecutive failures (default 5), moves
+   the peer to the passive view.
+3. Picks a replacement from the passive view and sends a
+   `NEIGHBOR` request. If the candidate accepts, the active view
+   is back to its target size.
+
+Backoff prevents reconnection storms during network partitions:
+if half the cluster becomes unreachable at once, each surviving
+node retries its neighbours on staggered timers rather than all
+at once.
+
+### Shuffle: keeping passive views fresh
+
+Periodically (every `shuffle_period` ms, default 10s), each node
+picks a random active peer and exchanges a small sample of its
+known peers. This is how new members reach corners of the cluster
+that did not see the original `FORWARD_JOIN`, and how the passive
+view stays large enough that there is always a spare to replace a
+failed active peer.
+
+The exchange is bounded: a fixed-size random sample, never the
+full view.
+
+## Plumtree: broadcasting changes efficiently
+
+Plumtree (Push-Lazy-Push Multicast Tree) is the protocol that
+moves registry updates and other gossip across the cluster. The
+input is "broadcast this message"; the output is that every peer
+eventually sees the message exactly once, even under churn.
+
+The idea: each node classifies its active-view peers into two
+sets.
+
+- **Eager peers** receive the full message body.
+- **Lazy peers** receive only the message identifier (an `IHAVE`
+  announcement); they fetch the body only if they have not seen
+  it.
+
+The first time a message goes out, all peers are eager. When a
+duplicate arrives (because some other path got there first), the
+recipient sends a `PRUNE`, demoting the sender to lazy. The tree
+self-organises into a spanning structure where each message
+flows through one path; the lazy backups cover the case where a
+node drops mid-flight.
+
+If a node receives an `IHAVE` for a message it never sees, it
+sends `GRAFT` to the lazy peer, promoting it back to eager so the
+message is re-pushed. This is the self-healing path.
+
+The two interesting consequences:
+
+- Broadcast cost is O(n) messages, not O(n log n) or worse.
+- A single peer failure costs at most one `GRAFT`/`PRUNE`
+  exchange, not a full re-flood.
+
+## The service registry: an OR-Map CRDT
+
+The service registry is the part of mycelium that requires the
+most thought to use correctly. We use a CRDT because we want
+registration to work without coordination: any node can register
+a service at any time, and all nodes converge to the same view
+without locking.
+
+The data structure is an **Observed-Remove Map** (OR-Map). A few
+properties worth stating explicitly:
+
+- **Add and remove commute.** Two concurrent adds of the same
+  name produce two entries; if a third node later removes the
+  name, only the additions visible to that third node are
+  removed.
+- **Tombstones are bounded.** Each remove carries the set of
+  dots it observed; once every node has applied the remove, the
+  dots can be discarded.
+- **Causal merging.** Two replicas merge by union of dots plus
+  the rule that a tombstoned dot stays tombstoned.
+
+Each add gets a unique **dot**, which is a `{node, hlc_timestamp}`
+pair. The hybrid logical clock guarantees that two adds from the
+same node are ordered, and that two adds from different nodes can
+be compared causally.
 
 ```erlang
-%% Join request to contact node
-{join, #peer{id = node(), address = IP, port = Port}}
-
-%% Forward join through the network
-{forward_join, NewPeer :: #peer{}, TTL :: integer(), Sender :: #peer{}}
-
-%% Graceful disconnect
-{disconnect, #peer{}}
-
-%% Request to become neighbor (after connection loss)
-{neighbor, Priority :: high | low, #peer{}}
-{neighbor_reply, Accept :: boolean(), #peer{}}
-
-%% Periodic view exchange
-{shuffle, TTL :: integer(), Peers :: [#peer{}], Sender :: #peer{}}
-{shuffle_reply, Peers :: [#peer{}], Sender :: #peer{}}
-```
-
-### Join Process
-
-1. New node sends `join` to contact node
-2. Contact node adds new node to active view
-3. Contact node sends `forward_join` to random active peer
-4. `forward_join` propagates with decreasing TTL (ARWL)
-5. At TTL=0 or PRWL, receiving node adds new node to active/passive view
-
-```
-NewNode ──join──► ContactNode
-                      │
-                      ├──forward_join(ttl=6)──► NodeA
-                      │                            │
-                      │                            ├──forward_join(ttl=5)──► NodeB
-                      │                            │                            │
-                      │                            │                            └─► ...
-```
-
-### Shuffle Process
-
-Periodic exchange refreshes views and maintains connectivity:
-
-1. Node picks random peer from active view
-2. Sends `shuffle` with subset of active + passive peers
-3. Receiver merges received peers into passive view
-4. Receiver replies with subset of its peers
-5. Originator merges reply into passive view
-
-### Failure Handling
-
-When a connection fails:
-
-1. Node is moved from active to a "failed" state
-2. Exponential backoff prevents reconnection storms
-3. After max failures, node is moved to passive view
-4. Replacement is selected from passive view using `neighbor` request
-
-```erlang
--record(peer, {
-    id            :: node(),
-    fail_count    = 0 :: non_neg_integer(),
-    backoff_until :: integer() | undefined
-}).
-```
-
-## OR-Map CRDT for Service Registry
-
-The service registry uses an Observed-Remove Map (OR-Map) CRDT for conflict-free replication.
-
-### Data Structure
-
-```erlang
-%% OR-Map: Key -> {Dots, Values}
-%% Dots track which updates we've seen
-%% Values are tagged with their originating dot
-
--type dot() :: {node(), hlc:timestamp()}.
+-type dot()    :: {node(), mycelium_hlc:timestamp()}.
 -type or_map() :: #{
     Key => {
-        dots :: sets:set(dot()),
+        dots   :: sets:set(dot()),
         values :: [{dot(), Value}]
     }
 }.
 ```
 
-### Operations
+Operationally: when you call `register_service/2`, the registry
+adds an entry with a fresh dot, and `mycelium_registry_sync`
+broadcasts the delta over Plumtree. When the broadcast reaches
+peer B, B merges the delta into its local OR-Map; from then on
+B's `whereis_service/1` can find the new registration.
 
-**Add**: Creates a new dot and adds value
-```erlang
-add(Key, Value, Node, HLC, ORMap) ->
-    Dot = {Node, hlc:now(HLC)},
-    %% Add new entry tagged with dot
-    ...
-```
+## Hybrid logical clocks
 
-**Remove**: Removes all current values (observed remove)
-```erlang
-remove(Key, ORMap) ->
-    %% Remove only dots we've observed
-    %% New concurrent adds are preserved
-    ...
-```
+Standard wall-clock timestamps can move backwards if NTP corrects
+a drifting clock, and they cannot order events from different
+nodes consistently. A pure logical clock (a Lamport clock) orders
+events but loses the connection to physical time. Mycelium uses
+**hybrid logical clocks** (HLC), which combine the two.
 
-**Merge**: Combines two OR-Maps
-```erlang
-merge(Map1, Map2) ->
-    %% Union of dots
-    %% Keep values with unremoved dots
-    ...
-```
+The shape is `{wall_ms, logical}`:
 
-### Replication Flow
+- `wall_ms` is the current wall time in milliseconds.
+- `logical` is a counter that breaks ties when two events share a
+  wall-time.
 
-```
-Node A: register_service(foo)
-        │
-        ├──► mycelium_registry adds to local OR-Map
-        │
-        ├──► mycelium_registry_sync creates delta
-        │
-        └──► mycelium_plumtree broadcasts delta
-                    │
-        ┌───────────┴───────────┐
-        ▼                       ▼
-     Node B                  Node C
-     merge(delta)            merge(delta)
-```
+The clock has two operations:
 
-## Plumtree Broadcast
+- `mycelium_hlc:now/0` produces the next local timestamp, ensuring
+  monotonic progress relative to the previous local timestamp.
+- `mycelium_hlc:update/1` accepts a timestamp from a peer and
+  advances the local clock to be greater than both the local
+  reading and the peer's timestamp.
 
-Plumtree (Push-Lazy-Push Multicast Tree) provides efficient epidemic broadcast.
+HLC timestamps serve two roles in mycelium:
 
-### Components
+- They are the `dot` component in OR-Map adds. This is where
+  causality across nodes lives.
+- They are exposed to applications that need cluster-wide
+  ordering without coordinating; the `mycelium_hlc` module is
+  public.
 
-**Eager Peers**: Receive messages immediately via push
-**Lazy Peers**: Receive only message IDs; request full message if needed
+## Authentication: Ed25519 over a QUIC stream pair
 
-### Message Flow
+Authentication runs *between* the QUIC TLS handshake and the
+Erlang dist handshake. The flow is a mutual challenge-response on
+a pair of unidirectional QUIC streams:
 
 ```
-Broadcast origin
-      │
-      ├─eager─► Peer A ─eager─► Peer C
-      │              └─lazy──► Peer D
-      │
-      └─eager─► Peer B ─eager─► Peer E
+Node A (client)                               Node B (server)
+      |                                             |
+      | open uni stream 2                           |
+      |-- HELLO(node_A, pubkey_A) ----------------->|
+      |                                             |
+      |                                  open uni stream 3
+      |<------------------------ HELLO(node_B, pubkey_B)
+      |                                             |
+      |-- CHALLENGE(nonce_A, wall_ts_A) ----------->|
+      |<------------ CHALLENGE(nonce_B, wall_ts_B)  |
+      |                                             |
+      |-- RESPONSE(sign(nonce_B, ts_B, pubkey_A)) ->|
+      |<----------- RESPONSE(sign(nonce_A, ts_A, pubkey_B))
+      |                                             |
+      |-- OK -------------------------------------->|
+      |<----------------------------------------- OK
+      v                                             v
+            Erlang dist handshake (cookie)
 ```
 
-### Protocol Messages
+The signed message includes the responder's own public key. That
+binds the signature to the identity the responder claims, so a
+peer cannot relay a signature to impersonate someone else.
 
-```erlang
-%% Push full message
-{gossip, MessageId, Payload, Round}
+Trust modes operate on what happens when the presented public key
+is not the one already pinned for that node atom:
 
-%% Lazy announcement (message ID only)
-{ihave, MessageId, Round}
+| Mode    | No pin yet      | Pin matches | Pin differs |
+|---------|-----------------|-------------|-------------|
+| `tofu`  | accept and pin  | accept      | reject      |
+| `strict`| reject          | accept      | reject      |
 
-%% Request missing message
-{graft, MessageId}
+The trust store lives on disk under `data/keys/trusted/`,
+one file per peer (`<node-atom>.pub`). Writes are atomic
+(write-then-rename) and use 0600 permissions; see
+[authentication.md](authentication.md) for the full lifecycle.
 
-%% Demote to lazy peer
-{prune}
-```
+## The dist carrier: `mycelium_dist` + `quic_dist`
 
-### Tree Construction
+`mycelium_dist` is the proto_dist module Erlang loads when you
+boot with `-proto_dist mycelium`. It is intentionally a thin
+shim: the bulk of the QUIC transport is upstream
+[`quic_dist`](https://github.com/benoitc/erlang_quic).
 
-1. Initially all active peers are eager
-2. Duplicate messages cause `prune` (sender becomes lazy)
-3. Missing messages (ihave but no gossip) cause `graft`
-4. Tree self-organizes to minimize redundancy
+What `mycelium_dist:listen/1` does, in order:
 
-### GRAFT Repair
+1. **Ensures TLS material.** If `data/quic/node.crt` and
+   `data/quic/node.key` exist, it uses them; otherwise it
+   generates a self-signed pair via `mycelium_quic_cert`.
+2. **Projects defaults into the `quic.dist` app env.** Sets
+   `auth_callback => {mycelium_dist_auth_callback, authenticate}`,
+   `discovery_module => mycelium_discovery`, and the cert/key
+   paths. User-supplied values under `{quic, [{dist, [...]}]}` in
+   `sys.config` always win; this step only fills gaps.
+3. **Validates the projected config.** If `auth_enabled` is
+   `true` but the projected `auth_callback` is `undefined`
+   (because the user explicitly nulled it), boot fails loudly
+   rather than silently shipping an unauthenticated cluster.
+4. **Delegates to `quic_dist:listen/1`.**
 
-If a node receives `ihave` but not the actual message:
+For outgoing connections, the `setup/5` callback runs the
+auth-callback in the same process that initiated the QUIC connect,
+so we can pass the dialed node atom to the callback through the
+process dictionary. This is needed so the client side of the
+handshake can check `cookie_only_nodes` for the *target* (the node
+we asked to connect to) rather than the peer's self-reported
+identity.
 
-1. Wait brief timeout for gossip
-2. If not received, send `graft` to lazy peer
-3. Lazy peer becomes eager, retransmits message
+### Discovery
 
-This self-healing ensures reliable delivery despite tree inconsistencies.
+The default `discovery_module` is `mycelium_discovery`, a
+*composing* dispatcher: it asks each backend in a chain until one
+returns a hit, then caches the result. The default backend chain
+is:
 
-## Hybrid Logical Clocks
+1. **Static**. Reads `{quic, [{dist, [{nodes, [...]}]}]}` from
+   sys.config. The shape is `{NodeAtom, {Host, Port}}`. Useful in
+   docker-compose, in tests, and any environment with a fixed
+   topology.
+2. **File**. Reads `data/discovery/<node>.endpoint` files. Useful
+   on a single host where every node writes its own endpoint to a
+   shared directory.
+3. **DNS**. Resolves `<host>` portions of node atoms via DNS.
+   Useful in environments with proper DNS plumbing.
 
-Mycelium uses Hybrid Logical Clocks (HLC) for causally consistent timestamps.
+You can replace the chain entirely by setting
+`mycelium.discovery_backends` in sys.config.
 
-### Properties
+## The idle dist-channel GC
 
-- Monotonically increasing per node
-- Captures causal ordering across nodes
-- Compatible with wall clock (for human readability)
+`Pid ! Msg` to any cluster node works through OTP's demand-driven
+auto-connect. That can open a dist channel that the application
+then never uses again, which would accumulate over time. The dist
+GC reaps such channels.
 
-### Structure
+The predicate is conservative. A channel is eligible for reaping
+when **all** of the following hold:
 
-```erlang
--record(hlc, {
-    wall_time :: integer(),  %% Physical time
-    logical   :: integer(),  %% Logical counter
-    node      :: node()      %% Node identifier
-}).
-```
+- The peer is not in the local HyParView active view.
+- `quic_dist:list_streams/1` returns the empty list (no live user
+  streams are riding the dist channel).
+- The channel is older than `dist_gc_min_age_ms` (default 5
+  minutes).
 
-### Operations
+A reaped channel is closed cleanly. If the application sends to
+the same peer later, a new dist channel opens on demand.
 
-```erlang
-%% Generate new timestamp
-Timestamp = mycelium_hlc:now().
+This GC is unconditionally on. The decoupled-from-active-view
+design relies on its presence; see
+[features.md](../doc/features.md) for the stability tier.
 
-%% Update clock after receiving message
-mycelium_hlc:update(ReceivedTimestamp).
+## Service overlay routing and proxies
 
-%% Compare timestamps
-case mycelium_hlc:compare(T1, T2) of
-    lt -> T1 happened before T2;
-    gt -> T1 happened after T2;
-    eq -> Same timestamp
-end.
-```
+`whereis_service/1` resolves a service name in three steps:
 
-### Usage in CRDT
+1. Look up locally.
+2. Look up in the local cache (populated by gossip).
+3. If neither, ask through the overlay.
 
-HLC timestamps are used as dots in the OR-Map:
+The overlay step uses `mycelium_router`: it sends a route request
+to a random active peer with a TTL, which forwards in turn until
+a peer finds the service or the TTL runs out. The path is cached
+on success so subsequent lookups are direct.
 
-```erlang
-Dot = {node(), hlc:now(HLC)}
-%% Globally unique, causally ordered
-```
+When the resolved service is on a remote node, `whereis_service/2`
+optionally hands you a **service proxy**: a local pid that
+forwards `gen_server` calls and casts to the remote service over
+the dist channel. The proxy is what makes
+`{via, mycelium, Name}` registrations transparent: a caller can
+`gen_server:call({via, mycelium, my_service}, request)` and the
+proxy handles the remote dispatch.
 
-## Ed25519 Authentication
+Proxies are reference-counted and reaped when the remote service
+goes down.
 
-Mycelium uses Ed25519 public-key cryptography to authenticate peer connections. See [Authentication](authentication.md) for detailed provisioning and key management.
+## Tagged-stream multiplex
 
-### Key Identity
+The dist channel between two peers is multiplexed: the Erlang
+dist control stream is one QUIC bidirectional stream, but the
+application can open additional streams alongside it. Mycelium
+exposes that as `mycelium_streams`, a single demultiplexer per
+node.
 
-Each trusted peer is stored under its **node atom**: lookup, store,
-and delete (`mycelium_dist_keys:lookup_key/1`, `store_key/2`,
-`delete_key/1`) all take a node atom. `mycelium_dist_keys:fingerprint/1`
-returns the SHA-256 of a public key for log lines and key-mismatch
-diagnostics.
-
-### Key Storage
-
-```erlang
-%% Keys stored by mycelium_dist_keys (ETS keyed by #peer_key.node).
--record(peer_key, {
-    node        :: node() | undefined,    %% Primary key
-    fingerprint :: binary() | undefined,  %% SHA-256 of public_key
-    public_key  :: binary(),              %% 32 bytes Ed25519 public key
-    added_at    :: integer(),             %% Timestamp (ms)
-    last_seen   :: integer(),             %% Last connection (ms)
-    trust_level :: permanent | tofu
-}).
-```
-
-Permanent and TOFU keys are persisted to
-`data/keys/trusted/<node-atom>.pub` as the raw 32-byte public key
-binary.
-
-### Trust Modes
-
-| Mode | Unknown Key | Known Key Match | Known Key Mismatch |
-|------|-------------|-----------------|-------------------|
-| `tofu` | Accept & store | Accept | Reject |
-| `strict` | Reject | Accept | Reject |
-
-### Authentication Flow
-
-```
-Node A (initiator)                    Node B (acceptor)
-       │                                     │
-       ├─── HELLO(pubkey_A, node_A) ────────►│
-       │                                     │
-       │◄── HELLO(pubkey_B, node_B) ─────────┤
-       │                                     │
-       ├─── CHALLENGE(nonce_A) ─────────────►│
-       │                                     │
-       │◄── CHALLENGE(nonce_B) ──────────────┤
-       │                                     │
-       ├─── RESPONSE(sign(nonce_B)) ────────►│
-       │                                     │
-       │◄── RESPONSE(sign(nonce_A)) ─────────┤
-       │                                     │
-                   Authenticated
-```
-
-### Configuration
-
-```erlang
-{mycelium, [
-    {auth_enabled, true},           %% Enable/disable auth
-    {auth_trust_mode, tofu},        %% tofu | strict
-    {auth_key_dir, "data/keys"}     %% Key storage directory
-]}
-```
-
-### Key Management API
-
-```erlang
-%% Store a peer's key (for strict mode)
-mycelium_dist_keys:store_key(Node, PubKey).
-
-%% List trusted peers
-mycelium_dist_keys:list_trusted().
-
-%% Check if a peer's presented key is trusted
-mycelium_dist_keys:is_trusted(Node, PubKey).
-
-%% Get this node's public key
-{ok, MyPubKey} = mycelium_dist_auth:get_public_key().
-```
-
-## Distribution Carrier
-
-Boot with `-proto_dist mycelium -epmd_module mycelium_epmd
--start_epmd false`. The carrier opens a single QUIC connection per
-peer and carries the Erlang distribution channel on it.
-
-`mycelium_dist` is a thin alt-dist shim over upstream `quic_dist`.
-At `listen/1` it auto-generates the TLS material (`data/quic/
-node.{crt,key}`) if missing and projects three defaults into the
-`{quic, dist, ...}` app env before delegating:
-
-- `auth_callback => {mycelium_dist_auth_callback, authenticate}` runs
-  the Ed25519 challenge-response on a uni-stream pair between the
-  QUIC handshake and the dist `handshake_we_started`/`handshake_other_started`.
-  The callback returns `{ok, NodeAtom}` on success or `{error, Reason}`;
-  on error the connection is closed and the dist controller never
-  starts.
-- `discovery_module => mycelium_discovery` is a composing dispatcher
-  that fans out to a configurable backend chain (default:
-  `mycelium_discovery_static` for the `{quic, [{dist, [{nodes, ...}]}]}`
-  map, `mycelium_discovery_file` for an on-disk endpoint registry under
-  `data/discovery/<node>.endpoint`, and `mycelium_discovery_dns` for
-  the DNS host fallback). Lookups try each backend in order; first
-  hit wins. Registration fans out so a node's filesystem entry is
-  visible to siblings on the same host with no stock-EPMD daemon.
-- `mycelium_app:start/2` itself republishes the node into the
-  discovery chain once sys.config envs are live, using the full atom
-  node name; the listen-time register-with-epmd path is left
-  disabled so the bare name string never reaches the file backend.
-
-User-supplied values under `{quic, [{dist, [...]}]}' or
-`-quic_dist_*' init args win over these defaults; the shim only
-fills in keys the user didn't set.
-
-NAT traversal is out of scope. When a direct path is unavailable,
-`quic_dist:set_connect_options/2` lets callers register a per-peer
-connect-time override (e.g. `#{socket_backend => adapter,
-socket_adapter => Adapter}`) that the next `setup/5` consumes. See
-[external-relay.md](external-relay.md).
-
-```erlang
-%% Configuration
-{mycelium, [
-    {listen_port, 9100},
-    {auth_enabled, true},
-    {auth_trust_mode, tofu}
-]}
-```
-
-### Connection Management
-
-`mycelium_bridge` manages distribution connections:
-
-1. Monitors active view changes from HyParView
-2. Establishes connections to new peers
-3. Closes connections when peers leave active view
-4. Handles connection failures with retry logic
-
-## Tagged Stream Multiplex
-
-`mycelium_streams` is the single user-stream acceptor on every node.
-It demultiplexes incoming `quic_dist` user streams by a length-prefixed
-tag and hands ownership to the registered handler.
-
-### Wire preamble
-
-Every mycelium-managed user stream starts with:
+Wire format: every mycelium-managed user stream starts with
 
 ```
 <<TagLen:8, Tag:TagLen/binary, Payload/binary>>
 ```
 
-Reserved tags:
+The demuxer reads the first `1 + TagLen` bytes, looks up the
+registered acceptor for the tag, and hands the stream to that
+acceptor. From then on the acceptor owns the stream and uses
+`quic_dist:send/2` / `close_stream/1` directly; the demuxer is
+off the data path.
 
-- `<<"mycelium:", _/binary>>` — reserved for future internals
+The cap on parked-but-not-yet-dispatched streams is small
+(currently 64); a peer that opens many streams and drips bytes
+without ever completing the tag preamble has its excess streams
+reset.
 
-Applications use any other tag (`<<"chat:rooms">>`, `<<"acme.kv">>`).
+## Connection migration
 
-### API
+A single QUIC connection can rebind to a new local UDP 4-tuple
+(NIC change, IP change, default-route change) without losing
+keys, streams, or ordering. `mycelium:migrate_peer/1,2` exposes
+that primitive as a synchronous call.
 
-```erlang
-mycelium_streams:register_acceptor(Tag, Pid).
-mycelium_streams:open(Tag, Node) -> {ok, StreamRef}.
-```
+The decision of **when** to migrate is the application's. Mycelium
+provides the trigger and the path statistics
+(`mycelium_path_stats:srtt/1`); a watchdog can poll, evaluate, and
+call.
 
-After `open/2` returns, the caller owns the underlying `quic_dist`
-stream and uses `quic_dist:send/2,3` and `close_stream/1` directly —
-the demuxer is off the data path. The acceptor pid receives one
-`{mstream, StreamRef, opened, FromNode}` message and then native
-`{quic_dist_stream, StreamRef, _}` events.
+The motivating cases are: a mobile node moves between Wi-Fi and
+cellular; a server's outbound IP changes because of a CGNAT
+shuffle; a peer is being routed through a different relay. See
+[migration.md](migration.md) for the recipe.
 
-## Service Overlay Routing
+## Observability
 
-`mycelium_router` keeps a service-name route cache that the registry
-proxies use to forward `whereis_service` requests through the active
-view when the target isn't local. `find_service/1` walks the overlay
-with a TTL (default 5 hops) and caches the via-peer on success.
+Every metric mycelium emits goes through `mycelium_metrics`. The
+catalog is in [observability.md](observability.md); the design
+note for this document is: emit sites are wrapped in a
+`try`/`catch`, so a misconfigured exporter cannot crash protocol
+code.
 
-### Service Proxy
+## Reading the source
 
-`mycelium_service_proxy` uses routing for transparent RPC:
+If you want to follow a code path end-to-end, the natural seams
+are:
 
-```erlang
-{ok, Pid} = mycelium:whereis_service(remote_service).
-%% Pid is local proxy that forwards to remote node
-```
+- A `mycelium:join/1` call. Start in `mycelium_hyparview`'s
+  `handle_call({join, ...})` and follow the `mycelium_bridge`
+  request, the QUIC connect, the auth callback, the dist
+  handshake, the `peer_up` event.
+- A `register_service/2` call. Start in `mycelium_registry`'s
+  `handle_call({register, ...})` and follow the OR-Map add, the
+  `mycelium_registry_sync` broadcast, the `mycelium_plumtree`
+  fanout, and the merge on a remote node.
+- A `whereis_service/1` call. Start in `mycelium.erl`, see how
+  the local lookup is tried first, then the cache, then the
+  overlay route request.
 
-## Performance Tuning
-
-### HyParView Parameters
-
-| Parameter | Effect of Increase | Effect of Decrease |
-|-----------|-------------------|-------------------|
-| `active_size` | More connectivity, more overhead | Less redundancy, faster convergence |
-| `passive_size` | More backup options | Smaller memory footprint |
-| `shuffle_period` | Less network traffic | Slower view refresh |
-| `arwl` | Better join distribution | Faster join completion |
-
-### Recommended Settings
-
-**Small cluster (< 50 nodes)**
-```erlang
-{active_size, 3},
-{passive_size, 15}
-```
-
-**Medium cluster (50-500 nodes)**
-```erlang
-{active_size, 5},
-{passive_size, 30}
-```
-
-**Large cluster (500+ nodes)**
-```erlang
-{active_size, 7},
-{passive_size, 50}
-```
-
-### Monitoring
-
-Key metrics to monitor:
-
-- Active view size (should stay near `active_size`)
-- Passive view size (should grow but stay bounded)
-- Shuffle success rate
-- Service lookup latency
-- Route cache hit rate
-
+The test suites that exercise each path are named after the
+module under test (`test/mycelium_hyparview_SUITE.erl`,
+`test/mycelium_registry_SUITE.erl`, `test/mycelium_router_SUITE.erl`,
+etc.). [testing.md](testing.md) lists them and explains the
+docker-only suite for the full transport behaviour.

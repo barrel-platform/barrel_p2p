@@ -1,62 +1,90 @@
 # Troubleshooting
 
-Symptoms an operator sees, and where to look. Each row cites the log
-callsite that emits the message; grep your logs for the quoted text.
+A table per category, ordered by how often we see each symptom in
+practice. Every row gives a likely cause and a place to look.
 
-## Boot failures
+The structure of every cell: what you see, what is probably
+happening, and the code or configuration to inspect. Where the
+fix is simple, it is included; where it requires a runbook, the
+relevant doc is linked.
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `mycelium_dist: cert ensure failed: <reason>`            | TLS material cannot be generated or read on disk     | `src/mycelium_dist.erl` `ensure_cert/0`. Check `quic_cert_dir` env points to a writable path; check disk permissions on `node.crt` / `node.key`. |
-| `{boot_failed, {exit_status, 1}}` under `peer:start`     | code path not propagated to the new VM               | Pass `-pa` flags from `code:get_path()` explicitly when calling `peer:start`. |
-| Cluster refuses to start with `{credentials, no_credentials}` | Cert pair missing and lazy generation disabled  | Run `priv/bin/mycelium_gen_cert.sh` manually, or check `mycelium_quic_cert:ensure_cert/1` is reachable from the boot path. |
-| `[mycelium_app] no listen port found; skipping discovery publish` | quic_dist listener hasn't bound yet, or app started without `-proto_dist mycelium` | Confirm the listener actually came up. The discovery publish is best-effort; this is benign on a transient race but persistent appearance indicates the dist module is wrong. |
+## A node fails to boot
 
-## Authentication
+| Symptom                                                            | Likely cause                                                        | What to do                                                                                                                |
+|--------------------------------------------------------------------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `Protocol 'quic': register/listen error: {credentials,no_credentials}` | TLS material missing, listener cannot find a cert/key             | Check `data/quic/node.crt` and `data/quic/node.key` exist and are readable. Run `priv/bin/mycelium_gen_cert.sh` to generate by hand. |
+| `mycelium_dist: cert ensure failed: <reason>`                      | Cert directory is not writable                                      | Confirm `auth_key_dir` / `quic_cert_dir` point to a writable path. Check disk quota.                                       |
+| Boot fails with `{mycelium_dist, auth_enabled_without_callback}`   | `mycelium.auth_enabled = true` but the projected `auth_callback` is `undefined` (you set it explicitly) | This is fail-safe behaviour. Either set `auth_enabled = false` or do not override the auth callback.                       |
+| `Failed to initialize keypair: <reason>`                           | Cannot write to `auth_key_dir`                                      | Verify filesystem permissions and free space.                                                                              |
+| `{error, keypair_mismatch}` on load                                | Identity rotation crashed mid-flight; `node.pub` does not derive from `node.key` | Restore from the most recent `data/keys/backups/<ts>/` or regenerate with `mycelium_rotate:rotate_identity/0`.            |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `Failed to initialize keypair: <reason>`                 | `~/.mycelium/keys` (or configured `key_dir`) unwritable | `src/mycelium_dist_keys.erl:127`. Check filesystem permissions and disk space. |
-| `Key mismatch for node <peer> - existing key differs from presented key` | Peer's Ed25519 identity changed (rotation or attack) | `src/mycelium_dist_keys.erl:172`. If you just rotated keys on the peer, remove the stale entry from the local trust store and let TOFU re-pin it. Otherwise treat as a security event. |
-| `{auth_rejected, untrusted_key}`                         | Strict trust mode and no pinned key for peer         | Set `auth_trust_mode=tofu` to allow first-contact pinning, or pin the key explicitly via `mycelium_dist_keys:store_key/3`. |
-| `auth_stream_timeout`                                    | Peer didn't complete the handshake within the window | Bump `auth_handshake_timeout` (default 10000ms), or check for network loss / peer overload. |
-| `{auth_rejected, signature_invalid}`                     | Wrong private key in use, or replay-window mismatch  | Verify the key on disk matches the published pub key; check `auth_timestamp_window` is in sync with peer clock. |
+## A peer cannot connect
 
-## Cluster membership
+| Symptom                                                            | Likely cause                                                                  | What to do                                                                                                                                  |
+|--------------------------------------------------------------------|-------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `Key mismatch for node <peer> - existing key differs from presented key` | A peer's identity rotated, or someone is impersonating it                | If you just rotated keys, delete the stale pin and let TOFU re-pin (`mycelium_dist_keys:delete_key/1`). Otherwise treat as a security event. |
+| `{auth_rejected, untrusted_key}`                                   | Strict mode, no pin for this peer                                             | Provision the peer's public key (`mycelium_dist_keys:store_key/2`) or switch to TOFU.                                                       |
+| `auth_stream_timeout`                                              | The handshake did not complete within `auth_handshake_timeout` (default 10s) | Inspect the network between peers. Raise the timeout if the link is genuinely slow.                                                          |
+| `{auth_rejected, signature_invalid}`                               | Wrong private key in use, or clock skew beyond the wall-time window           | Verify the keypair on disk derives correctly (`mycelium_dist_auth:load_keypair/1`); check `auth_timestamp_window` and NTP.                  |
+| `{error, unexpected_auth_ok}`                                      | A server sent AUTH_OK but the client did not have the target in its own `cookie_only_nodes` | Cookie-only is symmetric: both ends must list the peer. Either provision the whitelist on both sides or remove `cookie_only_nodes`.       |
+| `Pid ! Msg` returns immediately but the peer never receives        | Dist channel silently closed (reaped, or remote `nodedown`)                   | Check `erlang:nodes/0` on both sides; check the `mycelium.dist_gc.reap` rate; resend (auto-connect will reopen).                              |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `mycelium:active_view()` always empty                    | Discovery chain can't resolve other nodes            | Inspect `mycelium_discovery:lookup/1` output. The file backend needs all nodes to share the discovery dir; the DNS backend needs records to exist. |
-| `Pid ! Msg` returns immediately but peer never receives  | Dist connection silently dropped or peer down        | Check `erlang:nodes()` on both sides and the metric `mycelium.dist_gc.reap` rate. A reaped peer needs a fresh `Pid ! Msg` to re-open the channel. |
-| Active view grows beyond `active_size`                   | Stale entries from before the decoupling fix         | Expected post-fix: HyParView treats `active_view` as protocol membership only. `erlang:nodes()` can legitimately be larger; `mycelium_dist_gc` keeps it bounded. |
-| Nodes oscillate in and out of the active view            | Network instability or `max_fail_count` too low      | Tune `max_fail_count`, `base_backoff_ms`, `passive_max_age_ms`. Watch `mycelium.hyparview.peer_down` by `reason`. |
+## A new node cannot find the cluster
 
-## Discovery
+| Symptom                                                                                 | Likely cause                                                              | What to do                                                                                                                  |
+|-----------------------------------------------------------------------------------------|---------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| `mycelium:active_view/0` always empty                                                   | Discovery chain returns nothing for the contact nodes                     | Inspect each backend in `mycelium.discovery_backends`. The file backend needs a shared directory; the DNS backend needs records. |
+| `mycelium_discovery_dns: no records for <host>` in the log                              | DNS records missing                                                       | Confirm the zone publishes records for the host portion of every node atom.                                                  |
+| File-based discovery: peer not visible to other hosts                                   | Discovery directory is local to each host                                 | Mount a shared volume; use rsync/NFS; or switch to the DNS backend.                                                           |
+| `[mycelium_app] no listen port found; skipping discovery publish`                        | The QUIC listener did not bind, or the node is not running `-proto_dist mycelium` | Confirm the listener bound (`netstat -unlp \| grep beam`). Confirm `-proto_dist mycelium` in your boot args.                       |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `mycelium_discovery_file:register/3` crashes on string input | (Fixed in 0.2.x.) Backend used to require atom only | Already accepts atom, binary, and string. If you still see this, you are on an old build. |
-| `mycelium_discovery_dns: no records for <host>`          | DNS SRV/A records missing                            | `src/mycelium_discovery.erl:69` warning. Confirm the zone publishes records for the host portion of every node name. |
-| File-based discovery: peer not found                     | Discovery dir not shared across hosts                | All cluster nodes must read and write the same directory. On Kubernetes use a shared volume; on bare metal use NFS or rsync. |
+## Cluster membership instability
 
-## Idle dist GC
+| Symptom                                                            | Likely cause                                                          | What to do                                                                                                            |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| Nodes oscillate in and out of the active view                      | Network instability or `max_fail_count` too low                       | Inspect `mycelium.hyparview.peer_down` by `reason`. Tune `max_fail_count`, `base_backoff_ms`.                          |
+| Active view grows past `active_size`                               | Should not happen post-decoupling; HyParView caps the active view itself | Confirm the running build. `mycelium:active_view/0` should never exceed `active_size`; `erlang:nodes/0` may legitimately be larger. |
+| `peer_up`/`peer_down` events arrive in unexpected orders            | Multiple shuffles interleaving                                         | Order is best-effort; consume both events and treat them as state transitions, not strict sequences.                  |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `mycelium.dist_gc.reap` rate consistently high           | App opens dist channels faster than GC's min-age     | Raise `dist_gc_min_age_ms` so transient sends don't get reaped mid-conversation. |
-| Streams on a non-active peer keep disappearing           | App used short-lived processes to own streams        | Pin a long-lived owner pid; the GC won't reap channels with live streams, but it can't see a stream owned by a dead process. |
-| GC never reaps anything                                  | Every peer is either active-view or carries streams  | This is correct behavior. Confirm by checking the predicate in `src/mycelium_dist_gc.erl:132`. |
+## Discovery and ports
 
-## Cookie / dist handshake
+| Symptom                                                            | Likely cause                                                          | What to do                                                                                                            |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| Connection refused on the dist port                                | Firewall, or `listen_port` not what you think                          | `netstat -unlp \| grep beam` shows the actual port; check container or host firewall rules.                            |
+| A new container cannot reach existing peers                        | docker-compose discovery shares no state between containers            | Provide a static topology (see `docker/cluster-topology.config` in the project), or share a volume for the file backend. |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| `{exit, normal}` immediately after dist handshake start  | Cookie mismatch                                      | Set `mycelium.dist_cookie` consistently across the cluster; `mycelium_app:init_dist_cookie/0` applies the env to every node. |
-| Peer connects but `nodes()` shows only itself            | Cookie or proto_dist mismatch                        | Confirm both sides use `-proto_dist mycelium` and the same cookie atom. |
+## Idle dist-channel GC
 
-## Metrics absent
+| Symptom                                                            | Likely cause                                                          | What to do                                                                                                            |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `mycelium.dist_gc.reap` rate is high                               | Application opens dist channels faster than GC's `min_age`             | Raise `dist_gc_min_age_ms` so transient sends do not get reaped mid-conversation.                                      |
+| Streams on a non-active peer keep disappearing                     | Stream owners are short-lived pids; GC sees no live owner             | Pin a long-lived owner pid for any stream you expect to outlive the call that opened it.                                |
+| GC never reaps anything                                            | Every peer is in active view or carries a live stream                  | This is correct behaviour; no action needed.                                                                          |
 
-| Symptom                                                  | Likely cause                                         | Where to look                                                 |
-|----------------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------|
-| No `mycelium.*` instruments visible in exporter          | `instrument` app not started, or no exporter wired   | `application:which_applications()` must show `instrument`. Confirm the exporter (`instrument_prometheus`, OTLP, or `instrument_live`) is started. |
-| Counters present but always zero                         | Code path didn't fire on this run                    | Check `mycelium_metrics` callsites and the corresponding seam in `src/mycelium_hyparview_events.erl`, `mycelium_dist_auth_stream.erl`, `mycelium_plumtree.erl`, `mycelium_dist_gc.erl`. |
+## Cookies and Erlang dist handshake
+
+| Symptom                                                            | Likely cause                                                          | What to do                                                                                                            |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `{exit, normal}` immediately after dist handshake start            | Cookie mismatch                                                       | Set `mycelium.dist_cookie` to the same value on every node; `mycelium_app` applies it at start.                        |
+| Peer "connects" but `nodes/0` shows only the local node            | Proto_dist mismatch or cookie mismatch                                 | Confirm both sides have `-proto_dist mycelium` and the same cookie atom.                                              |
+
+## Metrics absent or zero
+
+| Symptom                                                            | Likely cause                                                          | What to do                                                                                                            |
+|--------------------------------------------------------------------|-----------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| No `mycelium.*` instruments in the exporter                        | `instrument` not started, or no exporter wired                         | `application:which_applications/0` must show `instrument`. Confirm the exporter (Prometheus/OTLP/live) is started.    |
+| Counters present but always zero                                   | The code path never fired on this run                                  | Cross-check the seam in the relevant module (`mycelium_hyparview_events`, `mycelium_dist_auth_stream`, `mycelium_plumtree`, `mycelium_dist_gc`). |
+| `dist.auth.attempts{outcome=fail}` rising                          | Something rejected the handshake (key, cookie, clock, mode)            | Skim the recent log for `key_mismatch`, `untrusted_key`, `signature_invalid`, `auth_stream_timeout`.                  |
+
+## When to look at logs vs metrics
+
+- **Metrics** are good for "is something happening at the wrong
+  rate". Use them for paging, dashboards, capacity planning.
+- **Logs** are good for "what was the specific reason". The auth
+  rejection log lines carry the node atom and (for key mismatch)
+  the fingerprints; the discovery log lines carry the host that
+  failed to resolve.
+
+Both layers share a vocabulary; if you see `key_mismatch` in a
+log, expect the `dist.auth.attempts{outcome=fail}` counter to
+have moved at the same time.

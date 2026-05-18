@@ -1,47 +1,104 @@
-# Connection Migration
+# Connection migration
 
-Mycelium runs on `quic_dist`, so each peer is a single QUIC connection
-under the dist channel. RFC 9000 §9 lets a QUIC connection rebind to
-a new local UDP 4-tuple (e.g. when the local NIC, IP, or default route
-changes) without losing keys, streams, or ordering. Mycelium exposes
-that as a one-shot trigger; deciding *when* to migrate is left to the
-caller.
+Mycelium runs the Erlang distribution channel on a single QUIC
+connection per peer. QUIC supports connection migration: an
+established session can rebind to a new local UDP 4-tuple without
+losing keys, ordering, or streams. RFC 9000 §9 specifies the
+mechanism; mycelium exposes it as a one-shot trigger.
 
-## API
+This document covers when migration is useful, how to call it,
+and a small watchdog recipe for driving it from an application.
+
+## What migration solves
+
+Three motivating cases:
+
+- A laptop running mycelium moves from Wi-Fi to a wired link, or
+  from one Wi-Fi network to another, or from Wi-Fi to a cellular
+  uplink. The local IP changes; the peer expects packets on the
+  old 4-tuple.
+- A server's outbound IP changes because of a CGNAT shuffle, a
+  routing-table change, or a NIC swap. The peer holds a
+  connection that is now silently dead.
+- A user-space tunnel (WireGuard, MASQUE, an SSH `ProxyCommand`)
+  reconnects and exposes a new local socket.
+
+In each case the alternatives are unsatisfactory: closing and
+re-establishing the dist channel triggers HyParView churn,
+flushes any in-flight Erlang dist data, and (with strict trust
+mode) requires a full re-handshake. Migration moves the session
+to the new path in milliseconds, with no observable interruption
+in the Erlang layer.
+
+Migration is *not* something mycelium does on its own. It is an
+application-driven trigger: you decide when the local network has
+changed enough to warrant a path validation.
+
+## The API
 
 ```erlang
-%% Trigger path migration to a new local 4-tuple.
-ok                     = mycelium:migrate_peer(Node).
-ok                     = mycelium:migrate_peer(Node, #{timeout => 5000}).
+ok                              = mycelium:migrate_peer(Node).
+ok                              = mycelium:migrate_peer(Node, #{timeout => 5000}).
 
-%% Common error returns:
-{error, not_connected}        %% no current dist channel to Node
-{error, no_conn}              %% controller alive but conn pid gone
+%% Errors:
+{error, not_connected}          %% no current dist channel to Node
+{error, no_conn}                %% controller alive but QUIC conn gone
 {error, peer_disable_migration} %% peer set the transport-param flag
-{error, timeout}              %% path validation didn't complete
+{error, timeout}                %% path validation didn't complete in time
 ```
 
-`migrate_peer/1,2` is synchronous; it blocks until path validation
-completes (or the configured timeout elapses, default 5000 ms). On
-success the dist channel and any open user streams ride through
-with no app-visible interruption and no HyParView churn.
+The call is synchronous. It blocks until the new path is
+validated by the QUIC layer (the PATH_CHALLENGE / PATH_RESPONSE
+exchange) or until the timeout fires. The default timeout is
+5000 ms.
 
-## Custom triggers
+On success the dist channel and any open user streams ride
+through; the application does not see an interruption.
 
-Mycelium does not run an automatic migration policy. A custom
-trigger is an external process or module that decides when to call
-`migrate_peer/1`. The pieces it needs are already public:
+## Error semantics
 
-- `mycelium_hyparview_events:subscribe/1` — `peer_up`/`peer_down`
-  notifications, so the trigger knows the active view.
-- `mycelium_path_stats:srtt/1` and `summary/1` — current QUIC path
-  stats per peer (srtt, latest_rtt, cwnd, in_flight, congested).
-- `mycelium:migrate_peer/1,2` — the trigger itself.
+A short note on each error.
+
+- `{error, not_connected}` and `{error, no_conn}` mean there is
+  nothing to migrate. The dist channel does not exist or has
+  already gone away. Wait for `peer_up` and try again.
+- `{error, peer_disable_migration}` is **terminal for the
+  connection**. The peer set the QUIC
+  `disable_active_migration` transport parameter at handshake
+  time; no migration on this connection will ever succeed.
+  Cache this fact and skip the peer until HyParView reports
+  `peer_down`/`peer_up`. Retrying on the same connection wastes
+  time.
+- `{error, timeout}` means the new path did not validate within
+  the budget. Either the new route is genuinely broken (in
+  which case HyParView will notice the failure and demote the
+  peer at its own cadence), or it is simply slow. Retrying
+  with a larger timeout is fine; the old path remains usable
+  while the new path is being validated.
+
+## Writing a trigger
+
+Mycelium does not run an automatic migration policy. The
+deliberate choice: deciding "the network has changed" depends on
+your environment (mobile device, container with a CGNAT, custom
+tunnel), and a one-size-fits-all heuristic would be wrong for
+half of them.
+
+The pieces you need are already public:
+
+- `mycelium:subscribe/0` produces `peer_up` / `peer_down` events,
+  so a trigger knows the current active view.
+- `mycelium_path_stats:srtt/1` returns the smoothed RTT for a
+  peer's underlying QUIC path.
+- `mycelium_path_stats:summary/1` returns a richer snapshot
+  (srtt, latest_rtt, cwnd, in_flight, congested).
+- `mycelium:migrate_peer/1,2` is the trigger.
 
 ### Recipe: srtt-threshold watchdog
 
-A minimal watchdog that migrates any peer whose smoothed RTT exceeds
-a threshold for two consecutive samples:
+The simplest useful trigger samples each active peer's SRTT
+periodically and migrates a peer whose SRTT exceeds a threshold
+on two consecutive samples:
 
 ```erlang
 -module(my_migration_watchdog).
@@ -52,10 +109,11 @@ a threshold for two consecutive samples:
 -define(SAMPLE_MS, 5000).
 -define(THRESHOLD_US, 200000).   %% 200 ms
 
-start_link() -> gen_server:start_link(?MODULE, [], []).
+start_link() ->
+    gen_server:start_link(?MODULE, [], []).
 
 init([]) ->
-    ok = mycelium:subscribe(),                  %% peer_up/peer_down
+    ok = mycelium:subscribe(),
     erlang:send_after(?SAMPLE_MS, self(), tick),
     {ok, #{strikes => #{}}}.
 
@@ -63,9 +121,12 @@ handle_info(tick, #{strikes := Strikes} = S) ->
     NewStrikes = lists:foldl(fun sample/2, Strikes, mycelium:active_view()),
     erlang:send_after(?SAMPLE_MS, self(), tick),
     {noreply, S#{strikes := NewStrikes}};
-handle_info({peer_down, Node}, #{strikes := Strikes} = S) ->
+
+handle_info({mycelium_event, {peer_down, Node, _}}, #{strikes := Strikes} = S) ->
     {noreply, S#{strikes := maps:remove(Node, Strikes)}};
-handle_info(_, S) -> {noreply, S}.
+
+handle_info(_, S) ->
+    {noreply, S}.
 
 handle_call(_, _, S) -> {reply, ok, S}.
 handle_cast(_, S)    -> {noreply, S}.
@@ -75,6 +136,8 @@ sample(Node, Strikes) ->
         {ok, Us} when Us > ?THRESHOLD_US ->
             case maps:get(Node, Strikes, 0) of
                 N when N >= 1 ->
+                    %% Spawn so we do not block the watchdog tick on
+                    %% the synchronous migrate call.
                     spawn(fun() -> mycelium:migrate_peer(Node) end),
                     maps:remove(Node, Strikes);
                 N ->
@@ -85,42 +148,53 @@ sample(Node, Strikes) ->
     end.
 ```
 
-Two design notes:
+Two design points worth keeping in your own watchdog:
 
-- **Don't block the watchdog on `migrate_peer/1`.** Path validation
-  takes up to the configured timeout. Spawn the call so the timer
-  cadence stays steady.
-- **Remember `peer_disable_migration`.** It's a static transport
-  parameter — once you see it, retries on the same connection will
-  always return the same error. Cache it and skip that peer until
-  HyParView reports `peer_down`/`peer_up`.
+- **Do not block the trigger on `migrate_peer/1`.** Path
+  validation can take up to the configured timeout (default
+  5000 ms). Spawn the call so the sample cadence stays steady.
+- **Cache `peer_disable_migration`.** Once a peer returns it,
+  retries on the same connection will always return the same
+  error. Skip the peer until you see `peer_down`/`peer_up`.
 
 ### Other trigger sources
 
-Whatever signals a network change in your environment can drive the
-same call:
+Anything that signals a local network change can drive the same
+call:
 
-- `inet`/`net_kernel` netlink-style events (Linux) on default-route
-  flip.
-- Custom `os:cmd("scutil ...")` / `SCNetworkReachability` poll on
-  macOS.
-- An MDM/management agent telling the node "you're now on cellular".
-- A user-space VPN/tunnel daemon that just rebound its local socket.
+- Linux `inet`/`netlink` events on default-route flip.
+- macOS `SCNetworkReachability` notifications.
+- A user-space VPN/tunnel daemon that just rebound its local
+  socket.
+- An MDM agent telling the node "you're now on cellular".
+- A docker network reconfiguration.
 
-In all cases the trigger code is the same one-line call to
-`mycelium:migrate_peer(Node)`.
+In each case the trigger code is the same one-line call to
+`mycelium:migrate_peer(Node)`. The trigger itself is your code
+and your decision.
 
-## When migration fails
+## Multi-peer migration
 
-`{error, peer_disable_migration}` is terminal for the connection;
-typically you let HyParView demote and re-route at its own cadence.
+Migrating only one peer is the common case (one peer is on a new
+route; the others remain reachable). If your local network change
+affects many or all peers, iterate:
 
-`{error, timeout}` means the new path didn't validate in time —
-either the route is genuinely broken (HyParView will eventually
-notice and demote) or simply slow. Retrying with a larger timeout is
-fine; the connection stays usable on the old path while validation is
-in flight.
+```erlang
+[ spawn(fun() -> mycelium:migrate_peer(N) end)
+  || N <- mycelium:active_view() ].
+```
 
-`{error, not_connected}` and `{error, no_conn}` mean there is no
-QUIC connection to migrate — the peer is gone or the dist channel
-hasn't formed yet. Wait for `peer_up`.
+Spawning per call keeps the trigger from serialising on a slow
+peer's timeout.
+
+## Interaction with relays
+
+If you are routing some peers through an external relay (see
+[external-relay.md](external-relay.md)), the same migration
+primitive applies: register a new socket adapter pointing at the
+new relay path, then call `mycelium:migrate_peer/1,2`. The
+running QUIC connection migrates to the new path; the dist
+controller continues sending on the new adapter.
+
+This is how a relay swap can be done without dropping any
+in-flight dist traffic.

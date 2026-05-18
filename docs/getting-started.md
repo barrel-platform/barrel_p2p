@@ -1,65 +1,93 @@
-# Getting Started with Mycelium
+# Getting started
 
-This guide walks you through setting up Mycelium in your Erlang project and running your first distributed cluster.
+This guide takes a working Erlang/OTP environment and walks you to a
+two-node mycelium cluster, with a real handshake and a real service
+lookup. We do not skip the underlying ideas: each step explains what
+the system does and why.
+
+The audience is an Erlang developer comfortable with `gen_server`,
+releases, and the standard distribution. You do not need prior
+knowledge of HyParView, QUIC, or CRDTs; we will introduce the parts
+that matter as they appear.
+
+## What you are about to build
+
+A mycelium cluster is, on the surface, a normal Erlang cluster:
+`Pid ! Msg`, `rpc:call/4`, `gen_server:call/2`, and `global` all work
+as you expect. Under that surface, three pieces replace the default
+Erlang behaviour:
+
+- **The dist carrier**. Instead of TCP, mycelium runs the distribution
+  channel over a single QUIC connection per peer. That gives us
+  encryption by default, multiplexed streams on top of the same
+  connection, and connection migration when the local network
+  changes.
+- **The membership protocol**. Instead of a full mesh where every
+  node opens a TCP connection to every other node, each node keeps
+  a small, bounded set of *gossip* peers (the HyParView "active
+  view", typically five). The cluster as a whole remains fully
+  addressable through OTP's demand-driven auto-connect.
+- **A service registry**. Processes can be registered under a name
+  and discovered from any node in the cluster, without you running a
+  separate service-discovery service.
+
+The rest of this guide is the smallest path from a fresh checkout to
+two nodes exchanging a message.
 
 ## Prerequisites
 
-- Erlang/OTP 27 or later
-- rebar3 build tool
-- `-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false`
-  in your boot args. That's the whole dist setup; `mycelium_dist`
-  layers on top of upstream `quic_dist` and fills in defaults at
-  listen time.
+- Erlang/OTP 27 or later.
+- `rebar3`.
+- A single UDP port available on each node (the default is
+  `0`, meaning "let the OS assign one"; in production you pin it).
 
-## First-boot setup: TLS cert and Ed25519 keypair
+We assume no EPMD daemon is running. Mycelium does not use it: peers
+discover each other through the discovery chain described later.
 
-Each node carries two pieces of identity material on disk.
+## One-time setup: where credentials live
 
-**1. QUIC TLS certificate (`data/quic/node.crt`, `node.key`).**
-`mycelium_dist` generates a self-signed pair on first listen, so
-there's nothing to do for the default path. Override the directory
-with `{mycelium, [{quic_cert_dir, "..."}]}` in `sys.config`, or
-provide a different cert via `{quic, [{dist, [{cert_file, ...},
-{key_file, ...}]}]}`.
+Each mycelium node carries two kinds of credentials on disk. They are
+generated the first time the node boots; you do not have to create
+them manually.
 
-If you want to pre-generate the material out-of-band (release
-build, ansible, etc.), the bundled CLI script is idempotent:
+```
+data/
+├── quic/
+│   ├── node.crt    (TLS certificate; auto-generated, self-signed)
+│   └── node.key    (TLS private key; chmod 0600)
+└── keys/
+    ├── node.pub    (Ed25519 public key, 32 bytes)
+    ├── node.key    (Ed25519 private key, 32 bytes; chmod 0600)
+    └── trusted/
+        └── ...     (one .pub per peer this node has pinned)
+```
+
+The two layers serve different purposes:
+
+- **The TLS material** secures the *transport*. QUIC needs a cert to
+  start a listener. Mycelium uses self-signed certs by default; the
+  certificate's identity is the Ed25519 public key recorded below,
+  not the CN field.
+- **The Ed25519 keypair** is the node's *identity*. After the QUIC
+  TLS handshake completes, the two peers run a short
+  challenge-response over a pair of QUIC streams to prove they hold
+  the private key matching the public key they presented. The
+  cluster uses this layer, not the TLS layer, to decide whether to
+  trust the peer.
+
+Both materials are regenerated on a fresh boot if missing. You can
+also pre-generate the TLS material with the helper script:
 
 ```bash
 _build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh
 ```
 
-Flags: `--out-dir DIR` (default `./data/quic`), `--cn NAME`
-(default `mycelium`), `--days N`, `--key-bits N`, `--force` to
-overwrite.
+(`--out-dir`, `--cn`, `--days`, `--key-bits`, `--force` are the
+flags; the script is idempotent unless you pass `--force`.)
 
-**2. Ed25519 identity keypair (`data/keys/`).** Used by the dist auth
-callback for peer authentication. The keypair is **generated lazily**
-on first `mycelium_app:start/2` (via
-`mycelium_dist_auth:ensure_keypair/0`); no manual step is required.
-The public key fingerprint is logged on startup.
+## Adding mycelium to a project
 
-To inspect or rotate the keypair manually after the application is
-running:
-
-```erlang
-%% Read the current keypair.
-{ok, PubKey} = mycelium_dist_auth:get_public_key().
-mycelium_dist_keys:fingerprint(PubKey).
-%% => 32-byte SHA-256 binary
-
-%% Force-regenerate (deletes existing files first).
-file:delete("data/keys/node.pub"),
-file:delete("data/keys/node.priv"),
-ok = mycelium_dist_auth:ensure_keypair().
-```
-
-For pre-shared (`strict`) trust where every peer key is provisioned
-ahead of time, see [Authentication](authentication.md).
-
-## Adding Mycelium to Your Project
-
-Add mycelium to your `rebar.config`:
+In `rebar.config`:
 
 ```erlang
 {deps, [
@@ -67,230 +95,274 @@ Add mycelium to your `rebar.config`:
 ]}.
 ```
 
-Fetch the dependency:
+Fetch and compile:
 
 ```bash
 rebar3 get-deps
 rebar3 compile
 ```
 
-## Configuration
+That is the full dependency setup. Mycelium pulls in the upstream
+QUIC implementation, `hlc` for hybrid logical clocks, and `instrument`
+for metrics.
 
-Create or update your `config/sys.config`:
+## Configuring the node
+
+Mycelium is opinionated about defaults. A minimal `config/sys.config`
+that lets you boot a node looks like this:
 
 ```erlang
 [
     {mycelium, [
         %% HyParView membership parameters
-        {active_size, 5},         %% Connected peers (log n recommended)
-        {passive_size, 30},       %% Known peers cache
-        {shuffle_period, 10000},  %% View exchange interval (ms)
+        {active_size, 5},          %% Maximum concurrent gossip peers
+        {passive_size, 30},        %% Known-but-disconnected peers
 
         %% Network
-        {listen_port, 9100},      %% Distribution port (0 = auto)
-        {contact_nodes, []},      %% Bootstrap nodes
+        {listen_port, 9100},       %% 0 lets the OS choose
 
-        %% Authentication (optional)
-        {auth_enabled, true},
-        {auth_trust_mode, tofu}   %% tofu | strict
+        %% Authentication
+        {auth_enabled, true},      %% Default; flip to false only for dev
+        {auth_trust_mode, tofu}    %% tofu | strict
     ]}
 ].
 ```
 
-### Configuration Options
+The two membership parameters deserve a word. The *active view* is
+the small set of peers a node currently exchanges gossip with. The
+protocol guarantees that the whole cluster is reachable from any
+node by repeatedly forwarding through this view, so the active view
+does not need to grow with the cluster: five peers per node is
+enough for thousands of nodes. The *passive view* is a cache of
+known peers that are not currently in the active view; they are
+warm spares used when an active peer drops.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `active_size` | 5 | Maximum connected peers. Set to approximately log(n) where n is expected cluster size |
-| `passive_size` | 30 | Maximum known peers in passive view |
-| `arwl` | 6 | Active Random Walk Length for join propagation |
-| `prwl` | 3 | Passive Random Walk Length |
-| `shuffle_length` | 8 | Peers exchanged per shuffle round |
-| `shuffle_period` | 10000 | Milliseconds between shuffle rounds |
-| `listen_port` | 0 | Port for incoming connections (0 = OS assigned) |
-| `contact_nodes` | [] | List of bootstrap nodes to join on startup |
-| `auth_enabled` | true | Enable Ed25519 peer authentication |
-| `auth_trust_mode` | tofu | `tofu` (trust on first use) or `strict` (pre-shared keys only) |
+Trust mode controls the authentication layer:
 
-## Starting Your First Node
+- `tofu` ("trust on first use") is the default. The first time a
+  node meets a peer, it records the peer's Ed25519 public key. From
+  then on, that peer is rejected if it presents a different key.
+- `strict` requires every peer's key to be pinned in advance. Useful
+  in environments where you do not want any first-contact window.
 
-### Option 1: Interactive Shell
+See [authentication.md](authentication.md) for the operational side
+of trust modes.
 
-Boot a node — the cert is created on first listen, no preflight
-needed:
+## Boot arguments
+
+Two BEAM-level boot flags switch Erlang's distribution layer to
+mycelium:
+
+```bash
+-proto_dist mycelium
+-epmd_module mycelium_epmd
+-start_epmd false
+```
+
+The first selects mycelium as the dist module. The second tells
+`net_kernel` to use mycelium's discovery shim instead of the stock
+EPMD daemon. The third disables the daemon entirely; mycelium does
+not need it.
+
+These three lines are the entire dist configuration. Everything
+else, certificate paths, the auth callback, the discovery chain, is
+projected by mycelium into the underlying `quic_dist` app
+environment when the listener starts.
+
+## Starting one node
+
+The fastest path is a `rebar3 shell` with the boot args injected:
 
 ```bash
 ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node1
 ```
 
-```erlang
-%% Mycelium starts automatically with the application
-%% Verify it's running
-mycelium:active_view().
-%% Returns: [] (no peers yet)
-```
-
-### Option 2: Release
-
-Add mycelium to your release in `rebar.config`:
+Inside the shell:
 
 ```erlang
-{relx, [
-    {release, {myapp, "1.0.0"}, [
-        myapp,
-        mycelium
-    ]},
-    {sys_config, "config/sys.config"}
-]}.
+1> mycelium:active_view().
+[]
 ```
 
-## Joining a Cluster
+You have a running mycelium node with no peers yet. The TLS material
+and the Ed25519 keypair are in `data/quic/` and `data/keys/`.
 
-Start two nodes and have them find each other:
+To inspect the identity:
 
-**Terminal 1 - First Node (Seed)**
+```erlang
+2> {ok, PubKey} = mycelium_dist_auth:get_public_key().
+{ok, <<...32 bytes...>>}
+3> mycelium_dist_keys:fingerprint(PubKey).
+<<...32 bytes SHA-256...>>
+```
+
+The fingerprint is what you log and share when verifying a node out
+of band.
+
+## Forming a two-node cluster
+
+Open a second terminal and start a second node:
+
 ```bash
 ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
-rebar3 shell --sname seed --config config/sys.config
+rebar3 shell --config config/sys.config --sname node2
 ```
 
-**Terminal 2 - Second Node**
-```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
-rebar3 shell --sname node1 --config config/sys.config
-```
+On `node2`, ask to join `node1`:
 
 ```erlang
-%% Join the seed node
-mycelium:join('seed@localhost').
-%% Returns: ok
-
-%% Verify connection
-mycelium:active_view().
-%% Returns: ['seed@localhost']
+1> mycelium:join('node1@yourhost').
+ok
+2> mycelium:active_view().
+['node1@yourhost']
 ```
 
-### Using Contact Nodes
+On `node1`, you will see the symmetric view:
 
-For automatic cluster join on startup, configure contact nodes:
+```erlang
+4> mycelium:active_view().
+['node2@yourhost']
+```
+
+What happened, in order:
+
+1. `node2`'s `join/1` produced a `JOIN` message to `node1`.
+2. The QUIC layer opened a UDP-backed connection between the two
+   nodes. The TLS handshake completed using the self-signed certs.
+3. The Ed25519 challenge-response ran on a pair of unidirectional
+   QUIC streams. Because both nodes are in `tofu` mode and neither
+   had seen the other before, both pinned the other's public key
+   under its node atom.
+4. The standard Erlang dist handshake then ran on top of the
+   authenticated channel.
+5. HyParView added each side to the other's active view.
+
+From this point on, anything you can do with stock Erlang
+distribution works: `rpc:call/4`, `Pid ! Msg`, `global`, links,
+monitors.
+
+### Joining without manual intervention
+
+For production, the join is normally driven by the configuration
+file:
 
 ```erlang
 {mycelium, [
-    {contact_nodes, ['seed@192.168.1.10', 'seed@192.168.1.11']}
+    {contact_nodes, ['seed1@host', 'seed2@host']}
 ]}
 ```
 
-Mycelium will attempt to join via these nodes when the application starts.
+When mycelium starts, it tries each contact node until one responds.
+You do not have to call `mycelium:join/1` by hand.
 
-## Verifying Connectivity
+## A first service lookup
 
-### Check Membership
+Service registration is the part of mycelium that you reach for
+most often when building a real application. A service is a process
+registered under a name; that name is replicated across the cluster
+so any peer can find the process.
 
-```erlang
-%% Connected peers (active view)
-mycelium:active_view().
-%% ['node2@host', 'node3@host']
-
-%% Known peers (passive view)
-mycelium:passive_view().
-%% ['node4@host', 'node5@host', ...]
-```
-
-### Subscribe to Events
+On `node1`:
 
 ```erlang
-%% Subscribe the shell process
-mycelium:subscribe().
-
-%% When nodes join/leave, you'll receive:
-%% {hyparview_event, {joined, 'newnode@host'}}
-%% {hyparview_event, {left, 'oldnode@host'}}
-
-%% Unsubscribe when done
-mycelium:unsubscribe(self()).
+5> Pid = spawn(fun() -> timer:sleep(infinity) end).
+<0.123.0>
+6> mycelium:register_service(my_worker, Pid, #{role => worker}).
+ok
 ```
 
-### Register and Find Services
+The metadata map is free-form; you can store anything that fits
+naturally in a Map.
+
+On `node2`, a moment later (replication is asynchronous, typically
+under a second):
 
 ```erlang
-%% Register a service on this node
-mycelium:register_service(my_service).
+3> mycelium:lookup(my_worker).
+{ok, [{my_worker, 'node1@yourhost', <0.123.0>, #{role => worker}}]}
 
-%% On another node, find it
-{ok, Pid} = mycelium:whereis_service(my_service).
+4> {ok, FoundPid} = mycelium:whereis_service(my_worker).
+{ok, <0.123.0>}
 
-%% List all services in the cluster
-mycelium:list_services().
-%% [my_service]
+5> FoundPid ! hello.
+hello
 ```
 
-## Leaving the Cluster
+Three things to notice:
+
+- `lookup/1` returns all instances registered under the name. There
+  may be more than one if multiple nodes register the same name.
+- `whereis_service/1` returns a single instance and prefers a local
+  one when there is a choice. It is the function you reach for from
+  application code.
+- The pid we got back is the *real* pid on `node1`. The send-bang
+  uses standard Erlang distribution, opened on demand. No mycelium
+  primitive is on the data path once you hold the pid.
+
+### Subscribing to membership and service events
+
+If your application needs to react to cluster changes:
 
 ```erlang
-%% Graceful departure - notifies peers
-mycelium:leave().
+6> mycelium:subscribe().
+ok
+%% receive {mycelium_event, {peer_up, Node}} | {mycelium_event, {peer_down, Node, Reason}}
+
+7> mycelium:subscribe_services().
+ok
+%% receive {mycelium_service_event, {service_registered, Name, Node}}
+%%       | {mycelium_service_event, {service_unregistered, Name, Node}}
+%%       | {mycelium_service_event, {service_down, Name, Node, Reason}}
 ```
 
-## Troubleshooting
+These two subscription bus are independent and idempotent: subscribing
+twice from the same pid is a no-op. Both deliver standard Erlang
+messages, so you can route them through your existing handler.
 
-### Node Won't Join
+## Tearing down
 
-1. Verify the contact node is reachable: `net_adm:ping('contact@host')`
-2. Check firewall allows the listen port
-3. Ensure Erlang cookies match if using distributed Erlang
+Either call `mycelium:leave/0` for a graceful exit (peers move you
+to their passive view immediately), or stop the application:
 
-### No Services Found
+```erlang
+8> mycelium:leave().
+ok
+```
 
-1. Verify the service is registered: `mycelium:list_services()`
-2. Check active view has peers: `mycelium:active_view()`
-3. Allow time for CRDT replication (typically < 1 second)
+In production, the recommended shutdown order is
+`mycelium:leave/0`, then `application:stop(mycelium)`, then
+`init:stop/0`. The reasoning is in [deployment.md](deployment.md).
 
-### Authentication Failures
+## A quick look at what just happened
 
-Mycelium uses Ed25519 authentication by default with two trust modes:
+Stepping back from the commands you typed:
 
-- **TOFU mode** (default): Keys are trusted on first contact
-- **Strict mode**: Peer keys must be pre-registered
+- Two BEAM nodes ran with `-proto_dist mycelium`. That replaced the
+  default TCP dist with a QUIC carrier, automatically projected the
+  certificate paths and the auth callback, and disabled EPMD.
+- Each node generated its identity material on first boot. No
+  manual provisioning.
+- A join over QUIC was authenticated end to end: TLS at the
+  transport layer, Ed25519 at the identity layer, the dist cookie
+  at the Erlang layer.
+- Membership was managed by HyParView with active view size 5; even
+  with thousands of nodes, each node would keep only five active
+  peers.
+- The service registry is a CRDT (an Observed-Remove Map). That is
+  why we said "a moment later": registrations are gossiped through
+  the cluster and merge without coordination.
 
-Common issues:
+## Where to go next
 
-1. **Key mismatch error**: A node's key changed (regenerated or MITM attack)
-   ```erlang
-   %% Inspect the fingerprint (SHA-256 of the public key) for logs.
-   Fp = mycelium_dist_keys:fingerprint(ProblemPubKey).
-
-   %% Lookup, delete, and re-trust are keyed by node atom.
-   {ok, StoredPubKey} = mycelium_dist_keys:lookup_key('peer@host').
-   mycelium_dist_keys:delete_key('peer@host').
-   ```
-
-2. **Untrusted key in strict mode**: Node not pre-registered
-   ```erlang
-   %% Register the peer's public key under its node atom.
-   PeerPubKey = <<...>>.  %% Get from peer
-   mycelium_dist_keys:store_key('peer@host', PeerPubKey).
-   ```
-
-3. **View trusted keys**:
-   ```erlang
-   mycelium_dist_keys:list_trusted().
-   %% Returns list of #peer_key{fingerprint, public_key, ...}
-   ```
-
-See [Authentication](authentication.md) for details on key provisioning and strict mode setup.
-
-## Running the test suite
-
-`rebar3 ct` runs the local CT suites (no docker needed). The
-multi-node integration suites are docker-only and live behind
-the wrappers in `docker/scripts/`. See [Testing](testing.md)
-for the full command list.
-
-## Next Steps
-
-- [Tutorial: Building P2P Applications](tutorial.md) - Build a distributed chat system
-- [Authentication](authentication.md) - Key management and trust modes
-- [External Relay](external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
-- [Testing](testing.md) - Local and docker test commands
-- [Internals](internals.md) - Understand the protocols and architecture
+- [tutorial.md](tutorial.md) builds a small distributed application
+  (a chat server) using the primitives introduced here.
+- [internals.md](internals.md) describes the protocols in more
+  depth: HyParView's failure handling, Plumtree's gossip tree, the
+  OR-Map merge, and how the QUIC carrier is wired.
+- [authentication.md](authentication.md) covers strict mode, key
+  rotation, and the trust store on disk.
+- [deployment.md](deployment.md) is the operational reference: ports,
+  permissions, sizing, shutdown.
+- [troubleshooting.md](troubleshooting.md) is the table to skim when
+  the cluster does not do what you expect.

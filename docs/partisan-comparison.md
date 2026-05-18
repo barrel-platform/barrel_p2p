@@ -1,228 +1,244 @@
-# Mycelium vs Partisan Comparison
+# Mycelium and Partisan
 
-Both Mycelium and Partisan address the scalability limitations of Erlang's built-in distribution. This guide helps you understand their differences and choose the right library for your needs.
+Both mycelium and [Partisan](https://github.com/lasp-lang/partisan)
+address the limits of Erlang's built-in distribution: the full-mesh
+topology that becomes expensive past a few dozen nodes, and the
+lack of secure-by-default authentication between peers. They reach
+that target from different directions; this document helps you
+choose between them.
 
-## Overview
+The short version: pick mycelium when you want service discovery,
+secure dist out of the box, and few configuration choices. Pick
+Partisan when you want topology flexibility, explicit message
+channels, and a research-grade toolkit.
 
-### Partisan
+## What each one is
 
-Partisan is a flexible, TCP-based distributed systems framework that replaces Erlang distribution. It provides multiple overlay topologies and a channel-based communication model, designed for research and production distributed systems.
+**Partisan** is a distributed-systems toolkit. It replaces Erlang
+distribution entirely with its own peer-service abstraction;
+several topology backends are available (full mesh, HyParView,
+client-server, custom), and messages flow through named channels
+with configurable parallelism. Partisan is designed for research
+on distributed protocols and for production systems that need the
+flexibility.
 
-**Key characteristics:**
-- Multiple topology backends (full mesh, HyParView, client-server, etc.)
-- Channel-based message routing with parallelism
-- Pluggable storage and broadcast modules
-- Focus on research flexibility
+**Mycelium** is an enhancement to Erlang distribution. It runs as
+a proto_dist module, so `Pid ! Msg`, `gen_server:call/2`,
+`rpc:call/4`, and `global` keep working. It ships one membership
+protocol (HyParView), one broadcast protocol (Plumtree), one
+service registry (CRDT-backed), one transport (QUIC), and one
+authentication layer (Ed25519). The defaults are opinionated; the
+configuration surface is small.
 
-### Mycelium
+## Side by side
 
-Mycelium is an Erlang distribution enhancement focused on HyParView membership with integrated service discovery. It augments rather than replaces Erlang distribution.
+| Dimension                         | Partisan                                                       | Mycelium                                                                |
+|-----------------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------|
+| Relationship to Erlang dist       | Replaces                                                       | Enhances (proto_dist module over QUIC)                                  |
+| Topology                          | Configurable (full mesh, HyParView, client-server, custom)     | HyParView only                                                          |
+| Messaging surface                 | `partisan_peer_service:forward_message/2,3` + channels         | Standard `Pid ! Msg`, `gen_server:call/2`, etc.                          |
+| Service discovery                 | External (or build on Plumtree)                                | Built in (CRDT-backed registry)                                          |
+| Authentication                    | Optional                                                       | Ed25519 mutual auth by default                                          |
+| State replication                 | Pluggable broadcast modules                                    | Plumtree + OR-Map CRDT (fixed)                                          |
+| Transport                         | TCP                                                            | QUIC (encrypted by default; connection migration)                       |
+| `global` compatibility            | No                                                             | Yes                                                                     |
+| Process monitors / links          | Custom                                                         | Standard Erlang                                                          |
 
-**Key characteristics:**
-- HyParView-only topology with opinionated defaults
-- Built-in CRDT service registry
-- Transparent overlay routing for service discovery
-- Focus on operational simplicity
+## How a message gets sent
 
-## Architecture Comparison
+In Partisan, you reach for the peer-service abstraction:
 
-| Aspect | Partisan | Mycelium |
-|--------|----------|----------|
-| Erlang Distribution | Replaces | Enhances |
-| Topology | Configurable (full mesh, HyParView, etc.) | HyParView only |
-| Service Discovery | External (via Plumtree) | Built-in CRDT registry |
-| Message Routing | Channels with explicit parallelism | Transparent overlay routing |
-| Configuration | Highly configurable | Convention over configuration |
-| State Sync | Pluggable broadcast | Plumtree with OR-Map CRDT |
-
-### Distribution Model
-
-**Partisan** replaces Erlang distribution entirely:
 ```erlang
-%% Messages use partisan_peer_service
+%% Forward a message to a peer (default channel)
 partisan_peer_service:forward_message(Node, Message).
 
-%% Or via channels
-partisan_peer_service:forward_message(Node, Channel, Message).
+%% Forward on a named channel with explicit parallelism
+partisan_peer_service:forward_message(Node, {channel, high_priority}, Message).
 ```
 
-**Mycelium** enhances Erlang distribution:
+The channel layer is where Partisan's flexibility lives: you can
+declare multiple channels with different parallelism degrees, and
+the framework will fan messages out across the configured
+connections.
+
+In mycelium, you reach for whatever you would have reached for in
+plain Erlang:
+
 ```erlang
-%% Standard Erlang messaging still works
+%% Send to a pid
 Pid ! Message.
 
-%% Service discovery adds overlay routing
+%% Or look up a service by name
 {ok, Pid} = mycelium:whereis_service(my_service),
-gen_server:call(Pid, request).
+gen_server:call(Pid, Request).
 ```
 
-### Topology Management
+The dist channel is opened on demand. There are no channels to
+configure.
 
-**Partisan** offers multiple backends:
+## How membership is configured
+
+In Partisan, you pick a topology backend:
+
 ```erlang
-%% Configure topology in sys.config
 {partisan, [
     {peer_service_manager, partisan_hyparview_peer_service_manager}
     %% Or: partisan_full_mesh_peer_service_manager
     %% Or: partisan_client_server_peer_service_manager
+    %% Or: your own
 ]}
 ```
 
-**Mycelium** uses HyParView exclusively:
+In mycelium, you tune HyParView's two main parameters; there is
+no other topology to choose:
+
 ```erlang
 {mycelium, [
-    {active_size, 5},   %% Tune the parameters
+    {active_size, 5},
     {passive_size, 30}
 ]}
 ```
 
-## Feature Comparison
+If you want a non-HyParView topology, mycelium is not the right
+library.
 
-| Feature | Partisan | Mycelium |
-|---------|----------|----------|
-| Full mesh topology | Yes | No |
-| HyParView topology | Yes | Yes (only) |
-| Client-server topology | Yes | No |
-| Service registry | No (use external) | Yes (built-in) |
-| Channels | Yes (named, parallel) | No |
-| Broadcast | Plumtree (configurable) | Plumtree (integrated) |
-| Authentication | Optional | Ed25519 built-in |
-| State replication | Pluggable | OR-Map CRDT |
-| Erlang global | Not compatible | Compatible |
-| Process monitoring | Custom | Standard Erlang |
+## How service discovery works
 
-### Service Discovery
+Partisan does not ship service discovery. You can build it on top
+of `partisan_plumtree_backend` (the upstream broadcast layer) or
+integrate an external registry like Consul.
 
-**Partisan** requires external service discovery:
-```erlang
-%% Use Plumtree or external solution
-partisan_plumtree_backend:broadcast(update, ServiceState).
+Mycelium ships a service registry:
 
-%% Or integrate with external registry
-```
-
-**Mycelium** has built-in service discovery:
 ```erlang
 %% Register
 mycelium:register_service(my_service, #{version => "1.0"}).
 
-%% Discover (anywhere in cluster)
+%% Discover anywhere in the cluster
 {ok, Pid} = mycelium:whereis_service(my_service).
 
 %% Subscribe to changes
 mycelium:subscribe_services().
 ```
 
-### Message Channels
+The registry is a CRDT (an Observed-Remove Map). Adds and
+removes commute; multiple replicas converge without coordination.
+A registration on node A is visible from node B within a fraction
+of a second.
 
-**Partisan** provides explicit parallelism via channels:
+## When to pick mycelium
+
+If you can answer "yes" to two or more of these, mycelium is
+probably the right choice:
+
+- "I want service discovery in the box, not as a separate
+  service."
+- "I want `Pid ! Msg`, `gen_server`, and `global` to work
+  normally."
+- "I prefer opinionated defaults to a large configuration
+  surface."
+- "I want encryption between peers by default, with no extra
+  setup."
+- "I want a small cluster (10–500 nodes) with secure peer
+  identity."
+
+Mycelium is a good fit for microservice-style applications that
+need to discover sibling services by name, applications migrating
+off the full-mesh dist into a partial-membership topology, and
+internal tools that want a secure dist without standing up a CA.
+
+## When to pick Partisan
+
+If you can answer "yes" to two or more of these, Partisan is
+probably the right choice:
+
+- "I need multiple topologies (full mesh for one cluster,
+  client-server for another, custom for a third)."
+- "I need explicit channels with different parallelism for
+  different message classes."
+- "I am experimenting with distributed protocols and want a
+  research-friendly toolkit."
+- "I am willing to build service discovery on top of broadcast."
+- "TCP is fine; I do not need encryption between peers in the
+  framework itself."
+
+Partisan is a good fit for research platforms, applications
+needing multiple topology modes simultaneously, and systems where
+explicit channel control is part of the design.
+
+## Migration sketches
+
+### Partisan to mycelium
+
+Membership calls change:
+
 ```erlang
-%% Send on specific channel for ordering guarantees
-partisan_peer_service:forward_message(Node, {channel, high_priority}, Msg).
+%% Partisan
+partisan_peer_service:join(Node).
+partisan_peer_service:members().
 
-%% Configure channel parallelism
-{partisan, [
-    {channels, [
-        {high_priority, #{parallelism => 1}},
-        {bulk_data, #{parallelism => 4}}
-    ]}
-]}
+%% Mycelium
+mycelium:join(Node).
+mycelium:active_view().
 ```
 
-**Mycelium** uses standard Erlang messaging:
-```erlang
-%% Direct messaging through overlay
-Pid ! Message.
+Message forwarding becomes service discovery plus a normal send:
 
-%% Or via gen_server
-gen_server:call(Pid, request).
+```erlang
+%% Partisan
+partisan_peer_service:forward_message(Node, Msg).
+
+%% Mycelium
+{ok, Pid} = mycelium:whereis_service(target_service),
+Pid ! Msg.
 ```
 
-## When to Use Mycelium
+Channels disappear; everything goes through standard Erlang
+distribution. If you depended on channel parallelism for
+throughput, measure: mycelium's single QUIC connection multiplexes
+streams natively and may match what you were getting from
+multiple TCP connections.
 
-Choose Mycelium when you need:
+### Mycelium to Partisan
 
-1. **Simple service discovery** - Built-in registry without external dependencies
-2. **Standard Erlang patterns** - gen_server, monitors, links work normally
-3. **Minimal configuration** - Sensible defaults, fewer decisions
-4. **Quick integration** - Add to existing Erlang applications easily
-5. **Ed25519 authentication** - Secure peer verification out of the box
+You will need to write or wire in a service-discovery story.
+Either build one on top of Partisan's broadcast layer, or
+integrate an external service registry, depending on what you
+need.
 
-**Good fit for:**
-- Microservice architectures needing service discovery
-- Applications migrating from full mesh to partial membership
-- Teams wanting opinionated defaults over flexibility
-- Projects requiring secure peer authentication
+Membership calls and message-forwarding APIs both change; expect
+to touch most code paths that talk across the cluster.
 
-## When to Use Partisan
+## Performance shape
 
-Choose Partisan when you need:
+A direct comparison is not particularly meaningful: the two
+projects optimise for different shapes of workload. A few
+qualitative notes:
 
-1. **Topology flexibility** - Full mesh, client-server, or custom topologies
-2. **Channel-based routing** - Explicit parallelism and message ordering
-3. **Research platforms** - Experimenting with distributed protocols
-4. **Custom broadcast** - Pluggable broadcast backends
-5. **Non-HyParView topologies** - Some use cases need full mesh or star
+- **Connection count.** Partisan with full-mesh keeps O(n^2)
+  connections; mycelium and Partisan-with-HyParView keep O(n log n).
+- **Encryption.** Mycelium is encrypted by default (QUIC).
+  Partisan adds TLS on top of TCP only when you opt in.
+- **Service-lookup latency.** Mycelium's registry hits the local
+  CRDT cache for known services; Partisan's depends on what you
+  built on top of broadcast.
+- **Broadcast cost.** Both projects can use Plumtree; the algorithm
+  is the same. Mycelium ships it integrated; Partisan ships it as
+  one of several broadcast modules.
 
-**Good fit for:**
-- Distributed systems research
-- Applications requiring multiple topology modes
-- Systems needing fine-grained channel control
-- Projects requiring full mesh for small clusters
-
-## Migration Considerations
-
-### From Partisan to Mycelium
-
-1. **Replace membership calls**
-   ```erlang
-   %% Partisan
-   partisan_peer_service:join(Node).
-   partisan_peer_service:members().
-
-   %% Mycelium
-   mycelium:join(Node).
-   mycelium:active_view().
-   ```
-
-2. **Replace message forwarding with service discovery**
-   ```erlang
-   %% Partisan
-   partisan_peer_service:forward_message(Node, Msg).
-
-   %% Mycelium - use services
-   {ok, Pid} = mycelium:whereis_service(target_service),
-   Pid ! Msg.
-   ```
-
-3. **Channels become standard messaging** - Remove channel routing, use standard Erlang
-
-### From Mycelium to Partisan
-
-1. **Add channel configuration** - Define channels for different message types
-2. **Replace service registry** - Implement via Plumtree or external registry
-3. **Update message patterns** - Use `partisan_peer_service:forward_message/3`
-
-## Performance Considerations
-
-| Aspect | Partisan | Mycelium |
-|--------|----------|----------|
-| Connection overhead | Depends on topology | O(log n) always |
-| Message latency | Channel-dependent | Standard Erlang |
-| Service lookup | External | Local cache + overlay |
-| State sync | Configurable | Automatic CRDT merge |
-
-Both libraries scale to large clusters. Choose based on your specific requirements rather than performance alone.
+Pick by feature fit, not by performance benchmark. Both projects
+scale to clusters of hundreds of nodes.
 
 ## Summary
 
-| If you need... | Use |
-|---------------|-----|
-| Built-in service discovery | Mycelium |
-| Multiple topology options | Partisan |
-| Standard Erlang messaging | Mycelium |
-| Channel-based parallelism | Partisan |
-| Minimal configuration | Mycelium |
-| Maximum flexibility | Partisan |
-| Research platform | Partisan |
-| Production service mesh | Either |
+| If you need...                          | Use      |
+|----------------------------------------|----------|
+| Built-in service discovery              | Mycelium |
+| Multiple topology backends              | Partisan |
+| Standard `Pid ! Msg` and `gen_server`   | Mycelium |
+| Channel-based parallelism               | Partisan |
+| Minimal configuration                   | Mycelium |
+| Maximum flexibility                     | Partisan |
+| QUIC transport + Ed25519 in the box     | Mycelium |
+| TCP + your own protocols                | Partisan |
+| Production service mesh on Erlang       | Either   |
