@@ -48,10 +48,14 @@ listen(Name) ->
 listen(Name, ExtraOpts) ->
     ok = ensure_modules_loaded(),
     ok = project_init_args(),
-    ok = ensure_cert(),
-    ok = project_defaults(),
-    ok = project_listen_port(),
-    quic_dist:listen(Name, ExtraOpts).
+    case ensure_cert() of
+        ok ->
+            ok = project_defaults(),
+            ok = project_listen_port(),
+            quic_dist:listen(Name, ExtraOpts);
+        {error, _} = Err ->
+            Err
+    end.
 
 accept(Listener) ->
     quic_dist:accept(Listener).
@@ -108,8 +112,9 @@ ensure_modules_loaded() ->
     ok.
 
 %% Lazily materialise the QUIC TLS cert/key if they aren't on disk
-%% yet. quic_dist:load_credentials runs straight after this and will
-%% fail with {credentials, no_credentials} if the files are missing.
+%% yet. quic_dist:load_credentials runs straight after this and would
+%% otherwise fail with the less direct {credentials, no_credentials}.
+%% Propagate the real reason so listen/2 short-circuits here.
 ensure_cert() ->
     CertDir = cert_dir(),
     case mycelium_quic_cert:ensure_cert(CertDir) of
@@ -117,7 +122,7 @@ ensure_cert() ->
             ok;
         {error, Reason} ->
             logger:error("mycelium_dist: cert ensure failed: ~p", [Reason]),
-            ok
+            {error, {cert_ensure_failed, Reason}}
     end.
 
 %% Resolve the cert dir at listen time. App env may not be set yet,

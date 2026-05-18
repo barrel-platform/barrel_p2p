@@ -36,6 +36,27 @@ project_defaults_allows_undefined_callback_when_disabled_test() ->
     ?assertEqual(ok, mycelium_dist:project_defaults()),
     cleanup().
 
+%% listen/2 must propagate cert-ensure errors rather than swallow
+%% them and let quic_dist fail later with the indirect
+%% {credentials, no_credentials}.
+listen_propagates_cert_ensure_failure_test_() ->
+    {setup,
+     fun() ->
+         meck:new(mycelium_quic_cert, [passthrough]),
+         meck:expect(mycelium_quic_cert, ensure_cert,
+                     fun(_) -> {error, key_generation_failed} end),
+         ok
+     end,
+     fun(_) ->
+         meck:unload(mycelium_quic_cert),
+         cleanup()
+     end,
+     fun(_) ->
+         [?_assertEqual(
+             {error, {cert_ensure_failed, key_generation_failed}},
+             mycelium_dist:listen('node@host', #{}))]
+     end}.
+
 cleanup() ->
     application:unset_env(quic, dist),
     application:unset_env(mycelium, auth_enabled),
