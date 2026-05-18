@@ -74,10 +74,15 @@ get_all_local() ->
 get_local_ormap() ->
     gen_server:call(?SERVER, get_local_ormap).
 
-%% Lookup using overlay routing (when not found locally/remotely)
+%% Lookup using overlay routing (when not found locally/remotely).
+%% Normalises the router's `{found, Node, Pid}' shape to the contract
+%% callers expect; any other router return is reported as not_found.
 -spec overlay_lookup(atom() | binary()) -> {ok, node(), pid()} | {error, not_found}.
 overlay_lookup(Name) ->
-    mycelium_router:find_service(Name).
+    case mycelium_router:find_service(Name) of
+        {found, Node, Pid} -> {ok, Node, Pid};
+        _                  -> {error, not_found}
+    end.
 
 %% Ensure a proxy exists for a remote service
 -spec ensure_proxy(atom() | binary(), node()) -> {ok, pid()} | {error, term()}.
@@ -248,10 +253,16 @@ find_monitor_for_name(Name, Monitors) ->
 collect_entries_by_name(Name, ORMap) ->
     [Entry || {{N, _Node}, Entry} <- mycelium_ormap:to_list(ORMap), N =:= Name].
 
-%% Update local HLC from all dots in an OR-Map
+%% Update local HLC from every dot and every tombstone in an OR-Map.
 update_hlc_from_ormap(ORMap) ->
-    maps:foreach(fun(_Key, {_Entry, Dots}) ->
-        lists:foreach(fun({_Node, HLC}) ->
-            mycelium_hlc:update(HLC)
-        end, maps:keys(Dots))
-    end, ORMap).
+    maps:foreach(
+        fun(_Key, {value, _Entry, Dots}) ->
+                lists:foreach(
+                    fun({_Node, HLC}) -> mycelium_hlc:update(HLC) end,
+                    maps:keys(Dots)
+                );
+           (_Key, {tombstone, HLC}) ->
+                mycelium_hlc:update(HLC)
+        end,
+        ORMap
+    ).

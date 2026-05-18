@@ -26,6 +26,8 @@
     test_whereis_service_retry_not_found/1,
     test_whereis_service_no_retry_on_success/1,
     test_whereis_service_custom_retries/1,
+    test_overlay_lookup_returns_ok_node_pid/1,
+    test_whereis_service_via_overlay/1,
     %% Via callbacks
     test_register_name/1,
     test_register_name_duplicate/1,
@@ -60,6 +62,8 @@ groups() ->
             test_whereis_service_retry_not_found,
             test_whereis_service_no_retry_on_success,
             test_whereis_service_custom_retries,
+            test_overlay_lookup_returns_ok_node_pid,
+            test_whereis_service_via_overlay,
             %% Via callbacks
             test_register_name,
             test_register_name_duplicate,
@@ -195,6 +199,41 @@ test_whereis_service_custom_retries(_Config) ->
     ?assert(Elapsed >= 100),
     %% But not too long
     ?assert(Elapsed < 500),
+    ok.
+
+%% The router's find_service/1 returns `{found, Node, Pid}'.
+%% overlay_lookup/1 specs `{ok, node(), pid()}'. Lock the normalisation.
+test_overlay_lookup_returns_ok_node_pid(_Config) ->
+    Fake = self(),
+    Node = 'fake@host',
+    ok = meck:new(mycelium_router, [passthrough]),
+    ok = meck:expect(mycelium_router, find_service,
+                     fun(_) -> {found, Node, Fake} end),
+    try
+        ?assertEqual({ok, Node, Fake},
+                     mycelium_registry:overlay_lookup(some_svc))
+    after
+        meck:unload(mycelium_router)
+    end,
+    ok.
+
+%% A service reachable only through overlay must not crash the
+%% retry loop of whereis_service/1,2. Before the fix, the retry
+%% case clause matched only {ok,_}, {ok,_,_} and {error,not_found};
+%% a `{found,_,_}' from the router fell through and raised
+%% case_clause.
+test_whereis_service_via_overlay(_Config) ->
+    Fake = self(),
+    Node = 'fake@host',
+    ok = meck:new(mycelium_router, [passthrough]),
+    ok = meck:expect(mycelium_router, find_service,
+                     fun(_) -> {found, Node, Fake} end),
+    try
+        ?assertEqual({ok, Node, Fake},
+                     mycelium:whereis_service(overlay_only_svc))
+    after
+        meck:unload(mycelium_router)
+    end,
     ok.
 
 %%====================================================================
