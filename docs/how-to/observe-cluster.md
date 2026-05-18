@@ -97,7 +97,7 @@ workload, or that your application closes dist channels too often.
 
 `outcome` is `ok` when path validation succeeded, otherwise
 `fail`. If you wrote a custom trigger (see
-[migration.md](migration.md)), the `peer` attribute tells you
+[migration.md](migrate-connections.md)), the `peer` attribute tells you
 which peer the trigger acted on.
 
 ## Router and service proxy

@@ -190,7 +190,7 @@ peer's timeout.
 ## Interaction with relays
 
 If you are routing some peers through an external relay (see
-[external-relay.md](external-relay.md)), the same migration
+[external-relay.md](route-through-relay.md)), the same migration
 primitive applies: register a new socket adapter pointing at the
 new relay path, then call `mycelium:migrate_peer/1,2`. The
 running QUIC connection migrates to the new path; the dist

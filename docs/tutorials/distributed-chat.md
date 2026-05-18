@@ -1,42 +1,54 @@
-# Building applications with mycelium
+# Practice handbook
 
-This tutorial picks up where [getting-started.md](getting-started.md)
-ends. We will write a small distributed chat application, and along
-the way introduce the four mycelium primitives you will use most:
+This handbook picks up where [getting-started.md](../overview/getting-started.md)
+ends. It is written for Erlang developers who already know OTP and
+want to build something real on top of Mycelium.
 
-- **The service registry** (`register_service`, `whereis_service`).
-- **Cluster events** (`subscribe`, `subscribe_services`).
-- **The membership API** (`active_view`, `join`).
-- **The tagged-stream multiplex** for when message-passing is not
-  the right shape.
+We will build a small distributed chat application. The point is not
+the chat itself. The point is the practice:
 
-The full source of the chat application is under
-[`examples/chat`](../examples/chat/README.md); the goal of this
-document is not to ship it but to explain why each piece is shaped
-the way it is.
+- register a process as a cluster service;
+- find that service from another node;
+- send normal Erlang messages to the returned pid;
+- subscribe to cluster and service events;
+- keep local caches correct while the cluster moves;
+- open tagged QUIC streams when `Pid ! Msg` is not the right shape.
 
-## A short note on the mental model
+The full source is under [`examples/chat`](../examples/chat/README.md).
+Use this document as a handbook: copy the shapes, then adapt them to
+your own supervisors and `gen_server` modules.
+
+## The mental model
+
+Mycelium does not ask you to stop writing Erlang. You still build OTP
+trees. You still pass pids around. You still use `gen_server:call/2`,
+monitors, links, and normal messages.
+
+What changes is the cluster below your code.
 
 In standard Erlang distribution, every node connects to every other
-node, and naming is local: each node has its own process registry,
-and `global` provides a coordinated view across the cluster. That
-works well for small, trusted clusters; it scales poorly when the
-cluster grows or when individual nodes come and go.
+node. That works well for small, trusted clusters. It becomes
+expensive when the cluster grows, and awkward when nodes appear,
+disappear, or move between network paths.
 
-Mycelium replaces this picture with two complementary ideas:
+Mycelium splits the problem in two:
 
-- A **bounded gossip topology**. Each node keeps a small active
-  view (typically five peers). Reaching any peer from any other
-  peer happens through OTP's demand-driven dist auto-connect, not
-  by maintaining a full mesh.
-- A **CRDT-backed service registry**. Names are not local; they are
-  cluster-wide and eventually consistent. Registrations and
-  unregistrations are gossiped through the cluster and merge
-  deterministically.
+- **Membership** is kept small. Each node keeps a bounded active view,
+  usually five peers, used for gossip and topology maintenance.
+- **Addressing** stays Erlang. If your code holds a pid on another
+  node, OTP opens the dist channel on demand and the send works.
+- **Names** are cluster-wide. The service registry is a CRDT, so
+  services can be registered on any node and discovered from any
+  other node.
 
-The mental model is "lots of small actors, named globally, addressed
-by name". When the cluster grows, the per-node connection count
-stays bounded and the namespace stays shared.
+Read this graph from node A. The green peers are the active view.
+They are the maintenance topology, not the whole cluster.
+
+![HyParView active view: node A keeps a small set of active gossip peers and a passive cache of known peers.](diagrams/active-view.png)
+
+The practice model is simple: many small OTP processes, registered
+under useful names, addressed by name, then handled as normal pids.
+When the cluster grows, the per-node maintenance cost stays bounded.
 
 ## What we are building
 
@@ -105,13 +117,23 @@ mycelium, but it is what lets us run cleanup code in `terminate/2`.
 A clean exit calls `unregister_service` so the room disappears from
 the cluster's view without waiting for the registry's down-detector.
 
-**The metadata map.** The third argument to `register_service/3` is
-any map you like. It is replicated alongside the registration. We
-store a creation timestamp here; in a richer application, you might
-store the room's settings, a load metric, a capability list, or any
-small annotation that lets callers pick between multiple instances.
+**The metadata map.** The second argument to `register_service/2` is
+any map you like. The registry stores it alongside the pid of the
+calling process and replicates it with the registration. We store a
+creation timestamp here; in a richer application, you might store the
+room's settings, a load metric, a capability list, or any small
+annotation that lets callers pick between multiple instances.
 
 ## Sending and receiving messages
+
+The room may live on the local node or on a remote node. The caller
+does not need to know. It asks the registry for a pid, then uses the
+pid as Erlang code normally would.
+
+This is the important flow. The service lookup is a Mycelium concern.
+The message send is an Erlang distribution concern.
+
+![Service lookup returns a pid, then OTP opens a QUIC dist channel on demand and delivers the Erlang message.](diagrams/message-passing.png)
 
 Senders look up the room and cast:
 
@@ -429,7 +451,7 @@ for exactly this case: any application can open a QUIC stream
 between two cluster peers, attach a short binary tag, and hand the
 stream to a handler process.
 
-The full surface is in [internals.md](internals.md). The minimal
+The full surface is in [internals.md](../reference/architecture.md). The minimal
 shape:
 
 ```erlang
@@ -471,13 +493,13 @@ A few short notes that will save you time later:
 
 ## Where to go from here
 
-- [internals.md](internals.md) for the protocols underneath:
+- [internals.md](../reference/architecture.md) for the protocols underneath:
   HyParView, Plumtree, OR-Map, the QUIC carrier.
-- [authentication.md](authentication.md) for trust modes, the
+- [authentication.md](../how-to/configure-authentication.md) for trust modes, the
   on-disk format, and key rotation.
-- [observability.md](observability.md) for the metrics catalog.
-- [deployment.md](deployment.md) when you are ready to put a
+- [observability.md](../how-to/observe-cluster.md) for the metrics catalog.
+- [deployment.md](../how-to/run-in-production.md) when you are ready to put a
   cluster behind a load.
-- [migration.md](migration.md) for the QUIC connection-migration
+- [migration.md](../how-to/migrate-connections.md) for the QUIC connection-migration
   feature, which is useful when nodes change network paths at
   runtime.

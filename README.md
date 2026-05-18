@@ -1,73 +1,72 @@
 # Mycelium
 
-Mycelium is an Erlang/OTP library for building peer-to-peer distributed applications. It implements the HyParView protocol for scalable cluster membership, combined with a CRDT-based service registry and Plumtree epidemic broadcast for reliable message dissemination.
+Mycelium is an Erlang/OTP library for peer-to-peer clusters.
 
-Unlike traditional Erlang distribution that requires full mesh connectivity, Mycelium maintains only a small number of active connections per node (typically log(n)), making it suitable for large clusters while preserving self-healing properties.
+It keeps the Erlang programming model: `Pid ! Msg`, `gen_server`,
+`rpc`, links, monitors, and the usual supervision habits. It changes
+what happens underneath:
 
-## How a mycelium cluster is shaped
+- distribution runs over QUIC, not TCP;
+- nodes authenticate with Ed25519;
+- membership is bounded with HyParView, not full mesh;
+- services are discovered through a CRDT registry;
+- EPMD is not required.
 
-Each node keeps a small bounded set of *gossip peers* (the HyParView active view, typically five) plus a larger cache of known but disconnected peers (the passive view). The cluster as a whole stays fully addressable.
+The result is a cluster where each node keeps a small number of gossip
+connections, while any process can still talk to any process in the
+cluster.
+
+## Why Erlang developers may care
+
+Standard Erlang distribution is simple and good. It becomes harder to
+operate when the cluster grows, when every node must connect to every
+other node, when EPMD is not welcome, or when nodes move between
+network paths.
+
+Mycelium keeps your application code close to normal OTP code. You
+still register processes, call servers, monitor pids, and send
+messages. The library takes care of the cluster shape, peer identity,
+service discovery, and the QUIC dist carrier.
+
+## The cluster shape
+
+Read this graph from node A. The green nodes are the active view:
+the small set of peers node A uses for gossip and membership
+maintenance. The grey nodes are known peers kept in the passive view.
+They are not connected now, but they are warm spares when the topology
+changes.
 
 ![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](docs/diagrams/active-view.png)
 
-`Pid ! Msg` works to *any* cluster member, not just the gossip peers. When the application sends to a pid on a node outside the active view, OTP's demand-driven dist auto-connect opens a QUIC channel on demand, running the mycelium authentication handshake before any application data flows.
+The important point: the active view is not the cluster. It is not
+the list of nodes your application may talk to. It is only the
+maintenance topology.
+
+Application traffic is different. If code on node A sends to a pid on
+node E, OTP can open a dist channel on demand. Mycelium authenticates
+that channel, then the normal Erlang message is delivered.
 
 ![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](docs/diagrams/message-passing.png)
 
-## Project Status
+Once you hold the pid, Mycelium is no longer on the application data
+path. You use Erlang.
 
-**Experimental, pre-1.0.** APIs may change between minor releases until a `1.0` tag. The cryptographic and transport layers (Ed25519 dist auth, QUIC carrier) have unit and multi-node test coverage but have **not been independently audited**. Don't ship it where a transport-level compromise would be costly without doing your own review first. Bug reports and PRs welcome; see [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+## Project status
 
-## Versioning policy
+Mycelium is experimental and pre-1.0. APIs may change between minor
+releases until a `1.0` tag.
 
-Mycelium is still in 0.x, so:
+The cryptographic and transport layers, Ed25519 dist auth and the
+QUIC carrier, have unit and multi-node test coverage. They have not
+been independently audited. Do not use Mycelium where a transport
+compromise would be costly without doing your own review first.
 
-- **Minor bumps (0.x → 0.y)** may change documented public APIs. Breaking changes land with a `CHANGELOG.md` entry and, where the API is tagged `supported`, one minor of deprecation before removal.
-- **Patch bumps (0.x.y → 0.x.y+1)** are non-breaking. Bug fixes, performance tweaks, internal refactors only.
-- **1.0** is not yet on the roadmap. It will come after an external audit of the dist auth and transport layers, and after a public 0.x release has accumulated user feedback.
+Bug reports and PRs are welcome. Security reports go through
+[SECURITY.md](SECURITY.md).
 
-Public-API stability tiers (`supported`, `beta`, `experimental`) are tracked in [doc/features.md](doc/features.md). Anything not listed there is considered internal and may change without notice.
+## Five-minute start
 
-## Key Features
-
-- **HyParView Protocol** - Scalable partial membership with O(log n) connections per node
-- **Service Registry** - Distributed service discovery using OR-Map CRDTs
-- **Plumtree Broadcast** - Efficient epidemic broadcast with O(n) message complexity
-- **Hybrid Logical Clocks** - Causally consistent timestamps for conflict resolution
-- **Ed25519 Authentication** - Secure peer authentication with TOFU or strict modes
-- **QUIC Distribution** - `-proto_dist mycelium` plugs straight into Erlang/OTP's alt-dist. One QUIC connection per peer carries the dist channel, with Ed25519 identity check between handshakes, no stock EPMD daemon, lazy self-signed TLS, and a composing discovery chain (static config + on-disk file registry + DNS).
-- **One-shot RPC tooling** - `priv/bin/mycelium_call.sh` — `erl_call`-style helper that boots a hidden probe with full Ed25519 identity and runs `rpc:call/5` against a live mycelium node. Available to any project that depends on mycelium.
-- **TLS cert helper** - `priv/bin/mycelium_gen_cert.sh` — one-shot self-signed cert generator (RSA 2048 by default) for the QUIC dist channel; idempotent.
-- **Pluggable connect-time overrides** - Inject an external relay/tunnel adapter per peer via `quic_dist:set_connect_options/2` (see [docs/external-relay.md](docs/external-relay.md))
-- **Connection migration** - One-shot RFC 9000 §9 path migration via `mycelium:migrate_peer/1,2`; rebinds the QUIC dist channel to a new local 4-tuple without rekey or HyParView churn (see [docs/migration.md](docs/migration.md))
-
-## Quick Start
-
-```erlang
-%% Start the mycelium application
-application:ensure_all_started(mycelium).
-
-%% Join an existing cluster
-mycelium:join('seed@192.168.1.10').
-
-%% Register a service
-mycelium:register_service(my_service, #{version => "1.0"}).
-
-%% Find a service anywhere in the cluster
-{ok, Pid} = mycelium:whereis_service(my_service).
-
-%% Subscribe to membership events
-mycelium:subscribe().
-%% Receives: {hyparview_event, {joined, Node}}
-%% Receives: {hyparview_event, {left, Node}}
-
-%% View connected peers
-mycelium:active_view().
-```
-
-## Installation
-
-Add mycelium to your `rebar.config` dependencies:
+Add Mycelium to `rebar.config`:
 
 ```erlang
 {deps, [
@@ -75,129 +74,213 @@ Add mycelium to your `rebar.config` dependencies:
 ]}.
 ```
 
-Then fetch dependencies:
+Use Mycelium as the Erlang distribution carrier:
 
-```bash
-rebar3 get-deps
-```
-
-## Basic Usage
-
-### Cluster Membership
-
-```erlang
-%% Join via a contact node
-ok = mycelium:join('contact@host.example.com').
-
-%% Get currently connected peers
-Peers = mycelium:active_view().
-
-%% Get known but unconnected peers
-Known = mycelium:passive_view().
-
-%% Gracefully leave the cluster
-mycelium:leave().
-```
-
-### Service Discovery
-
-```erlang
-%% Register a service with metadata
-mycelium:register_service(user_cache, #{shard => 1}).
-
-%% Find all instances of a service
-{ok, Entries} = mycelium:lookup(user_cache).
-
-%% Find any instance (local preferred, then remote)
-{ok, Pid} = mycelium:whereis_service(user_cache).
-
-%% Subscribe to service events
-mycelium:subscribe_services().
-%% Receives: {mycelium_service_event, {service_registered, Name, Node}}
-%% Receives: {mycelium_service_event, {service_unregistered, Name, Node}}
-```
-
-### Configuration
-
-Configure in your `sys.config`:
-
-```erlang
-{mycelium, [
-    %% HyParView parameters
-    {active_size, 5},        %% Max active connections (log n)
-    {passive_size, 30},      %% Max passive view size (c * log n)
-    {shuffle_period, 10000}, %% Topology refresh interval (ms)
-
-    %% Distribution (quic_dist carrier)
-    {listen_port, 9100},     %% 0 for auto-assign
-    {contact_nodes, ['seed@192.168.1.10']},
-
-    %% Authentication
-    {auth_enabled, true},
-    {auth_trust_mode, tofu}  %% tofu | strict
-]}
-```
-
-### Distribution carrier
-
-Add to your `vm.args`:
-
-```
+```text
 -proto_dist mycelium
 -epmd_module mycelium_epmd
 -start_epmd false
 ```
 
-That's the entire dist setup. `mycelium_dist` runs on top of
-upstream `quic_dist`; it auto-generates the TLS material under
-`data/quic/node.{crt,key}` on first listen and wires the Ed25519
-auth callback + composing discovery module into the underlying
-`quic` app env. Override any default by setting it explicitly under
-`{quic, [{dist, [...]}]}` in `sys.config`.
+Start the application and join a seed:
 
-No stock `epmd` daemon is required. All inter-node traffic flows
-over a single QUIC connection per peer. Mycelium does not bundle
-NAT traversal or relay; nodes are expected to reach each other
-directly. When a tunnel/relay is needed, register an external
-socket adapter with `quic_dist:set_connect_options/2` (see
-[docs/external-relay.md](docs/external-relay.md)).
-
-## Testing
-
-`rebar3 ct` runs the local CT suites; the docker scripts under
-`docker/scripts/` exercise the multi-node clusters. See
-[docs/testing.md](docs/testing.md) for the full command list.
-
-## Example
-
-A small distributed chat app lives under [`examples/chat`](examples/chat/README.md). To run a two-node demo:
-
-```bash
-cd examples/chat
-./scripts/run-demo.sh seed                    # terminal 1
-./scripts/run-demo.sh node 1                  # terminal 2
+```erlang
+application:ensure_all_started(mycelium).
+ok = mycelium:join('seed@192.168.1.10').
 ```
 
-The script links the local mycelium tree as a `_checkouts` override and starts each node with `-proto_dist mycelium`; the TLS cert under `data/quic/` is generated on first listen. See `examples/chat/README.md` for the three-node walkthrough and the docker compose stack.
+Register the current process as a service:
+
+```erlang
+ok = mycelium:register_service(worker_pool, #{shard => 1}).
+```
+
+Find it from another node:
+
+```erlang
+{ok, _Node, Worker} = mycelium:whereis_service(worker_pool),
+Worker ! {work, <<"payload">>}.
+```
+
+That send is a standard Erlang send. `whereis_service/1` returns
+`{ok, Pid}` for a local service and `{ok, Node, Pid}` for a remote
+one. If the target node is not already connected, the dist channel is
+opened on demand over QUIC.
+
+## Configuration
+
+A small development config:
+
+```erlang
+{mycelium, [
+    {active_size, 5},
+    {passive_size, 30},
+    {listen_port, 9100},
+    {contact_nodes, ['seed@192.168.1.10']},
+    {auth_enabled, true},
+    {auth_trust_mode, tofu}
+]}.
+```
+
+The defaults are intentionally narrow:
+
+- `active_size` bounds the number of gossip peers.
+- `passive_size` bounds the known-but-disconnected peer cache.
+- `listen_port` is the UDP port for QUIC distribution.
+- `contact_nodes` gives the node a first place to join.
+- `auth_trust_mode` is `tofu` or `strict`.
+
+For production notes, see [run in production](docs/how-to/run-in-production.md).
+
+## What is included
+
+- **QUIC distribution**. `-proto_dist mycelium` plugs into Erlang's
+  alternative distribution layer. No stock EPMD daemon is required.
+- **HyParView membership**. Each node keeps a bounded active view
+  instead of a full mesh.
+- **Service registry**. Processes can be registered by name and found
+  from any node through a CRDT-backed registry.
+- **Plumtree broadcast**. Registry changes and gossip move through an
+  efficient epidemic broadcast tree.
+- **Ed25519 peer identity**. Nodes prove their identity after the QUIC
+  TLS handshake and before application traffic flows.
+- **Tagged QUIC streams**. Applications can open tagged streams for
+  large or byte-oriented transfers.
+- **Operational tools**. Helpers exist for one-shot RPC, TLS material,
+  key rotation, metrics, migration, and test clusters.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Installation, first-boot setup (TLS cert, Ed25519 keypair), and first cluster
-- [Building P2P Applications](docs/tutorial.md) - Tutorial with worked examples
-- [Authentication](docs/authentication.md) - Ed25519 key management and trust modes
-- [Connection migration](docs/migration.md) - RFC 9000 §9 path migration via `migrate_peer/1,2`
-- [External Relay](docs/external-relay.md) - Wiring an out-of-tree tunnel/relay adapter
-- [Comparison with Partisan](docs/partisan-comparison.md) - When to use which
-- [Testing](docs/testing.md) - Running local and docker test suites
-- [Internals](docs/internals.md) - Architecture and protocol details
+The docs are organised into five sections. Each section has a hub
+page that lists its children; the hub pages are linked below.
 
-## API Reference
+### Overview
+
+Read this first if mycelium is new to you.
+
+- [What is mycelium?](docs/overview/what-is-mycelium.md) — the
+  project in one page, with the architecture diagram and the
+  load-bearing ideas.
+- [Benefits and trade-offs](docs/overview/benefits.md) — why pick
+  mycelium, and what you give up.
+- [Introduction](docs/overview/introduction.md) — the long
+  narrative through every layer.
+- [Getting started](docs/overview/getting-started.md) — boot two
+  nodes and send a real message.
+
+### Core concepts
+
+How each subsystem works, explained one page at a time.
+
+- [Cluster membership](docs/concepts/cluster-membership.md) —
+  HyParView's bounded active and passive views.
+- [Service registry](docs/concepts/service-registry.md) — OR-Map
+  CRDT, eventual consistency, the registration lifecycle.
+- [Gossip broadcast](docs/concepts/gossip-broadcast.md) — Plumtree
+  push-lazy-push trees, self-healing graft/prune.
+- [Dist channel](docs/concepts/dist-channel.md) —
+  `-proto_dist mycelium` over QUIC, the discovery chain, the
+  idle GC.
+- [Authentication](docs/concepts/authentication.md) — Ed25519
+  mutual challenge-response, trust modes.
+- [Streams](docs/concepts/streams.md) — tagged user-stream
+  multiplex over the same QUIC connection.
+- [Connection migration](docs/concepts/connection-migration.md) —
+  RFC 9000 §9 path rebind.
+- [Hybrid logical clocks](docs/concepts/hybrid-logical-clocks.md) —
+  the timestamps the CRDT uses.
+
+### Tutorials
+
+End-to-end walkthroughs.
+
+- [Hello, cluster](docs/tutorials/hello-cluster.md) — the
+  smallest two-node walkthrough.
+- [Distributed chat](docs/tutorials/distributed-chat.md) — a
+  small application that uses the service registry and service
+  events.
+
+### How-to guides
+
+Task-focused recipes for operating a cluster.
+
+- [Run in production](docs/how-to/run-in-production.md) — sizing,
+  network surface, secrets, shutdown.
+- [Configure authentication](docs/how-to/configure-authentication.md)
+  — TOFU and strict modes, provisioning, rotation.
+- [Observe a cluster](docs/how-to/observe-cluster.md) — metrics
+  catalogue and exporter wiring.
+- [Troubleshoot](docs/how-to/troubleshoot.md) — symptom-cause-fix
+  tables.
+- [Migrate connections](docs/how-to/migrate-connections.md) — a
+  watchdog recipe for path migration.
+- [Route through a relay](docs/how-to/route-through-relay.md) —
+  wiring an external tunnel or proxy adapter.
+- [Run the tests](docs/how-to/run-tests.md) — EUnit, Common Test,
+  docker, and soak suites.
+
+### Reference
+
+Authoritative material when you know what you are looking for.
+
+- [API overview](docs/reference/api-overview.md) — every public
+  function in `mycelium.erl`, grouped by subsystem.
+- [Configuration](docs/reference/configuration.md) — every key
+  under `{mycelium, [...]}` in sys.config.
+- [Architecture](docs/reference/architecture.md) — the full
+  supervision tree and protocol-level details.
+- [Comparison with Partisan](docs/reference/comparison-with-partisan.md)
+  — side-by-side, when to pick which library.
+- [Feature stability](doc/features.md) — public API tiers and
+  coverage.
+
+## Example application
+
+A small distributed chat app lives under
+[`examples/chat`](examples/chat/README.md).
+
+```bash
+cd examples/chat
+./scripts/run-demo.sh seed
+./scripts/run-demo.sh node 1
+```
+
+The demo starts Erlang nodes with `-proto_dist mycelium`, generates
+local TLS and Ed25519 material on first boot, and uses the service
+registry to find chat rooms across the cluster.
+
+## Testing
+
+Run the local suites:
+
+```bash
+rebar3 eunit
+rebar3 ct
+```
+
+The Docker scripts under `docker/scripts/` exercise multi-node
+clusters. See [run the tests](docs/how-to/run-tests.md) for the
+full command list.
+
+## API reference
 
 Generate HTML documentation:
 
 ```bash
 rebar3 ex_doc
 ```
+
+## Versioning
+
+Mycelium is still in `0.x`.
+
+- Minor bumps, `0.x` to `0.y`, may change documented public APIs.
+- Patch bumps, `0.x.y` to `0.x.y+1`, are non-breaking.
+- `1.0` will come after an external audit of the dist auth and
+  transport layers, and after public user feedback on a `0.x` release.
+
+Public API stability tiers are tracked in [doc/features.md](doc/features.md).
+Anything not listed there is internal.
 
 ## License
 

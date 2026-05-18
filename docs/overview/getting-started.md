@@ -31,9 +31,16 @@ Erlang behaviour:
   and discovered from any node in the cluster, without you running a
   separate service-discovery service.
 
-The membership shape, visually:
+Read the graph from the node in the centre. The active view is the
+small set of peers used for gossip. The passive view is a cache of
+known peers. They are not connected now, but they are useful when an
+active peer drops or when the topology needs to refresh.
 
 ![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](diagrams/active-view.png)
+
+For an Erlang application, this graph is not `nodes()`. It is only
+the maintenance topology. Application traffic can still reach a pid
+on another cluster member.
 
 The rest of this guide is the smallest path from a fresh checkout to
 two nodes exchanging a message.
@@ -149,7 +156,7 @@ Trust mode controls the authentication layer:
 - `strict` requires every peer's key to be pinned in advance. Useful
   in environments where you do not want any first-contact window.
 
-See [authentication.md](authentication.md) for the operational side
+See [authentication.md](../how-to/configure-authentication.md) for the operational side
 of trust modes.
 
 ## Boot arguments
@@ -270,24 +277,24 @@ so any peer can find the process.
 On `node1`:
 
 ```erlang
-5> Pid = spawn(fun() -> timer:sleep(infinity) end).
-<0.123.0>
-6> mycelium:register_service(my_worker, Pid, #{role => worker}).
+5> mycelium:register_service(my_worker, #{role => worker}).
 ok
 ```
 
-The metadata map is free-form; you can store anything that fits
-naturally in a Map.
+The service is registered for the process that calls
+`register_service/2`. In a real application this call normally lives
+in the service process itself, often in `init/1`. The metadata map is
+free-form; you can store anything that fits naturally in a Map.
 
 On `node2`, a moment later (replication is asynchronous, typically
 under a second):
 
 ```erlang
 3> mycelium:lookup(my_worker).
-{ok, [{my_worker, 'node1@yourhost', <0.123.0>, #{role => worker}}]}
+{ok, [{service_entry, my_worker, <0.123.0>, 'node1@yourhost', #{role => worker}}]}
 
-4> {ok, FoundPid} = mycelium:whereis_service(my_worker).
-{ok, <0.123.0>}
+4> {ok, _Node, FoundPid} = mycelium:whereis_service(my_worker).
+{ok, 'node1@yourhost', <0.123.0>}
 
 5> FoundPid ! hello.
 hello
@@ -298,16 +305,21 @@ Three things to notice:
 - `lookup/1` returns all instances registered under the name. There
   may be more than one if multiple nodes register the same name.
 - `whereis_service/1` returns a single instance and prefers a local
-  one when there is a choice. It is the function you reach for from
-  application code.
+  one when there is a choice. The shape is `{ok, Pid}` for a local
+  service and `{ok, Node, Pid}` for a remote one. It is the function
+  you reach for from application code.
 - The pid we got back is the *real* pid on `node1`. The send-bang
   uses standard Erlang distribution, opened on demand. No mycelium
   primitive is on the data path once you hold the pid.
 
-The flow of a cross-node send, when the target is *not* in the local
-active view:
+The flow of a cross-node send, when the target is not in the local
+active view, is the part to keep in mind:
 
 ![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](diagrams/message-passing.png)
+
+Mycelium helps you find the pid. OTP sends to it. If no dist channel
+exists yet, the QUIC channel is opened and authenticated before the
+message is delivered.
 
 ### Subscribing to membership and service events
 
@@ -341,7 +353,7 @@ ok
 
 In production, the recommended shutdown order is
 `mycelium:leave/0`, then `application:stop(mycelium)`, then
-`init:stop/0`. The reasoning is in [deployment.md](deployment.md).
+`init:stop/0`. The reasoning is in [deployment.md](../how-to/run-in-production.md).
 
 ## A quick look at what just happened
 
@@ -364,14 +376,14 @@ Stepping back from the commands you typed:
 
 ## Where to go next
 
-- [tutorial.md](tutorial.md) builds a small distributed application
-  (a chat server) using the primitives introduced here.
-- [internals.md](internals.md) describes the protocols in more
+- [tutorial.md](../tutorials/distributed-chat.md) is the practice handbook: build a small
+  Erlang application using the primitives introduced here.
+- [internals.md](../reference/architecture.md) describes the protocols in more
   depth: HyParView's failure handling, Plumtree's gossip tree, the
   OR-Map merge, and how the QUIC carrier is wired.
-- [authentication.md](authentication.md) covers strict mode, key
+- [authentication.md](../how-to/configure-authentication.md) covers strict mode, key
   rotation, and the trust store on disk.
-- [deployment.md](deployment.md) is the operational reference: ports,
+- [deployment.md](../how-to/run-in-production.md) is the operational reference: ports,
   permissions, sizing, shutdown.
-- [troubleshooting.md](troubleshooting.md) is the table to skim when
+- [troubleshooting.md](../how-to/troubleshoot.md) is the table to skim when
   the cluster does not do what you expect.

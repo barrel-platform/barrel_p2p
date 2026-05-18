@@ -1,8 +1,8 @@
 # Deployment
 
 Practical guidance for running a mycelium cluster in production.
-Pair this with [getting-started.md](getting-started.md) for the
-initial bring-up and [troubleshooting.md](troubleshooting.md) for
+Pair this with [getting-started.md](../overview/getting-started.md) for the
+initial bring-up and [troubleshooting.md](troubleshoot.md) for
 the symptoms-and-fixes table.
 
 The structure: sizing, network, secrets, configuration, logging,
@@ -150,7 +150,7 @@ No special handler is required. Any structured-logger formatter
 that emits JSON or logfmt will surface the messages.
 
 The important log call-sites are listed in
-[troubleshooting.md](troubleshooting.md); use it as a grep
+[troubleshooting.md](troubleshoot.md); use it as a grep
 reference when investigating an alert.
 
 ## Graceful shutdown

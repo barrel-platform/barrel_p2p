@@ -1,10 +1,10 @@
 # Internals
 
 This document describes how mycelium works underneath the API. It
-is meant for two readers: developers who have followed the
-[getting started](getting-started.md) and [tutorial](tutorial.md)
-guides and want to understand why the system behaves the way it
-does; and contributors planning a change to the protocols.
+is meant for two readers: Erlang developers who have followed the
+[getting started](../overview/getting-started.md) guide and the
+[practice handbook](../tutorials/distributed-chat.md), and contributors planning a change
+to the protocols.
 
 We move from the layers closest to the application code down to
 the dist carrier and the credentials, then describe the few
@@ -112,6 +112,12 @@ with the cluster. A node with thousands of peers in its passive
 view still keeps only five active links; messages reach the rest
 of the cluster by being forwarded along the active links of other
 nodes.
+
+Read this graph from node A. The active view is the maintenance
+topology. The passive view is a reserve of known peers. Neither is
+the full set of nodes your Erlang code may eventually talk to.
+
+![HyParView active view: node A keeps a small set of active gossip peers and a passive cache of known peers.](diagrams/active-view.png)
 
 ### Joining the cluster
 
@@ -315,7 +321,7 @@ is not the one already pinned for that node atom:
 The trust store lives on disk under `data/keys/trusted/`,
 one file per peer (`<node-atom>.pub`). Writes are atomic
 (write-then-rename) and use 0600 permissions; see
-[authentication.md](authentication.md) for the full lifecycle.
+[authentication.md](../how-to/configure-authentication.md) for the full lifecycle.
 
 ## The dist carrier: `mycelium_dist` + `quic_dist`
 
@@ -375,6 +381,13 @@ auto-connect. That can open a dist channel that the application
 then never uses again, which would accumulate over time. The dist
 GC reaps such channels.
 
+The flow below is the reason the GC exists. A service lookup may
+return a pid on a node outside the local active view. Sending to that
+pid opens an authenticated QUIC dist channel. If the application does
+not keep using it, Mycelium closes it later.
+
+![Sending to a pid outside the active view opens an authenticated QUIC dist channel on demand.](diagrams/message-passing.png)
+
 The predicate is conservative. A channel is eligible for reaping
 when **all** of the following hold:
 
@@ -389,7 +402,7 @@ the same peer later, a new dist channel opens on demand.
 
 This GC is unconditionally on. The decoupled-from-active-view
 design relies on its presence; see
-[features.md](../doc/features.md) for the stability tier.
+[features.md](../../doc/features.md) for the stability tier.
 
 ## Service overlay routing and proxies
 
@@ -455,12 +468,12 @@ call.
 The motivating cases are: a mobile node moves between Wi-Fi and
 cellular; a server's outbound IP changes because of a CGNAT
 shuffle; a peer is being routed through a different relay. See
-[migration.md](migration.md) for the recipe.
+[migration.md](../how-to/migrate-connections.md) for the recipe.
 
 ## Observability
 
 Every metric mycelium emits goes through `mycelium_metrics`. The
-catalog is in [observability.md](observability.md); the design
+catalog is in [observability.md](../how-to/observe-cluster.md); the design
 note for this document is: emit sites are wrapped in a
 `try`/`catch`, so a misconfigured exporter cannot crash protocol
 code.
@@ -485,5 +498,5 @@ are:
 The test suites that exercise each path are named after the
 module under test (`test/mycelium_hyparview_SUITE.erl`,
 `test/mycelium_registry_SUITE.erl`, `test/mycelium_router_SUITE.erl`,
-etc.). [testing.md](testing.md) lists them and explains the
+etc.). [testing.md](../how-to/run-tests.md) lists them and explains the
 docker-only suite for the full transport behaviour.

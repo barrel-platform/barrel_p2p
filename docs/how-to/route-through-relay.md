@@ -99,7 +99,7 @@ local-network changes also handles relay swaps:
 3. After migration succeeds, the dist controller continues
    sending on the new path.
 
-See [migration.md](migration.md) for the migration primitive and
+See [migration.md](migrate-connections.md) for the migration primitive and
 a watchdog recipe.
 
 ## What mycelium does not do

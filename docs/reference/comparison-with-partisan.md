@@ -69,12 +69,13 @@ plain Erlang:
 Pid ! Message.
 
 %% Or look up a service by name
-{ok, Pid} = mycelium:whereis_service(my_service),
+{ok, _Node, Pid} = mycelium:whereis_service(my_service),
 gen_server:call(Pid, Request).
 ```
 
-The dist channel is opened on demand. There are no channels to
-configure.
+For a local service the return shape is `{ok, Pid}`; for a remote
+service it is `{ok, Node, Pid}`. The dist channel is opened on
+demand. There are no channels to configure.
 
 ## How membership is configured
 
@@ -115,7 +116,7 @@ Mycelium ships a service registry:
 mycelium:register_service(my_service, #{version => "1.0"}).
 
 %% Discover anywhere in the cluster
-{ok, Pid} = mycelium:whereis_service(my_service).
+{ok, _Node, Pid} = mycelium:whereis_service(my_service).
 
 %% Subscribe to changes
 mycelium:subscribe_services().
@@ -189,7 +190,7 @@ Message forwarding becomes service discovery plus a normal send:
 partisan_peer_service:forward_message(Node, Msg).
 
 %% Mycelium
-{ok, Pid} = mycelium:whereis_service(target_service),
+{ok, _Node, Pid} = mycelium:whereis_service(target_service),
 Pid ! Msg.
 ```
 
