@@ -1,0 +1,35 @@
+%%{init: {'theme':'neutral', 'flowchart':{'htmlLabels':false}}}%%
+flowchart LR
+    subgraph PASSIVE["passive view (known but disconnected)"]
+        direction LR
+        P1[F]
+        P2[G]
+        P3[H]
+        P4[I]
+        P5[J]
+        P6[K]
+        P7[L]
+    end
+
+    subgraph ACTIVE["active view (gossip peers)"]
+        direction LR
+        A([B])
+        C([C])
+        D([D])
+        E([E])
+        N(((node A)))
+    end
+
+    N --- A
+    N --- C
+    N --- D
+    N --- E
+
+    N -.->|reachable via gossip| PASSIVE
+
+    classDef self fill:#1f2937,stroke:#111,color:#fff,stroke-width:2px
+    classDef active fill:#10b981,stroke:#047857,color:#fff
+    classDef passive fill:#e5e7eb,stroke:#9ca3af,color:#374151,stroke-dasharray:5 5
+    class N self
+    class A,C,D,E active
+    class P1,P2,P3,P4,P5,P6,P7 passive

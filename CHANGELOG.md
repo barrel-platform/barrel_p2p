@@ -127,7 +127,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contract.
 
 ### Changed
-- Dist channels decoupled from HyParView active view. `Pid ! Msg' works
+- Dist channels decoupled from HyParView active view. `Pid ! Msg` works
   between any cluster nodes; OTP's demand-driven auto-connect resolves
   through the mycelium discovery chain. HyParView active view tracks
   only the bounded gossip topology.

@@ -31,6 +31,10 @@ Erlang behaviour:
   and discovered from any node in the cluster, without you running a
   separate service-discovery service.
 
+The membership shape, visually:
+
+![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](diagrams/active-view.png)
+
 The rest of this guide is the smallest path from a fresh checkout to
 two nodes exchanging a message.
 
@@ -299,6 +303,11 @@ Three things to notice:
 - The pid we got back is the *real* pid on `node1`. The send-bang
   uses standard Erlang distribution, opened on demand. No mycelium
   primitive is on the data path once you hold the pid.
+
+The flow of a cross-node send, when the target is *not* in the local
+active view:
+
+![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](diagrams/message-passing.png)
 
 ### Subscribing to membership and service events
 

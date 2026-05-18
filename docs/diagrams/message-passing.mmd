@@ -1,0 +1,22 @@
+%%{init: {'theme':'neutral'}}%%
+sequenceDiagram
+    autonumber
+    participant APP as Application<br/>(node A)
+    participant MYC as mycelium<br/>(node A)
+    participant DIST as quic_dist<br/>(node A)
+    participant E as node E<br/>(NOT in A's active view)
+
+    Note over APP,MYC: 1. Look up a service by name
+    APP->>MYC: whereis_service(bar)
+    MYC-->>APP: {ok, Node, Pid}<br/>(resolved from gossip cache)
+
+    Note over APP,DIST: 2. Send a message to the pid
+    APP->>DIST: Pid ! Msg
+
+    Note over DIST,E: 3. OTP opens a dist channel on demand
+    DIST->>E: QUIC handshake +<br/>Ed25519 auth + dist cookie
+    E-->>DIST: channel ready
+    DIST->>E: deliver Msg
+    E->>E: gen_server bar receives
+
+    Note over APP,E: The pid lives on node E.<br/>Mycelium is not on the data path<br/>once the channel is open.
