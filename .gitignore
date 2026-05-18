@@ -9,6 +9,7 @@ rebar.lock
 # Common Test
 logs/
 ct_run.*
+test_results/
 
 # Dialyzer
 .dialyzer_plt
