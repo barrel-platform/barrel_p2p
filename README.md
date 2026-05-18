@@ -8,11 +8,11 @@ Unlike traditional Erlang distribution that requires full mesh connectivity, Myc
 
 Each node keeps a small bounded set of *gossip peers* (the HyParView active view, typically five) plus a larger cache of known but disconnected peers (the passive view). The cluster as a whole stays fully addressable.
 
-![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](https://raw.githubusercontent.com/benoitc/mycelium/main/docs/diagrams/active-view.png)
+![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](docs/diagrams/active-view.png)
 
 `Pid ! Msg` works to *any* cluster member, not just the gossip peers. When the application sends to a pid on a node outside the active view, OTP's demand-driven dist auto-connect opens a QUIC channel on demand, running the mycelium authentication handshake before any application data flows.
 
-![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](https://raw.githubusercontent.com/benoitc/mycelium/main/docs/diagrams/message-passing.png)
+![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](docs/diagrams/message-passing.png)
 
 ## Project Status
 
