@@ -30,7 +30,6 @@ services:
       NODE_ROLE: seed
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
-      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node1:/app/data/keys
 
@@ -47,7 +46,6 @@ services:
       CONTACT_NODE: node1@node1
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
-      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node2:/app/data/keys
     depends_on:
@@ -66,7 +64,6 @@ services:
       CONTACT_NODE: node1@node1
       AUTH_ENABLED: "true"
       AUTH_TRUST_MODE: tofu
-      COOKIE_ONLY_NODES: "'test_runner@*'"
     volumes:
       - auth_keys_node3:/app/data/keys
     depends_on:

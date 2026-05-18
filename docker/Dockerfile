@@ -62,6 +62,7 @@ COPY --from=builder /app/test /app/test
 # Copy scripts and test configs
 COPY docker/scripts/ /app/scripts/
 COPY docker/auth-test.config /app/docker/auth-test.config
+COPY docker/cluster-topology.config /app/docker/cluster-topology.config
 RUN chmod +x /app/scripts/*.sh
 
 # Create data directory for keys

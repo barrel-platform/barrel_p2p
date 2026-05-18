@@ -65,6 +65,17 @@ wait_for_node() {
 }
 
 # Start an Erlang node with -proto_dist mycelium.
+dist_port_for() {
+    # Pinned ports keep cluster-topology.config's static discovery
+    # entries valid across runs.
+    case "$1" in
+        node1) echo 9101 ;;
+        node2) echo 9102 ;;
+        node3) echo 9103 ;;
+        *)     echo 0 ;;
+    esac
+}
+
 start_node() {
     local name="$1"
     local contact_node="$2"
@@ -76,8 +87,10 @@ start_node() {
 
     local short_name
     short_name=$(echo "$name" | cut -d'@' -f1)
+    local dist_port
+    dist_port=$(dist_port_for "$short_name")
 
-    echo "Starting node: $name (short: $short_name)"
+    echo "Starting node: $name (short: $short_name, port: $dist_port)"
     echo "Contact node: ${contact_node:-none}"
     echo "Auth enabled: ${AUTH_ENABLED:-false}"
     echo "Auth trust mode: ${AUTH_TRUST_MODE:-tofu}"
@@ -134,7 +147,7 @@ start_node() {
         -sname "$short_name" \
         -setcookie "$ERLANG_COOKIE" \
         -pa /app/_build/test/lib/*/ebin \
-        -config /app/config/sys \
+        -config /app/docker/cluster-topology \
         $auth_config \
         $whitelist_config \
         $dist_cookie_config \
@@ -142,6 +155,7 @@ start_node() {
         -proto_dist mycelium \
         -epmd_module mycelium_epmd \
         -start_epmd false \
+        -mycelium_dist_port "$dist_port" \
         -eval "$startup_eval" \
         -noshell
 }
@@ -196,7 +210,7 @@ run_auth_tests() {
         -hidden \
         -setcookie ${DIST_COOKIE:-mycelium} \
         -pa /app/_build/test/lib/*/ebin \
-        -config /app/docker/auth-test.config \
+        -config /app/docker/cluster-topology \
         $auth_config \
         -proto_dist mycelium \
         -epmd_module mycelium_epmd \
@@ -216,7 +230,7 @@ run_auth_tests() {
                 {suite, mycelium_docker_auth_SUITE},
                 {dir, \"/app/test\"},
                 {logdir, \"/app/test_results\"},
-                {config, \"/app/docker/auth-test.config\"}
+                {config, \"/app/docker/cluster-topology.config\"}
             ]) of
                 {Ok, 0, {_UserSkip, 0}} ->
                     io:format(\"~n~nAll auth tests passed (~p ok)~n\", [Ok]),

@@ -132,7 +132,14 @@ cert_dir() ->
 %% Project mycelium defaults into the {quic, dist, ...} app env that
 %% upstream quic_dist:load_config/0 reads. User-supplied values win:
 %% we only fill keys that are absent.
+%%
+%% Loads the `quic' app before reading its env: sys.config entries
+%% for unloaded apps are pending until load, so without this the
+%% `{quic, [{dist, [...]}]}' the operator set in sys.config is
+%% invisible at proto_dist-boot time.
 project_defaults() ->
+    _ = application:load(quic),
+    _ = application:load(mycelium),
     User = application:get_env(quic, dist, []),
     Defaults = build_defaults(),
     Merged = merge_defaults(User, Defaults),
