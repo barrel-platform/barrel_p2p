@@ -55,15 +55,17 @@ handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 handle_cast({broadcast, {add, Key, Entry}}, State) ->
-    %% Wrap in OR-Map format for merge (single entry with dot)
     Dot = {node(), mycelium_hlc:now()},
-    Delta = #{Key => {Entry, #{Dot => true}}},
+    Delta = #{Key => {value, Entry, #{Dot => true}}},
     mycelium_plumtree:broadcast(registry_sync, {delta, node(), Delta}),
     {noreply, State};
 
 handle_cast({broadcast, {remove, Key}}, State) ->
-    %% Broadcast removal - receiver will remove from their OR-Map
-    mycelium_plumtree:broadcast(registry_sync, {remove, node(), Key}),
+    %% Tombstone-as-delta. The receiver's OR-Map merge resolves
+    %% against any in-flight value entry by HLC, so a delayed add
+    %% cannot resurrect the removed key.
+    Delta = #{Key => {tombstone, mycelium_hlc:now()}},
+    mycelium_plumtree:broadcast(registry_sync, {delta, node(), Delta}),
     {noreply, State};
 
 handle_cast({peer_up, Node}, State) ->
@@ -107,20 +109,27 @@ handle_info({?SYNC_TAG, {full_sync, _FromNode, RemoteORMap}}, State) ->
     {noreply, State};
 
 handle_info({plumtree_broadcast, {registry_sync, {delta, FromNode, DeltaMap}}}, State) ->
-    %% Apply delta from Plumtree broadcast
+    %% Merge first so the registry's view reflects the delta before
+    %% subscribers receive the event.
     mycelium_registry:merge_remote(DeltaMap),
-    %% Emit events for new entries
-    maps:foreach(fun({Name, _Node}, {_Entry, _Dots}) ->
-        mycelium_service_events:notify({service_registered, Name, FromNode})
-    end, DeltaMap),
+    maps:foreach(
+        fun({Name, _Node}, {value, _Entry, _Dots}) ->
+                mycelium_service_events:notify(
+                    {service_registered, Name, FromNode});
+           ({Name, _Node}, {tombstone, _HLC}) ->
+                mycelium_router:invalidate_route(Name),
+                mycelium_service_events:notify(
+                    {service_unregistered, Name, FromNode})
+        end,
+        DeltaMap
+    ),
     {noreply, State};
 
-handle_info({plumtree_broadcast, {registry_sync, {remove, FromNode, {Name, Node}}}}, State) ->
-    %% Apply removal
-    mycelium_registry:remove_entry(Name, Node),
-    %% Invalidate route cache for this service
+%% Legacy point-to-point remove broadcast. Kept as a no-op fallback so
+%% an old peer sending the obsolete shape does not raise a function
+%% clause; the registry's tombstone path covers correctness.
+handle_info({plumtree_broadcast, {registry_sync, {remove, FromNode, {Name, _Node}}}}, State) ->
     mycelium_router:invalidate_route(Name),
-    %% Emit event
     mycelium_service_events:notify({service_unregistered, Name, FromNode}),
     {noreply, State};
 

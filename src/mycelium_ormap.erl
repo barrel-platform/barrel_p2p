@@ -4,12 +4,21 @@
 %%%
 -module(mycelium_ormap).
 
-%% OR-Map (Observed-Remove Map) CRDT using HLC-based dots.
-%% Provides conflict-free concurrent add/remove semantics.
+%% A last-write-wins map with HLC-tagged tombstones, suitable for
+%% replicating the service registry.
 %%
-%% Each entry has a set of "dots" (node + HLC timestamp pairs) that track
-%% when/where it was added. Merge unions dots, and the value with the
-%% latest HLC "wins" when dots conflict.
+%% Each key holds either a `value' entry (a payload plus the set of
+%% dots that have written it) or a `tombstone' entry (an HLC marking
+%% the time of removal). Merge keeps the entry with the greater
+%% HLC; a tombstone newer than any value wins, and an add newer than
+%% any tombstone wins. The two outcomes are symmetric, so delayed
+%% gossip cannot resurrect a removed entry, nor can a delayed remove
+%% silently drop a fresher add.
+%%
+%% This is not a strict CRDT-textbook OR-Map (we do not track
+%% per-add dot history through removes). For the service-registry
+%% use case it gives the property that matters: register/unregister
+%% ordering converges under reorder, partition, and replay.
 
 -include_lib("hlc/include/hlc.hrl").
 
@@ -17,9 +26,11 @@
 -export([merge/2, is_empty/1]).
 -export([get_entry/2]).
 
--type dot() :: {node(), mycelium_hlc:timestamp()}.
--type entry() :: {term(), #{dot() => true}}.
--type ormap() :: #{term() => entry()}.
+-type dot()             :: {node(), mycelium_hlc:timestamp()}.
+-type value_entry()     :: {value, term(), #{dot() => true}}.
+-type tombstone_entry() :: {tombstone, mycelium_hlc:timestamp()}.
+-type entry()           :: value_entry() | tombstone_entry().
+-type ormap()           :: #{term() => entry()}.
 
 -export_type([ormap/0, dot/0, entry/0]).
 
@@ -27,89 +38,128 @@
 %% API
 %%====================================================================
 
-%% Create a new empty OR-Map
+%% Create a new empty OR-Map.
 -spec new() -> ormap().
 new() -> #{}.
 
-%% Add a key-value pair with a new dot
+%% Add a key-value pair with a fresh dot. If the current entry is a
+%% tombstone newer than the add's HLC, the add is silently ignored;
+%% the tombstone won.
 -spec add(term(), term(), ormap()) -> ormap().
 add(Key, Value, Map) ->
     Dot = {node(), mycelium_hlc:now()},
+    DotHLC = dot_hlc(Dot),
     case maps:get(Key, Map, undefined) of
         undefined ->
-            maps:put(Key, {Value, #{Dot => true}}, Map);
-        {_, Dots} ->
-            maps:put(Key, {Value, maps:put(Dot, true, Dots)}, Map)
+            Map#{Key => {value, Value, #{Dot => true}}};
+        {tombstone, T} ->
+            case mycelium_hlc:compare(DotHLC, T) of
+                gt -> Map#{Key => {value, Value, #{Dot => true}}};
+                _  -> Map
+            end;
+        {value, _OldValue, Dots} ->
+            Map#{Key => {value, Value, Dots#{Dot => true}}}
     end.
 
-%% Remove a key (tombstone semantics - remove all dots)
+%% Remove a key by writing a tombstone tagged with the current HLC.
+%% A subsequent add with a strictly greater HLC wins; a stale
+%% delayed add never resurrects this entry.
 -spec remove(term(), ormap()) -> ormap().
 remove(Key, Map) ->
-    maps:remove(Key, Map).
+    Map#{Key => {tombstone, mycelium_hlc:now()}}.
 
-%% Get value for a key
+%% Get the live value for a key. Tombstones return not_found.
 -spec get(term(), ormap()) -> {ok, term()} | not_found.
 get(Key, Map) ->
     case maps:get(Key, Map, undefined) of
-        undefined -> not_found;
-        {Value, _Dots} -> {ok, Value}
+        {value, Value, _Dots} -> {ok, Value};
+        _                     -> not_found
     end.
 
-%% Get full entry (value + dots) for a key
+%% Get the full entry (live value or tombstone) for a key. Used by
+%% callers that need to inspect dot history; ordinary lookups should
+%% use get/2.
 -spec get_entry(term(), ormap()) -> {ok, entry()} | not_found.
 get_entry(Key, Map) ->
     case maps:get(Key, Map, undefined) of
         undefined -> not_found;
-        Entry -> {ok, Entry}
+        Entry     -> {ok, Entry}
     end.
 
-%% Get all keys in the map
+%% Keys with live entries. Tombstones are not listed.
 -spec keys(ormap()) -> [term()].
-keys(Map) -> maps:keys(Map).
+keys(Map) ->
+    [K || {K, {value, _, _}} <- maps:to_list(Map)].
 
-%% Convert to list of {Key, Value} pairs
+%% Live key-value pairs. Tombstones are skipped.
 -spec to_list(ormap()) -> [{term(), term()}].
 to_list(Map) ->
-    [{K, V} || {K, {V, _Dots}} <- maps:to_list(Map)].
+    [{K, V} || {K, {value, V, _Dots}} <- maps:to_list(Map)].
 
-%% Check if map is empty
+%% A map is empty when it has no live entries; tombstones do not
+%% count.
 -spec is_empty(ormap()) -> boolean().
-is_empty(Map) -> maps:size(Map) =:= 0.
+is_empty(Map) ->
+    lists:all(
+        fun({_K, {value, _, _}}) -> false;
+           (_)                   -> true
+        end,
+        maps:to_list(Map)
+    ).
 
-%% Merge two OR-Maps (commutative, associative, idempotent)
+%% Merge two OR-Maps. Commutative, associative, idempotent.
 -spec merge(ormap(), ormap()) -> ormap().
 merge(Map1, Map2) ->
     Keys = lists:usort(maps:keys(Map1) ++ maps:keys(Map2)),
-    lists:foldl(fun(Key, Acc) ->
-        Entry = case {maps:get(Key, Map1, undefined),
-                      maps:get(Key, Map2, undefined)} of
-            {undefined, E2} -> E2;
-            {E1, undefined} -> E1;
-            {{V1, D1}, {V2, D2}} ->
-                MergedDots = maps:merge(D1, D2),
-                {pick_latest(V1, D1, V2, D2), MergedDots}
+    lists:foldl(
+        fun(Key, Acc) ->
+            Acc#{Key => merge_entry(maps:get(Key, Map1, undefined),
+                                    maps:get(Key, Map2, undefined))}
         end,
-        maps:put(Key, Entry, Acc)
-    end, #{}, Keys).
+        #{},
+        Keys
+    ).
 
 %%====================================================================
-%% Internal Functions
+%% Internal
 %%====================================================================
 
-%% Pick the value with the latest HLC timestamp
-pick_latest(V1, D1, V2, D2) ->
-    Max1 = max_hlc(maps:keys(D1)),
-    Max2 = max_hlc(maps:keys(D2)),
-    case mycelium_hlc:compare(Max1, Max2) of
-        gt -> V1;
-        _ -> V2
+merge_entry(undefined, E)                    -> E;
+merge_entry(E, undefined)                    -> E;
+merge_entry({value, V1, D1}, {value, V2, D2}) ->
+    MergedDots = maps:merge(D1, D2),
+    case mycelium_hlc:compare(max_hlc(D1), max_hlc(D2)) of
+        gt -> {value, V1, MergedDots};
+        _  -> {value, V2, MergedDots}
+    end;
+merge_entry({tombstone, T1}, {tombstone, T2}) ->
+    case mycelium_hlc:compare(T1, T2) of
+        gt -> {tombstone, T1};
+        _  -> {tombstone, T2}
+    end;
+merge_entry({tombstone, T} = Tomb, {value, _, D} = V) ->
+    case mycelium_hlc:compare(T, max_hlc(D)) of
+        gt -> Tomb;
+        _  -> V
+    end;
+merge_entry({value, _, D} = V, {tombstone, T} = Tomb) ->
+    case mycelium_hlc:compare(T, max_hlc(D)) of
+        gt -> Tomb;
+        _  -> V
     end.
 
-%% Find the maximum HLC timestamp from a list of dots
-max_hlc([{_Node, HLC}]) -> HLC;
-max_hlc([{_Node, HLC} | Rest]) ->
-    RestMax = max_hlc(Rest),
-    case mycelium_hlc:compare(HLC, RestMax) of
-        gt -> HLC;
-        _ -> RestMax
-    end.
+dot_hlc({_Node, HLC}) -> HLC.
+
+%% Maximum HLC across a non-empty dot set.
+max_hlc(Dots) ->
+    [First | Rest] = maps:keys(Dots),
+    lists:foldl(
+        fun({_, HLC}, Acc) ->
+            case mycelium_hlc:compare(HLC, Acc) of
+                gt -> HLC;
+                _  -> Acc
+            end
+        end,
+        dot_hlc(First),
+        Rest
+    ).

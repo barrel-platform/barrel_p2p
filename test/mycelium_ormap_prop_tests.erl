@@ -48,7 +48,8 @@ prop_test_() ->
       {timeout, 60, ?_assert(run(prop_merge_associative()))},
       {timeout, 60, ?_assert(run(prop_merge_idempotent()))},
       {timeout, 60, ?_assert(run(prop_add_then_get()))},
-      {timeout, 60, ?_assert(run(prop_remove_disappears()))}]}.
+      {timeout, 60, ?_assert(run(prop_remove_disappears()))},
+      {timeout, 60, ?_assert(run(prop_remove_survives_stale_add()))}]}.
 
 run(Prop) ->
     proper:quickcheck(Prop, [{numtests, ?NUMTESTS}, {to_file, user}]).
@@ -110,6 +111,20 @@ prop_remove_disappears() ->
                 M1 = mycelium_ormap:add(K, V, M),
                 M2 = mycelium_ormap:remove(K, M1),
                 not_found =:= mycelium_ormap:get(K, M2)
+            end).
+
+%% Reordering / replay: a stale add delta that arrives after a remove
+%% must NOT resurrect the removed entry. Captures the delayed-merge
+%% race that the registry-sync layer exposes under partitions.
+prop_remove_survives_stale_add() ->
+    ?FORALL({K, V}, {key(), value()},
+            begin
+                M0 = mycelium_ormap:new(),
+                StaleAdd = mycelium_ormap:add(K, V, M0),
+                M1 = mycelium_ormap:add(K, V, M0),
+                M2 = mycelium_ormap:remove(K, M1),
+                Merged = mycelium_ormap:merge(M2, StaleAdd),
+                not_found =:= mycelium_ormap:get(K, Merged)
             end).
 
 %%====================================================================

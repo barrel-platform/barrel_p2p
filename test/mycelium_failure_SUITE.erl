@@ -287,7 +287,8 @@ test_registry_merge_preserves_latest(_Config) ->
         meta = #{source => remote}
     },
     RemoteDot = {node(), mycelium_hlc:now()},
-    RemoteDelta = #{{merge_test_svc, 'fake@remote'} => {RemoteEntry, #{RemoteDot => true}}},
+    RemoteDelta = #{{merge_test_svc, 'fake@remote'} =>
+                        {value, RemoteEntry, #{RemoteDot => true}}},
 
     %% Merge remote delta
     ok = mycelium_registry:merge_remote(RemoteDelta),
@@ -337,7 +338,8 @@ test_peer_down_removes_entries(_Config) ->
         meta = #{}
     },
     RemoteDot = {FakeNode, mycelium_hlc:now()},
-    RemoteDelta = #{{peer_down_svc, FakeNode} => {RemoteEntry, #{RemoteDot => true}}},
+    RemoteDelta = #{{peer_down_svc, FakeNode} =>
+                        {value, RemoteEntry, #{RemoteDot => true}}},
     ok = mycelium_registry:merge_remote(RemoteDelta),
     timer:sleep(50),
 
