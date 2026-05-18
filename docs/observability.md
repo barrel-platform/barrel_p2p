@@ -123,24 +123,59 @@ sending the tag preamble. In production this should be zero.
 
 ## Wiring an exporter
 
-The fastest path is the Prometheus scrape endpoint shipped with
-`instrument`:
+`instrument` does not ship a standalone HTTP server. It gives you
+the building blocks; you wire them into whatever HTTP layer your
+release already uses.
+
+### Prometheus
+
+`instrument_prometheus` is a *formatter*, not a server. Two
+functions matter:
+
+- `instrument_prometheus:format/0` returns the metrics body as a
+  binary (Prometheus text exposition format).
+- `instrument_prometheus:content_type/0` returns the matching
+  `text/plain; version=0.0.4; charset=utf-8` header value.
+
+A minimal cowboy handler:
 
 ```erlang
-{ok, _} = application:ensure_all_started(instrument),
-ok = instrument_prometheus:start([{port, 9568}]).
+-module(my_metrics_handler).
+-export([init/2]).
+
+init(Req0, State) ->
+    Body = instrument_prometheus:format(),
+    Headers = #{<<"content-type">> => instrument_prometheus:content_type()},
+    Req = cowboy_req:reply(200, Headers, Body, Req0),
+    {ok, Req, State}.
 ```
 
-Mycelium emits as soon as its supervision tree is up. Scrape
-`http://node:9568/metrics`.
+Wire it in your router and point your Prometheus scraper at the
+resulting endpoint.
 
-For OTLP, configure the OTLP exporter through the `instrument`
-app env. The upstream README has the canonical setup.
+Mycelium emits as soon as its supervision tree is up. Make sure
+`instrument` is in your release applications list (it is pulled in
+as a transitive dependency of mycelium, so you usually do not have
+to add it explicitly).
 
-For local development, `instrument_live` exposes a WebSocket and
-SSE stream on `http://localhost:8080/stream/events` with no
-extra wiring. Useful when iterating on a feature and you want to
-see the metrics flow without setting up a backend.
+### OTLP
+
+OTLP export is configured through the `instrument` application env
+or through the standard `OTEL_*` environment variables. The
+canonical setup lives in the upstream
+[instrument README](https://github.com/benoitc/instrument);
+mycelium does not add or replace any of it.
+
+A typical sys.config entry:
+
+```erlang
+{instrument, [
+    {service_name, <<"my_mycelium_node">>}
+]}.
+```
+
+Combined with `OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318`
+in the node's environment, this is enough for the metrics to flow.
 
 ## What to alert on
 
