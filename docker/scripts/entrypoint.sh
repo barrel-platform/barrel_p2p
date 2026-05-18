@@ -58,21 +58,13 @@ wait_for_node() {
         ((attempt++))
     done
     echo "Node $node_host is reachable"
-
-    attempt=1
-    while ! nc -z "$node_host" 4369 2>/dev/null; do
-        if [ $attempt -ge $max_attempts ]; then
-            echo "ERROR: EPMD on $node_host not available after $max_attempts attempts"
-            exit 1
-        fi
-        echo "Waiting for EPMD on $node_host... (attempt $attempt)"
-        sleep 1
-        ((attempt++))
-    done
-    echo "EPMD on $node_host is available"
+    # The cluster runs with -proto_dist mycelium and the mycelium_epmd
+    # discovery module, so there is no stock EPMD on port 4369 to poll.
+    # Docker compose's `service_healthy` dependency (driven by
+    # /app/scripts/health_check.sh) is the real readiness gate.
 }
 
-# Start an Erlang node with -proto_dist quic.
+# Start an Erlang node with -proto_dist mycelium.
 start_node() {
     local name="$1"
     local contact_node="$2"
@@ -147,7 +139,9 @@ start_node() {
         $whitelist_config \
         $dist_cookie_config \
         $contact_config \
-        -proto_dist quic \
+        -proto_dist mycelium \
+        -epmd_module mycelium_epmd \
+        -start_epmd false \
         -eval "$startup_eval" \
         -noshell
 }
@@ -204,7 +198,9 @@ run_auth_tests() {
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/auth-test.config \
         $auth_config \
-        -proto_dist quic \
+        -proto_dist mycelium \
+        -epmd_module mycelium_epmd \
+        -start_epmd false \
         -noshell \
         -eval "
             application:load(mycelium),

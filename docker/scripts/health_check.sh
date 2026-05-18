@@ -1,19 +1,13 @@
 #!/bin/bash
-# Health check script for Mycelium Docker nodes
-# Checks if the Erlang node is running and creates a marker file
+# Health check script for Mycelium Docker nodes.
+#
+# Nodes run with -proto_dist mycelium and the mycelium_epmd module,
+# so the stock `epmd -names` will never show them. The mycelium app
+# writes /tmp/mycelium_ready once it has started.
 
-node_name=$(echo "$NODE_NAME" | cut -d'@' -f1)
-
-# Check if EPMD knows about our node
-if ! epmd -names 2>/dev/null | grep -q "$node_name"; then
-    echo "Node not registered with EPMD"
-    exit 1
-fi
-
-# Check for ready marker file
 if [ -f "/tmp/mycelium_ready" ]; then
     exit 0
 fi
 
-# If no marker yet, check EPMD registration
-exit 0
+echo "Mycelium not ready (no /tmp/mycelium_ready marker)"
+exit 1
