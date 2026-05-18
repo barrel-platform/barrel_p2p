@@ -126,9 +126,25 @@ is_endpoint_file(F) ->
 
 read_entry(Path) ->
     Base = filename:basename(Path, ".endpoint"),
-    case file:consult(Path) of
-        {ok, [{_Host, Port}]} when is_integer(Port) ->
-            {true, {list_to_atom(Base), Port}};
-        _ ->
+    BaseBin = list_to_binary(Base),
+    %% Validate the filename matches a well-formed `name@host' atom
+    %% before minting it. discovery_dir is potentially shared or
+    %% writable; without this, crafted filenames could exhaust the
+    %% atom table. Prefer an existing atom to avoid minting altogether.
+    case mycelium_dist_protocol:validate_node_name(BaseBin) of
+        ok ->
+            case file:consult(Path) of
+                {ok, [{_Host, Port}]} when is_integer(Port) ->
+                    {true, {materialise_node(Base, BaseBin), Port}};
+                _ ->
+                    false
+            end;
+        {error, _} ->
             false
+    end.
+
+materialise_node(Base, BaseBin) ->
+    try list_to_existing_atom(Base)
+    catch error:badarg ->
+        binary_to_atom(BaseBin, utf8)
     end.

@@ -85,6 +85,22 @@ file_register_binary_input_test_() ->
                      mycelium_discovery_file:lookup(<<"smoke@h">>, "h"))
     end).
 
+%% A crafted filename that does not match the `name@host' atom
+%% shape must be skipped instead of minting an atom. discovery_dir
+%% can be shared or writable by another local process; without
+%% validation, arbitrary file names would exhaust the atom table.
+file_skips_malformed_filename_test_() ->
+    with(fun(Dir) ->
+        {ok, _} = mycelium_discovery_file:init(#{}),
+        Bad = filename:join(Dir, "not a valid name!.endpoint"),
+        ok = file:write_file(Bad, <<"{\"h\", 9100}.">>),
+        Worse = filename:join(Dir, "../escape@host.endpoint"),
+        ok = file:write_file(Worse, <<"{\"h\", 9100}.">>),
+        %% list_nodes ignores the malformed entries entirely.
+        {ok, Nodes} = mycelium_discovery_file:list_nodes("h"),
+        ?assertEqual([], Nodes)
+    end).
+
 %%====================================================================
 %% dns backend
 %%====================================================================
