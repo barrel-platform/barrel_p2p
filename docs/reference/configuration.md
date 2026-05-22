@@ -61,6 +61,25 @@ respects any user values.
 | `proxy_cast_max_in_flight` | `32` | `pos_integer()` | Per-proxy cap on concurrent overlay-cast helpers. Over-cap casts are dropped and counted via `mycelium.service_proxy.cast_dropped`. |
 | `route_cache_sweep_period_ms` | `60000` | `pos_integer()` | Periodic sweep of stale route-cache entries. |
 
+## Placement (`mycelium_shard`)
+
+These govern sharded placement and its lease-based live-node set. `ring_size` MUST be identical on every node, or nodes compute different rings and diverge; treat the lease timings as cluster-wide too.
+
+| Key | Default | Type | Purpose |
+|-----|---------|------|---------|
+| `ring_size` | `64` | `pos_integer()` | Number of ring partitions. Granularity of ownership events. Must match on every node. |
+| `member_heartbeat_ms` | `2000` | `pos_integer()` | How often a node re-announces itself into the live-node set. |
+| `member_ttl_ms` | `6000` | `pos_integer()` | Lease lifetime. A node drops out of the ring once `Now - last heartbeat` exceeds this. Keep well above `member_heartbeat_ms` plus expected clock skew. |
+| `member_skew_ms` | `5000` | `non_neg_integer()` | Reject heartbeats whose timestamp is more than this far in the future, so a fast clock cannot pin a dead node. |
+
+## Reminders (`mycelium_reminder`)
+
+Durable reminders build on placement, so they also obey the placement keys above.
+
+| Key | Default | Type | Purpose |
+|-----|---------|------|---------|
+| `reminder_scan_ms` | `1000` | `pos_integer()` | Periodic safety sweep that re-arms reminders this node owns and missed, and re-arms far-future reminders as their fire time nears. |
+
 ## Examples
 
 ### Minimal development config

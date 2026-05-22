@@ -24,6 +24,12 @@ natural one.
   eventually-consistent service catalogue.
 - [Hybrid logical clocks](hybrid-logical-clocks.md) — the
   timestamps the CRDT uses to merge concurrent updates.
+- [Leader election](leader-election.md) — cluster-wide singletons
+  via `mycelium:lead/2`, with fencing tokens for safety.
+- [Sharded placement](sharded-placement.md) — consistent hashing
+  over a replicated live-node set; `place/1` and ownership events.
+- [Durable reminders](durable-reminders.md) — replicated,
+  fire-at-most-once timers that survive the node that armed them.
 
 ## The transport
 

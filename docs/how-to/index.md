@@ -25,6 +25,10 @@ is X?". For the conceptual side, read the
   each other directly.
 - [Run the tests](run-tests.md) — local CT and EUnit suites,
   the gated soak suite, the docker auth integration suite.
+- [Partition state across nodes](partition-state.md) — route keys
+  to owners with `place/1` and hand off on ownership events.
+- [Schedule durable jobs](schedule-durable-jobs.md) — run work at a
+  future time with `remind/3`, surviving the scheduling node's death.
 
 ## After how-tos
 

@@ -39,12 +39,14 @@ init([]) ->
     },
 
     Sync = #{
-        id => mycelium_registry_sync,
-        start => {mycelium_registry_sync, start_link, []},
+        id => mycelium_registry_replica,
+        start => {mycelium_replica, start_link,
+                  [#{name => mycelium_registry_replica,
+                     callback => mycelium_registry}]},
         restart => permanent,
         shutdown => 5000,
         type => worker,
-        modules => [mycelium_registry_sync]
+        modules => [mycelium_replica]
     },
 
     Router = #{

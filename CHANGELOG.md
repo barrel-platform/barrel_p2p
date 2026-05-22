@@ -5,6 +5,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Durable reminders (`mycelium_reminder`): `mycelium:remind/3`,
+  `remind_after/3`, `cancel_reminder/1`, `subscribe_reminders/0,1`,
+  `unsubscribe_reminders/1`. Replicated, fire-at-most-once timers that
+  survive the node that armed them: the owner is `mycelium:place/1`, so
+  a survivor takes over and fires after the owner dies. Timers are
+  versioned hints (re-validated on fire), firing is tombstone-first, and
+  delivery is `{mycelium_reminder, Key, Payload, Fence}` where `Fence`
+  is a stable version stamp for idempotent dedup. Exactly once in steady
+  state, best-effort under churn or a crash at the fire instant. Config:
+  `reminder_scan_ms`. Beta.
+- Sharded service placement (`mycelium_shard`): `mycelium:place/1`,
+  `owners/2`, `is_owner/1`, `partition/1`, `members/0`,
+  `subscribe_shard/0,1`. Rendezvous (HRW) hashing over a replicated,
+  lease-based live-node set (periodic heartbeats, wall-clock lease with
+  a future-skew bound, not driven by `peer_down`), bucketed into
+  `ring_size` partitions. Owners react to
+  `{mycelium_shard, {acquired | released, Partition}}` on churn. Config:
+  `ring_size` (must match cluster-wide), `member_heartbeat_ms`,
+  `member_ttl_ms`, `member_skew_ms`. Beta.
+- Cluster-wide singletons / leader election: `mycelium:lead/1,2`,
+  `resign/1`, `leader/1`, `is_leader/1`, `fence/1`. A process
+  campaigns for a named singleton and is notified with
+  `{mycelium_leader, Name, {elected, Fence}}` / `revoked`; the cluster
+  elects one leader (highest `priority`, ties to lowest node atom) and
+  re-elects on `peer_up`/`peer_down`. Each term carries an HLC-based
+  fencing token, strictly monotonic within a connected partition, for
+  safe writes to shared resources. Module `mycelium_leader` (election +
+  fencing) over a `mycelium_replica` instance. Beta.
+
+### Changed
+- Service registry and leader election now share one replication
+  driver, `mycelium_replica` (gossiped OR-Map deltas, full-sync on
+  `peer_up`, prune on `peer_down`). `mycelium_registry_sync` is removed;
+  each feature runs its own `mycelium_replica` instance
+  (`mycelium_registry_replica`, `mycelium_leader_replica`).
+  `mycelium_hyparview` no longer calls the registry sync directly; the
+  replica subscribes to the peer-event bus.
+
 ### Fixed
 - `mycelium_plumtree` removes peers from both eager and lazy lists on
   `peer_down`. The handler clause silently dropped events because of

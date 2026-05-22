@@ -75,7 +75,15 @@ mycelium_sup  (one_for_one)
 |
 +- mycelium_registry_sup  (rest_for_one)
 |  +- mycelium_registry           local registry + CRDT
-|  +- mycelium_registry_sync      replication driver (over Plumtree)
+|  +- mycelium_registry_replica   replication driver (mycelium_replica)
+|
++- mycelium_leader               cluster-wide singleton election
++- mycelium_leader_replica       election replication (mycelium_replica)
+|
++- mycelium_shard                sharded placement (HRW ring)
++- mycelium_members_replica      lease-based live-node set (mycelium_replica)
++- mycelium_reminder             durable reminders (owner-fires-once)
++- mycelium_reminder_replica     reminder store (mycelium_replica)
 |
 +- mycelium_proxy_sup     (simple_one_for_one)
 |  +- mycelium_service_proxy * N  per-name remote proxies
@@ -244,10 +252,46 @@ be compared causally.
 ```
 
 Operationally: when you call `register_service/2`, the registry
-adds an entry with a fresh dot, and `mycelium_registry_sync`
-broadcasts the delta over Plumtree. When the broadcast reaches
+adds an entry with a fresh dot, and its `mycelium_replica`
+instance broadcasts the delta over Plumtree. When the broadcast reaches
 peer B, B merges the delta into its local OR-Map; from then on
 B's `whereis_service/1` can find the new registration.
+
+## Sharded placement and the live-node set
+
+`mycelium_shard` answers "which node should own this key" with
+rendezvous (HRW) hashing over a replicated live-node set. The set is
+NOT the bounded HyParView active view and is not driven by `peer_down`
+(which is active-view churn, not cluster death). Instead each node
+gossips a periodic heartbeat carrying its wall-clock time through its
+own `mycelium_replica` instance (`mycelium_members_replica`); a node is
+in the ring while its lease is fresh (`Now - heartbeat =< member_ttl_ms`),
+and heartbeats too far in the future are rejected so a fast clock cannot
+pin a dead node. The set converges without tombstones: a stale entry in
+a full-sync is already expired by its timestamp.
+
+The live member list is published to a read-concurrency ETS table, so
+`place/1`, `owners/2`, `is_owner/1`, and `partition/1` are lock-free
+local reads. When the live set changes, the shard diffs the partitions
+this node owns and emits `{mycelium_shard, {acquired | released, P}}`
+to subscribers, which is how consumers hand off partitioned state.
+
+## Durable reminders
+
+`mycelium_reminder` layers fire-at-most-once timers on placement. A
+reminder `Key => {FireAt, Payload, Version}` lives in its own
+`mycelium_replica` instance (`mycelium_reminder_replica`), so every node
+holds it and it survives the node that armed it. The owner of a reminder
+is `mycelium_shard:place(Key)`; only the owner arms a local
+`erlang:send_after` and fires. The timer is a versioned hint: on timeout
+the owner re-checks that the reminder still exists, still names the same
+version, is still owned here, and is actually due. Firing is
+tombstone-first (gossip the removal, then deliver
+`{mycelium_reminder, Key, Payload, Fence}` locally), and ownership
+events plus a periodic `reminder_scan_ms` sweep re-arm a survivor's
+inherited reminders. The result is exactly-once in steady state and
+best-effort under churn or a crash at the fire instant; `Fence` (the
+packed version) lets a handler dedup.
 
 ## Hybrid logical clocks
 
@@ -489,7 +533,7 @@ are:
   handshake, the `peer_up` event.
 - A `register_service/2` call. Start in `mycelium_registry`'s
   `handle_call({register, ...})` and follow the OR-Map add, the
-  `mycelium_registry_sync` broadcast, the `mycelium_plumtree`
+  `mycelium_replica` broadcast, the `mycelium_plumtree`
   fanout, and the merge on a remote node.
 - A `whereis_service/1` call. Start in `mycelium.erl`, see how
   the local lookup is tried first, then the cache, then the

@@ -58,6 +58,75 @@ init([]) ->
         modules => [mycelium_registry_sup]
     },
 
+    %% Leader election. Started after the registry so Plumtree and the
+    %% HyParView event bus are already up (the sync worker subscribes to
+    %% both in init). Leader before its sync: the sync casts into it.
+    Leader = #{
+        id => mycelium_leader,
+        start => {mycelium_leader, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_leader]
+    },
+
+    LeaderSync = #{
+        id => mycelium_leader_replica,
+        start => {mycelium_replica, start_link,
+                  [#{name => mycelium_leader_replica,
+                     callback => mycelium_leader}]},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_replica]
+    },
+
+    %% Sharded placement. Started after the registry (Plumtree + event
+    %% bus up). Shard before its replica instance: the replica casts into
+    %% it, and the shard's first heartbeat is deferred to a timer.
+    Shard = #{
+        id => mycelium_shard,
+        start => {mycelium_shard, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_shard]
+    },
+
+    ShardReplica = #{
+        id => mycelium_members_replica,
+        start => {mycelium_replica, start_link,
+                  [#{name => mycelium_members_replica,
+                     callback => mycelium_shard}]},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_replica]
+    },
+
+    %% Durable reminders. Started after the shard (it subscribes to
+    %% ownership events and resolves owners via mycelium_shard:place/1).
+    %% Reminder before its replica instance: the replica casts into it.
+    Reminder = #{
+        id => mycelium_reminder,
+        start => {mycelium_reminder, start_link, []},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_reminder]
+    },
+
+    ReminderReplica = #{
+        id => mycelium_reminder_replica,
+        start => {mycelium_replica, start_link,
+                  [#{name => mycelium_reminder_replica,
+                     callback => mycelium_reminder}]},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [mycelium_replica]
+    },
+
     PlumtreeSup = #{
         id => mycelium_plumtree_sup,
         start => {mycelium_plumtree_sup, start_link, []},
@@ -100,5 +169,7 @@ init([]) ->
     },
 
     ChildSpecs = [HLC, DistKeys, HyparviewSup, PlumtreeSup, RegistrySup,
+                  Leader, LeaderSync, Shard, ShardReplica,
+                  Reminder, ReminderReplica,
                   Bridge, Streams, DistGc],
     {ok, {SupFlags, ChildSpecs}}.

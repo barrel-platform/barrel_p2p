@@ -57,8 +57,9 @@ What happens under the hood:
 
 1. `register_service/2` inserts an entry into the local OR-Map
    with a fresh dot.
-2. `mycelium_registry_sync` builds a delta of "what changed"
-   and broadcasts it through [Plumtree](gossip-broadcast.md).
+2. The registry's `mycelium_replica` instance builds a delta of
+   "what changed" and broadcasts it through
+   [Plumtree](gossip-broadcast.md).
 3. Each peer receives the delta and merges it into its own
    OR-Map.
 4. From the moment the merge completes on node B, B's

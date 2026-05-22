@@ -173,8 +173,8 @@ A real example: a registration on node A flows like this:
 
 1. The application calls `register_service/2`. The local
    registry updates its OR-Map with a fresh dot.
-2. `mycelium_registry_sync` produces a delta and broadcasts it
-   through Plumtree.
+2. The registry's `mycelium_replica` instance produces a delta and
+   broadcasts it through Plumtree.
 3. Each eager peer receives the delta, merges into its OR-Map,
    and forwards to its own eager peers. Lazy peers receive an
    `IHAVE` and graft if they have not seen the message.

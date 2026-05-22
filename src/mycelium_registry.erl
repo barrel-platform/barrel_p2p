@@ -4,9 +4,13 @@
 %%%
 -module(mycelium_registry).
 -behaviour(gen_server).
+-behaviour(mycelium_replica).
 
 -include("mycelium.hrl").
 -include_lib("hlc/include/hlc.hrl").
+
+%% Registered name of this feature's replication instance.
+-define(REPLICA, mycelium_registry_replica).
 
 %% API
 -export([start_link/0]).
@@ -18,6 +22,10 @@
 
 %% Internal API (used by sync)
 -export([merge_remote/1, remove_node_entries/1, remove_entry/2]).
+
+%% mycelium_replica callbacks
+-export([replica_merge_delta/1, replica_apply_full_sync/1,
+         replica_full_sync_snapshot/0, replica_remove_node/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -136,7 +144,7 @@ handle_call({unregister, Name}, _From, State) ->
                     maps:remove(Ref, State#state.monitors)
             end,
             %% Broadcast removal
-            mycelium_registry_sync:broadcast_update({remove, Key}),
+            mycelium_replica:broadcast_update(?REPLICA, {remove, Key}),
             %% Emit service event
             mycelium_service_events:notify({service_unregistered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}};
@@ -177,7 +185,7 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({merge_remote, DeltaMap}, State) ->
     %% Update HLC from remote dots
-    update_hlc_from_ormap(DeltaMap),
+    mycelium_ormap:absorb_clock(DeltaMap),
     %% Merge into remote OR-Map
     Remote = mycelium_ormap:merge(State#state.remote, DeltaMap),
     {noreply, State#state{remote = Remote}};
@@ -207,7 +215,7 @@ handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
         {{Name, Pid}, Monitors} ->
             Key = {Name, node()},
             Local = mycelium_ormap:remove(Key, State#state.local),
-            mycelium_registry_sync:broadcast_update({remove, Key}),
+            mycelium_replica:broadcast_update(?REPLICA, {remove, Key}),
             %% Emit service down event
             mycelium_service_events:notify({service_down, Name, node(), Reason}),
             {noreply, State#state{local = Local, monitors = Monitors}};
@@ -219,6 +227,44 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
+    ok.
+
+%%====================================================================
+%% mycelium_replica callbacks
+%%====================================================================
+
+%% Merge a peer's delta into the remote map, then surface the change
+%% to service-event subscribers. A broadcast delta is single-key, so
+%% the key's node is the originating node.
+replica_merge_delta(Delta) ->
+    merge_remote(Delta),
+    maps:foreach(
+        fun({Name, Node}, {value, _Entry, _Dots}) ->
+                mycelium_service_events:notify({service_registered, Name, Node});
+           ({Name, Node}, {tombstone, _HLC}) ->
+                mycelium_router:invalidate_route(Name),
+                mycelium_service_events:notify({service_unregistered, Name, Node})
+        end,
+        Delta
+    ),
+    ok.
+
+%% A full sync carries a peer's local map; merge it silently (no
+%% per-entry events, matching the prior behaviour).
+replica_apply_full_sync(RemoteORMap) ->
+    merge_remote(RemoteORMap),
+    ok.
+
+replica_full_sync_snapshot() ->
+    ORMap = get_local_ormap(),
+    case mycelium_ormap:is_empty(ORMap) of
+        true  -> empty;
+        false -> {sync, ORMap}
+    end.
+
+replica_remove_node(Node) ->
+    remove_node_entries(Node),
+    mycelium_router:invalidate_route(Node),
     ok.
 
 %%====================================================================
@@ -237,7 +283,7 @@ do_register(Name, Pid, Meta, State) ->
             Ref = monitor(process, Pid),
             Monitors = maps:put(Ref, {Name, Pid}, State#state.monitors),
             %% Broadcast delta via sync
-            mycelium_registry_sync:broadcast_update({add, Key, Entry}),
+            mycelium_replica:broadcast_update(?REPLICA, {add, Key, Entry}),
             %% Emit service event
             mycelium_service_events:notify({service_registered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}}
@@ -252,17 +298,3 @@ find_monitor_for_name(Name, Monitors) ->
 %% Collect all entries matching a service name from an OR-Map
 collect_entries_by_name(Name, ORMap) ->
     [Entry || {{N, _Node}, Entry} <- mycelium_ormap:to_list(ORMap), N =:= Name].
-
-%% Update local HLC from every dot and every tombstone in an OR-Map.
-update_hlc_from_ormap(ORMap) ->
-    maps:foreach(
-        fun(_Key, {value, _Entry, Dots}) ->
-                lists:foreach(
-                    fun({_Node, HLC}) -> mycelium_hlc:update(HLC) end,
-                    maps:keys(Dots)
-                );
-           (_Key, {tombstone, HLC}) ->
-                mycelium_hlc:update(HLC)
-        end,
-        ORMap
-    ).

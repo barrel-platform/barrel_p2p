@@ -110,13 +110,6 @@ handle_info({mycelium_service_event, _}, State) ->
     {noreply, State};
 
 handle_info(
-    {'$mycelium_registry_sync', {service_down, Name, _Reason}},
-    #state{name = Name} = State
-) ->
-    %% Internal sync-broadcast path; kept as a sibling channel.
-    {stop, normal, State};
-
-handle_info(
     {'DOWN', _Ref, process, _Pid, _Reason},
     #state{in_flight = N} = State
 ) when N > 0 ->

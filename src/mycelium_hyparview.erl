@@ -171,7 +171,6 @@ handle_cast({peer_connected, Node, _DHandle}, State) ->
             Active = maps:put(Node, Peer, State#view_state.active_view),
             mycelium_protocol:send(Node, {join, State#view_state.self}),
             mycelium_hyparview_events:notify({peer_up, Node}),
-            mycelium_registry_sync:handle_peer_up(Node),
             {noreply, State#view_state{active_view = Active, pending = NewPending}};
         {{connect, _Ref, TimerRef}, NewPending} ->
             %% Regular connect from passive promotion
@@ -179,7 +178,6 @@ handle_cast({peer_connected, Node, _DHandle}, State) ->
             Peer = make_peer(Node),
             State1 = add_to_active_view(Peer, State#view_state{pending = NewPending}),
             mycelium_hyparview_events:notify({peer_up, Node}),
-            mycelium_registry_sync:handle_peer_up(Node),
             {noreply, State1};
         error ->
             %% Incoming connection or unknown
@@ -191,7 +189,6 @@ handle_cast({peer_connected, Node, _DHandle}, State) ->
                     Peer = make_peer(Node),
                     State1 = add_to_active_view(Peer, State),
                     mycelium_hyparview_events:notify({peer_up, Node}),
-                    mycelium_registry_sync:handle_peer_up(Node),
                     {noreply, State1}
             end
     end;
@@ -305,15 +302,14 @@ handle_join(Sender, State) ->
     State1 = add_to_active_view(Sender, State0),
 
     %% Surface the new peer to subscribers (plumtree's eager_peers list,
-    %% registry_sync, etc). Without this, broadcast trees miss any peer
-    %% that joined via the JOIN handshake.
+    %% the replica drivers, etc). Without this, broadcast trees miss any
+    %% peer that joined via the JOIN handshake.
     case maps:is_key(Sender#peer.id, State#view_state.active_view) of
         true ->
             %% Already had them; no transition.
             ok;
         false ->
-            mycelium_hyparview_events:notify({peer_up, Sender#peer.id}),
-            mycelium_registry_sync:handle_peer_up(Sender#peer.id)
+            mycelium_hyparview_events:notify({peer_up, Sender#peer.id})
     end,
 
     %% Forward join to all active peers (except sender)
@@ -385,7 +381,6 @@ handle_disconnect(Sender, State) ->
             Passive = add_to_passive(Sender, State0#view_state.passive_view,
                                      State0#view_state.passive_size),
             mycelium_hyparview_events:notify({peer_down, Sender#peer.id, graceful}),
-            mycelium_registry_sync:handle_peer_down(Sender#peer.id),
             State1 = State0#view_state{active_view = Active, passive_view = Passive},
             maybe_promote_passive(State1);
         false ->
@@ -477,7 +472,6 @@ handle_peer_removal(Node, Reason, Type, State) ->
                     State0#view_state{active_view = Active, passive_view = Passive}
             end,
             mycelium_hyparview_events:notify({peer_down, Node, Reason}),
-            mycelium_registry_sync:handle_peer_down(Node),
             State2 = maybe_promote_passive(State1),
             {noreply, State2};
         false ->
@@ -526,7 +520,6 @@ add_to_active_view(Peer, State) ->
             %% idle and carries no live user streams.
             mycelium_protocol:send(DroppedNode, {disconnect, State#view_state.self}),
             mycelium_hyparview_events:notify({peer_down, DroppedNode, dropped}),
-            mycelium_registry_sync:handle_peer_down(DroppedNode),
 
             Active1 = maps:remove(DroppedNode, Active),
             Active2 = maps:put(Peer#peer.id, Peer, Active1),

@@ -140,6 +140,71 @@ mycelium:send(my_service, Msg).
 Errors documented under
 [connection migration](../concepts/connection-migration.md).
 
+## Leader election (`beta`)
+
+```erlang
+%% Campaign for the singleton Name. Returns the initial role;
+%% transitions arrive as {mycelium_leader, Name, {elected, Fence} | revoked}.
+-spec lead(Name) -> {ok, {leader, non_neg_integer()}} | {ok, follower}
+                  | {error, term()}.
+-spec lead(Name, Opts :: #{priority => integer()}) -> same.
+-spec resign(Name) -> ok.
+-spec leader(Name) -> {ok, node(), pid()} | {error, no_leader}.
+-spec is_leader(Name) -> boolean().
+-spec fence(Name) -> {ok, non_neg_integer()} | {error, not_leader}.
+```
+
+See [leader election](../concepts/leader-election.md).
+
+## Sharded placement (`beta`)
+
+```erlang
+%% Owner of Key cluster-wide (eventual agreement). undefined only
+%% before the local member set is seeded.
+-spec place(Key) -> node() | undefined.
+%% Top-N distinct owners (best first), for replicated placement.
+-spec owners(Key, N :: pos_integer()) -> [node()].
+-spec is_owner(Key) -> boolean().
+%% Ring partition Key falls in (0..ring_size-1).
+-spec partition(Key) -> non_neg_integer().
+%% Current live member set (sorted).
+-spec members() -> [node()].
+%% Subscribe to {mycelium_shard, {acquired | released, Partition}}.
+-spec subscribe_shard() -> ok.
+-spec subscribe_shard(Pid :: pid()) -> ok.
+```
+
+See [sharded placement](../concepts/sharded-placement.md) and
+[partition state across nodes](../how-to/partition-state.md).
+
+## Durable reminders (`beta`)
+
+```erlang
+%% Fire at an absolute wall-clock instant (system_time(millisecond)
+%% scale); Payload is delivered on the owning node. Re-setting a Key
+%% replaces it. Exactly once in steady state, best-effort under churn.
+-spec remind(Key, FireAtMs :: integer(), Payload) -> ok.
+%% Fire DelayMs from now (converted to an absolute target).
+-spec remind_after(Key, DelayMs :: non_neg_integer(), Payload) -> ok.
+%% Cancel cluster-wide.
+-spec cancel_reminder(Key) -> ok.
+%% Subscribe to {mycelium_reminder, Key, Payload, Fence}.
+-spec subscribe_reminders() -> ok.
+-spec subscribe_reminders(Pid :: pid()) -> ok.
+-spec unsubscribe_reminders(Pid :: pid()) -> ok.
+```
+
+Delivered to subscribers on the firing (owner) node:
+
+```erlang
+%% Fence :: non_neg_integer() is the packed version stamp; stable
+%% across nodes, usable to dedup an idempotent handler.
+{mycelium_reminder, Key, Payload, Fence}.
+```
+
+See [durable reminders](../concepts/durable-reminders.md) and
+[schedule durable jobs](../how-to/schedule-durable-jobs.md).
+
 ## Global integration (`beta`)
 
 ```erlang

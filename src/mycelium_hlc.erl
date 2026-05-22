@@ -15,6 +15,7 @@
 -export([now/0, update/1, compare/2]).
 -export([to_binary/1, from_binary/1]).
 -export([wall_time/1, logical/1]).
+-export([pack/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -71,6 +72,14 @@ wall_time(#timestamp{wall_time = Wall}) -> Wall.
 %% Extract logical clock from timestamp
 -spec logical(timestamp()) -> non_neg_integer().
 logical(#timestamp{logical = Logical}) -> Logical.
+
+%% Pack a timestamp into a single comparable, monotonic integer. Used
+%% as an opaque fencing token / version id that external systems compare
+%% with `>'. Higher wall time dominates; logical breaks ties within a
+%% wall tick.
+-spec pack(timestamp()) -> non_neg_integer().
+pack(#timestamp{wall_time = Wall, logical = Logical}) ->
+    (Wall bsl 32) bor (Logical band 16#FFFFFFFF).
 
 %%====================================================================
 %% gen_server callbacks

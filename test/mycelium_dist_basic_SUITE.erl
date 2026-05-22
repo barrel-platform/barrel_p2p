@@ -47,7 +47,7 @@
     leave_rejoin_test/1,
     large_message_test/1,
     disconnect_reconnect_test/1,
-    registry_sync_running_test/1,
+    registry_replica_running_test/1,
     whereis_service_remote_test/1,
     proxy_creation_test/1,
     shuffle_test/1
@@ -71,7 +71,7 @@ groups() ->
             active_view_test,
             register_service_test,
             list_services_test,
-            registry_sync_running_test,
+            registry_replica_running_test,
             whereis_service_remote_test,
             proxy_creation_test,
             shuffle_test,
@@ -268,11 +268,11 @@ disconnect_reconnect_test(Config) ->
     ),
     ok.
 
-%% mycelium_registry_sync runs as a named process on every node.
-registry_sync_running_test(Config) ->
+%% The registry's replication driver runs as a named process on every node.
+registry_replica_running_test(Config) ->
     lists:foreach(
         fun(Node) ->
-            Pid = rpc:call(Node, erlang, whereis, [mycelium_registry_sync]),
+            Pid = rpc:call(Node, erlang, whereis, [mycelium_registry_replica]),
             ?assert(is_pid(Pid))
         end,
         [?config(node1, Config), ?config(node2, Config)]

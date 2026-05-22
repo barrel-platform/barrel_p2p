@@ -46,6 +46,32 @@ Stability tiers used below:
 | `get_proxy/1`                                             | beta      | EUnit: `mycelium_registry_tests`                            |
 | Service events API (`subscribe_services/0,1`)             | beta      | CT: `mycelium_service_events_SUITE`                         |
 
+## Singletons and leader election
+
+| Feature                                                   | Tier      | Coverage notes                                                      |
+|-----------------------------------------------------------|-----------|--------------------------------------------------------------------|
+| `lead/1,2`, `resign/1`, `leader/1`, `is_leader/1`         | beta      | CT: `mycelium_leader_SUITE`, `mycelium_leader_e2e_SUITE`           |
+| `{mycelium_leader, _, {elected, Fence} \| revoked}` msgs  | beta      | CT: `mycelium_leader_SUITE`                                        |
+| HLC fencing token (`fence/1`)                             | beta      | CT: `mycelium_leader_e2e_SUITE` (`F2 > F1` across leader failover) |
+| `peer_up`/`peer_down` re-election                         | beta      | CT: `mycelium_leader_e2e_SUITE`                                    |
+
+## Sharded placement
+
+| Feature                                                   | Tier      | Coverage notes                                                     |
+|-----------------------------------------------------------|-----------|--------------------------------------------------------------------|
+| `place/1`, `owners/2`, `is_owner/1`, `partition/1`        | beta      | CT: `mycelium_shard_SUITE`, `mycelium_shard_e2e_SUITE`            |
+| `members/0` (lease-based live-node set)                   | beta      | CT: `mycelium_shard_SUITE`, `mycelium_shard_e2e_SUITE`            |
+| `{mycelium_shard, {acquired \| released, P}}` events      | beta      | CT: `mycelium_shard_SUITE`, `mycelium_shard_e2e_SUITE`            |
+
+## Durable reminders
+
+| Feature                                                   | Tier      | Coverage notes                                                       |
+|-----------------------------------------------------------|-----------|----------------------------------------------------------------------|
+| `remind/3`, `remind_after/3`, `cancel_reminder/1`         | beta      | CT: `mycelium_reminder_SUITE`, `mycelium_reminder_e2e_SUITE`         |
+| `subscribe_reminders/0,1`, `unsubscribe_reminders/1`      | beta      | CT: `mycelium_reminder_SUITE`                                       |
+| `{mycelium_reminder, Key, Payload, Fence}` delivery       | beta      | CT: `mycelium_reminder_SUITE` (stable fence, no double-fire)        |
+| Survivor fires after owner death                          | beta      | CT: `mycelium_reminder_e2e_SUITE` (kill owner before fire)          |
+
 ## Streams
 
 | Feature                                       | Tier         | Coverage notes                                                  |

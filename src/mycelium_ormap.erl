@@ -25,6 +25,7 @@
 -export([new/0, add/3, remove/2, get/2, keys/1, to_list/1]).
 -export([merge/2, is_empty/1]).
 -export([get_entry/2]).
+-export([absorb_clock/1]).
 
 -type dot()             :: {node(), mycelium_hlc:timestamp()}.
 -type value_entry()     :: {value, term(), #{dot() => true}}.
@@ -106,6 +107,28 @@ is_empty(Map) ->
         end,
         maps:to_list(Map)
     ).
+
+%% Advance the local HLC from every dot and tombstone in an incoming
+%% map, so a value merged from a peer cannot later be out-ranked by a
+%% locally generated timestamp that is behind it. Callers that merge a
+%% whole received map must call this BEFORE `merge/2'. Callers that
+%% reject some entries (e.g. on a freshness/skew check) must filter
+%% first and absorb only the accepted sub-map: `mycelium_hlc:update/1'
+%% accepts future timestamps, so absorbing a rejected far-future dot
+%% would still move the clock forward.
+-spec absorb_clock(ormap()) -> ok.
+absorb_clock(Map) ->
+    maps:foreach(
+        fun(_Key, {value, _Val, Dots}) ->
+                lists:foreach(
+                    fun({_Node, HLC}) -> mycelium_hlc:update(HLC) end,
+                    maps:keys(Dots));
+           (_Key, {tombstone, HLC}) ->
+                mycelium_hlc:update(HLC)
+        end,
+        Map
+    ),
+    ok.
 
 %% Merge two OR-Maps. Commutative, associative, idempotent.
 -spec merge(ormap(), ormap()) -> ormap().

@@ -8,7 +8,13 @@
         mycelium_hyparview_events,
         mycelium_bridge,
         mycelium_registry,
-        mycelium_registry_sync
+        mycelium_registry_replica,
+        mycelium_leader,
+        mycelium_leader_replica,
+        mycelium_shard,
+        mycelium_members_replica,
+        mycelium_reminder,
+        mycelium_reminder_replica
     ]},
     {mod, {mycelium_app, []}},
     {applications, [
@@ -25,7 +31,20 @@
         {shuffle_length, 8},
         {shuffle_period, 10000},
         {listen_port, 0},
-        {contact_nodes, []}
+        {contact_nodes, []},
+        %% Sharded placement. ring_size MUST be identical on every node
+        %% in the cluster (a different value yields a different
+        %% partition/place and the ring diverges). The lease timings
+        %% should also be uniform; member_ttl_ms must comfortably exceed
+        %% member_heartbeat_ms plus expected clock skew.
+        {ring_size, 64},
+        {member_heartbeat_ms, 2000},
+        {member_ttl_ms, 6000},
+        {member_skew_ms, 5000},
+        %% Durable reminders: periodic safety sweep that re-arms reminders
+        %% this node owns and missed (and re-arms far-future ones as their
+        %% fire time nears).
+        {reminder_scan_ms, 1000}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
