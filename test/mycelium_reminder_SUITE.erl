@@ -20,7 +20,9 @@
     cancel_prevents_fire/1,
     fires_exactly_once/1,
     reset_replaces_reminder/1,
-    stale_add_does_not_resurrect/1
+    stale_add_does_not_resurrect/1,
+    malformed_gossip_does_not_crash/1,
+    tombstones_gc_after_ttl/1
 ]).
 
 all() ->
@@ -31,15 +33,24 @@ all() ->
         cancel_prevents_fire,
         fires_exactly_once,
         reset_replaces_reminder,
-        stale_add_does_not_resurrect
+        stale_add_does_not_resurrect,
+        malformed_gossip_does_not_crash,
+        tombstones_gc_after_ttl
     ].
 
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Case, Config) ->
     %% Short timings so the cases run quickly.
     application:set_env(mycelium, member_heartbeat_ms, 100),
     application:set_env(mycelium, member_ttl_ms, 300),
     application:set_env(mycelium, member_skew_ms, 60000),
     application:set_env(mycelium, reminder_scan_ms, 200),
+    %% Only the GC case wants a tiny tombstone horizon; the others keep
+    %% tombstones around (e.g. the resurrection case relies on it).
+    TombTtl = case Case of
+        tombstones_gc_after_ttl -> 50;
+        _                       -> 3600000
+    end,
+    application:set_env(mycelium, reminder_tombstone_ttl_ms, TombTtl),
     {ok, _} = application:ensure_all_started(mycelium),
     ok = mycelium:subscribe_reminders(),
     Config.
@@ -144,9 +155,72 @@ stale_add_does_not_resurrect(_Config) ->
         ok
     end.
 
+%% Malformed gossip must not crash the reminder server (nor the shared
+%% HLC server). Covers the absorb_clock/merge crash paths, not just the
+%% leaf payload shape.
+malformed_gossip_does_not_crash(_Config) ->
+    H = mycelium_hlc:now(),
+    GoodDots = #{{'ghost@127.0.0.1', H} => true},
+    GoodVal = {now_ms() + 100000, payload, H},
+    Bad = [
+        #{ka => {value, garbage, GoodDots}},          %% payload not 3-tuple
+        #{kb => {value, GoodVal, not_a_map}},          %% dots not a map
+        #{kc => {value, GoodVal, #{}}},                %% empty dot map
+        #{kd => {value, GoodVal, #{bad_key => true}}}, %% malformed dot key
+        #{ke => {tombstone, not_a_timestamp}}          %% malformed tombstone
+    ],
+    [ mycelium_reminder:replica_merge_delta(D) || D <- Bad ],
+    %% Force the casts to be processed, then assert both servers survived.
+    _ = sys:get_state(mycelium_reminder),
+    ?assert(is_process_alive(whereis(mycelium_reminder))),
+    ?assert(is_process_alive(whereis(mycelium_hlc))),
+    %% And a well-formed reminder still fires.
+    ok = mycelium:remind(good_key, now_ms() + 150, ok_payload),
+    receive
+        {mycelium_reminder, good_key, ok_payload, _} -> ok
+    after 2000 ->
+        ct:fail(good_reminder_did_not_fire)
+    end.
+
+%% Fire/cancel tombstones are swept once older than the TTL, so the
+%% replicated store does not grow without bound.
+tombstones_gc_after_ttl(_Config) ->
+    ok = mycelium:remind(gk, now_ms() + 100, p),
+    receive
+        {mycelium_reminder, gk, p, _} -> ok
+    after 2000 ->
+        ct:fail(no_fire)
+    end,
+    %% After the fire the key is a tombstone; the sweep (ttl 50ms, scan
+    %% 200ms) drops it within a couple of scans.
+    wait_until(fun() ->
+        mycelium_ormap:get_entry(gk, reminders_map()) =:= not_found
+    end, 3000),
+    ok.
+
 %%====================================================================
 %% Helpers
 %%====================================================================
 
 now_ms() ->
     erlang:system_time(millisecond).
+
+%% White-box read of the reminder gen_server's OR-map. The #state record
+%% is {state, scan_ms, tombstone_ttl_ms, reminders, timers, subscribers},
+%% so the reminders map is element 4.
+reminders_map() ->
+    element(4, sys:get_state(mycelium_reminder)).
+
+wait_until(Fun, TimeoutMs) ->
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    wait_loop(Fun, Deadline).
+
+wait_loop(Fun, Deadline) ->
+    case Fun() of
+        true -> ok;
+        _ ->
+            case erlang:monotonic_time(millisecond) > Deadline of
+                true  -> ?assert(false, "wait_until timed out");
+                false -> timer:sleep(25), wait_loop(Fun, Deadline)
+            end
+    end.

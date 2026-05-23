@@ -39,6 +39,8 @@
 -behaviour(gen_server).
 -behaviour(mycelium_replica).
 
+-include_lib("hlc/include/hlc.hrl").
+
 %% Registered name of this feature's replication instance.
 -define(REPLICA, mycelium_reminder_replica).
 
@@ -58,6 +60,7 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_SCAN_MS, 1000).
+-define(DEFAULT_TOMBSTONE_TTL_MS, (60 * 60 * 1000)).
 %% Cap on a single send_after delay. A far-future reminder arms for at
 %% most this long; the periodic scan re-arms it as the fire time nears.
 %% Stays well under erlang's ~49-day send_after ceiling.
@@ -70,7 +73,8 @@
 -export_type([fence/0]).
 
 -record(state, {
-    scan_ms     :: pos_integer(),
+    scan_ms          :: pos_integer(),
+    tombstone_ttl_ms :: non_neg_integer(),
     reminders   = mycelium_ormap:new() :: mycelium_ormap:ormap(),
     %% Locally armed timers: Key -> {TimerRef, VersionHLC}
     timers      = #{} :: #{key() => {reference(), mycelium_hlc:timestamp()}},
@@ -139,11 +143,12 @@ replica_remove_node(_Node) ->
 
 init([]) ->
     Scan = cfg(reminder_scan_ms, ?DEFAULT_SCAN_MS),
+    TombTtl = cfg(reminder_tombstone_ttl_ms, ?DEFAULT_TOMBSTONE_TTL_MS),
     %% Ownership transitions tell us when to take over (acquired) or hand
     %% off (released) a partition's reminders.
     ok = mycelium_shard:subscribe(self()),
     arm_scan(Scan),
-    {ok, #state{scan_ms = Scan}}.
+    {ok, #state{scan_ms = Scan, tombstone_ttl_ms = TombTtl}}.
 
 handle_call({remind, Key, FireAtMs, Payload}, _From, State) ->
     {reply, ok, do_remind(Key, FireAtMs, Payload, State)};
@@ -186,18 +191,10 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 handle_cast({merge_delta, Delta}, State) ->
-    %% Absorb before merge so a local fire-tombstone always out-ranks an
-    %% incoming add and the reminder cannot be resurrected.
-    mycelium_ormap:absorb_clock(Delta),
-    Reminders = mycelium_ormap:merge(State#state.reminders, Delta),
-    State1 = State#state{reminders = Reminders},
-    {noreply, reconcile_keys(maps:keys(Delta), State1)};
+    {noreply, ingest(Delta, State)};
 
 handle_cast({apply_full_sync, Snapshot}, State) ->
-    mycelium_ormap:absorb_clock(Snapshot),
-    Reminders = mycelium_ormap:merge(State#state.reminders, Snapshot),
-    State1 = State#state{reminders = Reminders},
-    {noreply, reconcile_keys(maps:keys(Snapshot), State1)};
+    {noreply, ingest(Snapshot, State)};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -220,11 +217,14 @@ handle_info({mycelium_shard, {released, P}}, State) ->
     {noreply, reconcile_keys(keys_in_partition(P, State), State)};
 
 %% Safety sweep: re-arm anything we own and missed, disarm anything we no
-%% longer own, and re-arm far-future reminders as their fire time nears.
+%% longer own, re-arm far-future reminders as their fire time nears, and GC
+%% old fire/cancel tombstones so the replicated store stays bounded.
 handle_info(scan, State) ->
     State1 = reconcile_keys(mycelium_ormap:keys(State#state.reminders), State),
+    Cutoff = now_ms() - State1#state.tombstone_ttl_ms,
+    Reminders = mycelium_ormap:gc_tombstones(State1#state.reminders, Cutoff),
     arm_scan(State1#state.scan_ms),
-    {noreply, State1};
+    {noreply, State1#state{reminders = Reminders}};
 
 handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
     case maps:get(Pid, State#state.subscribers, undefined) of
@@ -245,6 +245,31 @@ terminate(_Reason, _State) ->
 %% Internal Functions
 %%====================================================================
 
+%% Merge a received delta/snapshot, rejecting malformed entries FIRST.
+%% Validating only the leaf payload is not enough: absorb_clock/1 walks
+%% the dot map and every dot/tombstone HLC, and merge/2 takes max_hlc of
+%% the dots (crashes on an empty dot map). A malformed dot or HLC would
+%% otherwise crash this gen_server (and a bad HLC would crash the shared
+%% mycelium_hlc server). So absorb + merge only the accepted sub-map.
+ingest(Map, State) ->
+    Accepted = maps:filter(fun(_K, V) -> valid_entry(V) end, Map),
+    mycelium_ormap:absorb_clock(Accepted),
+    Reminders = mycelium_ormap:merge(State#state.reminders, Accepted),
+    reconcile_keys(maps:keys(Accepted), State#state{reminders = Reminders}).
+
+%% A well-formed reminder OR-map entry: a value carrying our
+%% {FireAt, Payload, VersionHLC} payload with a non-empty dot map keyed by
+%% {node(), HLC}, or a tombstone carrying an HLC.
+valid_entry({value, {FireAt, _Payload, #timestamp{}}, Dots})
+  when is_integer(FireAt), is_map(Dots), map_size(Dots) > 0 ->
+    lists:all(fun({N, #timestamp{}}) when is_atom(N) -> true;
+                 (_)                                 -> false
+              end, maps:keys(Dots));
+valid_entry({tombstone, #timestamp{}}) ->
+    true;
+valid_entry(_) ->
+    false.
+
 %% Insert locally first (broadcast does not mutate owner state), gossip
 %% the add, then arm if we own the key.
 -spec do_remind(key(), integer(), payload(), #state{}) -> #state{}.
@@ -263,12 +288,14 @@ reconcile_keys(Keys, State) ->
 
 reconcile_key(Key, State) ->
     case mycelium_ormap:get(Key, State#state.reminders) of
-        {ok, {FireAt, _Payload, H}} ->
+        {ok, {FireAt, _Payload, #timestamp{} = H}} when is_integer(FireAt) ->
             case mycelium_shard:place(Key) =:= node() of
                 true  -> arm(Key, FireAt, H, State);
                 false -> disarm(Key, State)
             end;
-        not_found ->
+        %% Not a live, well-formed reminder (tombstoned, or a malformed
+        %% value that slipped in): make sure nothing is armed for it.
+        _ ->
             disarm(Key, State)
     end.
 

@@ -14,8 +14,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   versioned hints (re-validated on fire), firing is tombstone-first, and
   delivery is `{mycelium_reminder, Key, Payload, Fence}` where `Fence`
   is a stable version stamp for idempotent dedup. Exactly once in steady
-  state, best-effort under churn or a crash at the fire instant. Config:
-  `reminder_scan_ms`. Beta.
+  state, best-effort under churn or a crash at the fire instant. Durability
+  is via replication, not persistence. Config: `reminder_scan_ms`,
+  `reminder_tombstone_ttl_ms`. Beta.
 - Sharded service placement (`mycelium_shard`): `mycelium:place/1`,
   `owners/2`, `is_owner/1`, `partition/1`, `members/0`,
   `subscribe_shard/0,1`. Rendezvous (HRW) hashing over a replicated,

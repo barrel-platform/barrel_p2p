@@ -94,6 +94,24 @@ a reminder can fire slightly early or late by the same skew bound that
 governs membership. It is right for "around 09:00", not for hard
 real-time deadlines.
 
+## Durability model
+
+"Durable" here means **replicated, not persisted**. A reminder survives
+the death of the node that armed it because every node holds a replica,
+so a survivor takes over and fires it. It is held in memory only, so it
+does NOT survive a whole-cluster restart, and on a single-node cluster a
+crash of the `mycelium_reminder` process loses its reminders (there is no
+peer to recover from). If you need reminders to outlive a full restart,
+record them in your own durable store and re-issue them on boot.
+
+Fire and cancel both leave a tombstone in the replicated store. A
+periodic sweep drops tombstones older than `reminder_tombstone_ttl_ms`
+(default one hour) so the store stays bounded. The horizon must comfortably
+exceed gossip propagation plus the membership lease, so a delayed add can
+never out-live the tombstone that cancelled it; the only way to defeat
+that is a partition longer than the horizon replaying an add older than a
+dropped tombstone, which would spuriously re-create the reminder.
+
 ## Setting and cancelling
 
 ```erlang
@@ -132,9 +150,10 @@ handle_info({mycelium_reminder, Key, Payload, Fence}, S) ->
 
 ## Configuration
 
-| Key                | Default | Meaning                                            |
-|--------------------|---------|----------------------------------------------------|
-| `reminder_scan_ms` | 1000    | Safety sweep that re-arms owned reminders missed, and re-arms far-future ones as they near. |
+| Key                          | Default | Meaning                                            |
+|------------------------------|---------|----------------------------------------------------|
+| `reminder_scan_ms`           | 1000    | Safety sweep that re-arms owned reminders missed, and re-arms far-future ones as they near. |
+| `reminder_tombstone_ttl_ms`  | 3600000 | Drop fire/cancel tombstones older than this. Must exceed gossip propagation plus `member_ttl_ms`. |
 
 Reminders also depend on the placement settings (`ring_size` and the
 lease timings); see [sharded placement](sharded-placement.md).

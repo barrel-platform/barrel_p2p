@@ -25,7 +25,7 @@
 -export([new/0, add/3, remove/2, get/2, keys/1, to_list/1]).
 -export([merge/2, is_empty/1]).
 -export([get_entry/2]).
--export([absorb_clock/1]).
+-export([absorb_clock/1, gc_tombstones/2]).
 
 -type dot()             :: {node(), mycelium_hlc:timestamp()}.
 -type value_entry()     :: {value, term(), #{dot() => true}}.
@@ -129,6 +129,23 @@ absorb_clock(Map) ->
         Map
     ),
     ok.
+
+%% Drop tombstones whose wall-clock time is older than `CutoffWallMs'.
+%% Live value entries are never touched. This bounds the map for
+%% high-churn callers (e.g. reminders) where every remove leaves a
+%% tombstone. It is a best-effort shrink, not a correctness operation: a
+%% re-arriving tombstone is idempotent, and the cutoff must be chosen so
+%% no add older than a dropped tombstone can still be in flight.
+-spec gc_tombstones(ormap(), non_neg_integer()) -> ormap().
+gc_tombstones(Map, CutoffWallMs) ->
+    maps:filter(
+        fun(_Key, {tombstone, HLC}) ->
+                mycelium_hlc:wall_time(HLC) >= CutoffWallMs;
+           (_Key, _Value) ->
+                true
+        end,
+        Map
+    ).
 
 %% Merge two OR-Maps. Commutative, associative, idempotent.
 -spec merge(ormap(), ormap()) -> ormap().

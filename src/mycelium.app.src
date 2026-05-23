@@ -44,7 +44,13 @@
         %% Durable reminders: periodic safety sweep that re-arms reminders
         %% this node owns and missed (and re-arms far-future ones as their
         %% fire time nears).
-        {reminder_scan_ms, 1000}
+        {reminder_scan_ms, 1000},
+        %% Drop fire/cancel tombstones older than this so the replicated
+        %% reminder store stays bounded. Must exceed the max gossip
+        %% propagation time plus member_ttl_ms, so no add older than a
+        %% dropped tombstone can still be in flight (else a reminder could
+        %% be resurrected after a long partition).
+        {reminder_tombstone_ttl_ms, 3600000}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
