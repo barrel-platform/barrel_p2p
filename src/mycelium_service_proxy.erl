@@ -32,7 +32,8 @@
     name :: atom() | binary(),
     target_node :: node(),
     in_flight = 0  :: non_neg_integer(),
-    max_in_flight  :: pos_integer()
+    max_in_flight  :: pos_integer(),
+    watch = #{} :: mycelium_source_monitor:watch()
 }).
 
 %%====================================================================
@@ -82,13 +83,14 @@ relay(Name, TargetNode, Request, #{visited := Visited} = Ctx) ->
 init([Name, TargetNode]) ->
     %% Subscribe to the service event bus so we hear when the remote
     %% service dies. mycelium:subscribe/1 routes to HyParView events,
-    %% which never carry service_* notifications.
-    mycelium:subscribe_services(self()),
+    %% which never carry service_* notifications. Keep the subscription
+    %% alive across a service-events restart.
+    Watch = mycelium_source_monitor:start([mycelium_service_events]),
     Max = application:get_env(
         mycelium, proxy_cast_max_in_flight, ?DEFAULT_MAX_IN_FLIGHT
     ),
     {ok, #state{name = Name, target_node = TargetNode,
-                max_in_flight = Max}}.
+                max_in_flight = Max, watch = Watch}}.
 
 handle_call(Request, _From, #state{name = Name, target_node = Target} = State) ->
     Result = forward_call(Name, Target, Request),
@@ -109,11 +111,23 @@ handle_info({mycelium_service_event, _}, State) ->
     %% Other service events are not relevant to this proxy.
     {noreply, State};
 
+%% Re-subscribe if a watched source (service events) restarted.
+handle_info({mycelium_source_monitor, retry, Source}, #state{watch = W} = State) ->
+    {noreply, State#state{watch = mycelium_source_monitor:retry(Source, W)}};
+
 handle_info(
-    {'DOWN', _Ref, process, _Pid, _Reason},
-    #state{in_flight = N} = State
-) when N > 0 ->
-    {noreply, State#state{in_flight = N - 1}};
+    {'DOWN', Ref, process, _Pid, _Reason},
+    #state{watch = W} = State
+) ->
+    case mycelium_source_monitor:down(Ref, W) of
+        {down, _Source, W1} ->
+            {noreply, State#state{watch = W1}};
+        ignore ->
+            case State#state.in_flight of
+                N when N > 0 -> {noreply, State#state{in_flight = N - 1}};
+                _            -> {noreply, State}
+            end
+    end;
 
 handle_info(_Info, State) ->
     {noreply, State}.

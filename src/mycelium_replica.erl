@@ -55,7 +55,8 @@
 -record(state, {
     name  :: atom(),
     cb    :: module(),
-    peers = [] :: [node()]
+    peers = [] :: [node()],
+    watch = #{} :: mycelium_source_monitor:watch()
 }).
 
 %% The instance `name' is both the registered process name and the
@@ -87,9 +88,12 @@ broadcast_custom(Name, Payload) ->
 %%====================================================================
 
 init(#{name := Name, callback := Cb}) ->
-    ok = mycelium_plumtree:subscribe(self()),
-    ok = mycelium_hyparview_events:subscribe(self()),
-    {ok, #state{name = Name, cb = Cb}}.
+    %% Subscribe to both sources and keep the subscriptions alive across a
+    %% source restart (a plumtree/hyparview-events crash does not restart
+    %% us, so a one-shot subscribe would be silently dropped).
+    Watch = mycelium_source_monitor:start(
+              [mycelium_plumtree, mycelium_hyparview_events]),
+    {ok, #state{name = Name, cb = Cb, watch = Watch}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -156,6 +160,34 @@ handle_info({?SYNC_TAG, {full_sync, _FromNode, Snapshot}}, #state{cb = Cb} = Sta
     Cb:replica_apply_full_sync(Snapshot),
     {noreply, State};
 
+%% A peer that just re-subscribed asks us to push our state to it.
+handle_info({?SYNC_TAG, {request_sync, FromNode}},
+            #state{name = Name, cb = Cb} = State) ->
+    case Cb:replica_full_sync_snapshot() of
+        empty        -> ok;
+        {sync, Snap} -> send_to_peer(Name, FromNode, {full_sync, node(), Snap})
+    end,
+    {noreply, State};
+
+%% A watched source restarted: re-subscribe (with retry) and, once back,
+%% pull a full sync from known peers to recover deltas missed during the
+%% gap. Full sync rides direct dist messages, not plumtree, so it works
+%% even while plumtree is bouncing.
+handle_info({mycelium_source_monitor, retry, Source}, #state{watch = Watch} = State) ->
+    Was = maps:is_key(Source, Watch),
+    Watch1 = mycelium_source_monitor:retry(Source, Watch),
+    State1 = State#state{watch = Watch1},
+    case (not Was) andalso maps:is_key(Source, Watch1) of
+        true  -> {noreply, request_sync_from_peers(State1)};
+        false -> {noreply, State1}
+    end;
+
+handle_info({'DOWN', Ref, process, _Pid, _Reason}, #state{watch = Watch} = State) ->
+    case mycelium_source_monitor:down(Ref, Watch) of
+        {down, _Source, Watch1} -> {noreply, State#state{watch = Watch1}};
+        ignore                  -> {noreply, State}
+    end;
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -180,3 +212,9 @@ handle_payload(_Other, State) ->
 
 send_to_peer(Name, Node, Msg) ->
     erlang:send({Name, Node}, {?SYNC_TAG, Msg}, [noconnect]).
+
+%% Ask every known peer to push its full state to us. Used after a
+%% re-subscribe to recover anything missed while a source was down.
+request_sync_from_peers(#state{name = Name, peers = Peers} = State) ->
+    [send_to_peer(Name, Node, {request_sync, node()}) || Node <- Peers],
+    State.

@@ -53,7 +53,9 @@
     acceptor_mons = #{} :: #{pid() => {reference(), binary()}},
     %% Per-inbound-stream buffer awaiting tag decode. Cleared once the
     %% preamble is fully decoded and the stream is dispatched.
-    pending = #{} :: #{quic_dist:stream_ref() => binary()}
+    pending = #{} :: #{quic_dist:stream_ref() => binary()},
+    %% Keeps the hyparview-events subscription alive across a restart.
+    watch = #{} :: mycelium_source_monitor:watch()
 }).
 
 %%====================================================================
@@ -120,17 +122,16 @@ open(Tag, Node)
 
 init([]) ->
     _ = net_kernel:monitor_nodes(true),
-    case whereis(mycelium_hyparview_events) of
-        undefined -> ok;
-        _Pid      -> mycelium_hyparview_events:subscribe(self())
-    end,
+    %% Keep the hyparview-events subscription alive across a source
+    %% restart; the helper's whereis guard subsumes the old conditional.
+    Watch = mycelium_source_monitor:start([mycelium_hyparview_events]),
     %% Periodic reconcile loop: every second, ensure mycelium_streams
     %% is registered as the user-stream acceptor on every connected
     %% peer. Reconciliation rather than relying on {nodeup,_} alone
     %% covers the handshake race where the dist controller is still
     %% in `init_state' when nodeup fires.
     erlang:send_after(100, self(), reconcile_acceptors),
-    {ok, #state{}}.
+    {ok, #state{watch = Watch}}.
 
 %% @private
 %% Register mycelium_streams (this gen_server) as the acceptor for
@@ -226,17 +227,26 @@ handle_info({quic_dist_stream, SR, closed}, S) ->
 handle_info({quic_dist_stream, _SR, _Other}, S) ->
     {noreply, S};
 
-%% Acceptor pid died: drop its registration.
+%% Re-subscribe if a watched source (hyparview events) restarted.
+handle_info({mycelium_source_monitor, retry, Source}, S = #state{watch = W}) ->
+    {noreply, S#state{watch = mycelium_source_monitor:retry(Source, W)}};
+
+%% A source restart, or an acceptor pid dying: drop its registration.
 handle_info({'DOWN', Mon, process, Pid, _Reason},
-            S = #state{acceptor_mons = M, acceptors = A}) ->
-    case maps:take(Pid, M) of
-        {{Mon, Tag}, M2} ->
-            {noreply, S#state{
-                acceptors = maps:remove(Tag, A),
-                acceptor_mons = M2
-            }};
-        _ ->
-            {noreply, S}
+            S = #state{acceptor_mons = M, acceptors = A, watch = W}) ->
+    case mycelium_source_monitor:down(Mon, W) of
+        {down, _Source, W1} ->
+            {noreply, S#state{watch = W1}};
+        ignore ->
+            case maps:take(Pid, M) of
+                {{Mon, Tag}, M2} ->
+                    {noreply, S#state{
+                        acceptors = maps:remove(Tag, A),
+                        acceptor_mons = M2
+                    }};
+                _ ->
+                    {noreply, S}
+            end
     end;
 
 handle_info(_Msg, S) ->

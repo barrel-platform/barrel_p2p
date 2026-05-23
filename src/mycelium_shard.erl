@@ -62,7 +62,8 @@
     leases   = #{} :: #{node() => integer()},
     members  = []  :: [node()],
     owned    = #{} :: #{non_neg_integer() => true},
-    subscribers = #{} :: #{pid() => reference()}
+    subscribers = #{} :: #{pid() => reference()},
+    watch    = #{} :: mycelium_source_monitor:watch()
 }).
 
 %%====================================================================
@@ -172,14 +173,15 @@ init([]) ->
     Owned = compute_owned(Members, RingSize),
     %% Convergence hints: heartbeats reach the whole cluster, and a new
     %% peer triggers a full-sync (in the replica) plus an immediate beat.
-    ok = mycelium_hyparview_events:subscribe(self()),
+    %% Keep the subscription alive across a hyparview-events restart.
+    Watch = mycelium_source_monitor:start([mycelium_hyparview_events]),
     %% Do NOT broadcast inline here: the replica process may not be
     %% registered yet, and broadcast_update/2 is a cast that would be
     %% dropped. The first heartbeat fires from the timer.
     arm_timer(Hb),
     {ok, #state{ring_size = RingSize, heartbeat_ms = Hb, ttl_ms = Ttl,
                 skew_ms = Skew, leases = Leases, members = Members,
-                owned = Owned}}.
+                owned = Owned, watch = Watch}}.
 
 handle_call({subscribe, Pid}, _From, State) ->
     case maps:is_key(Pid, State#state.subscribers) of
@@ -263,13 +265,23 @@ handle_info({mycelium_event, {peer_up, _Node}}, State) ->
 handle_info({mycelium_event, _Other}, State) ->
     {noreply, State};
 
+%% Re-subscribe if a watched source (hyparview events) restarted.
+handle_info({mycelium_source_monitor, retry, Source}, State) ->
+    {noreply, State#state{
+        watch = mycelium_source_monitor:retry(Source, State#state.watch)}};
+
 handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
-    case maps:get(Pid, State#state.subscribers, undefined) of
-        Ref ->
-            Subs = maps:remove(Pid, State#state.subscribers),
-            {noreply, State#state{subscribers = Subs}};
-        _ ->
-            {noreply, State}
+    case mycelium_source_monitor:down(Ref, State#state.watch) of
+        {down, _Source, Watch} ->
+            {noreply, State#state{watch = Watch}};
+        ignore ->
+            case maps:get(Pid, State#state.subscribers, undefined) of
+                Ref ->
+                    Subs = maps:remove(Pid, State#state.subscribers),
+                    {noreply, State#state{subscribers = Subs}};
+                _ ->
+                    {noreply, State}
+            end
     end;
 
 handle_info(_Info, State) ->

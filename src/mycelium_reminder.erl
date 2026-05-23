@@ -78,7 +78,8 @@
     reminders   = mycelium_ormap:new() :: mycelium_ormap:ormap(),
     %% Locally armed timers: Key -> {TimerRef, VersionHLC}
     timers      = #{} :: #{key() => {reference(), mycelium_hlc:timestamp()}},
-    subscribers = #{} :: #{pid() => reference()}
+    subscribers = #{} :: #{pid() => reference()},
+    watch       = #{} :: mycelium_source_monitor:watch()
 }).
 
 %%====================================================================
@@ -145,10 +146,11 @@ init([]) ->
     Scan = cfg(reminder_scan_ms, ?DEFAULT_SCAN_MS),
     TombTtl = cfg(reminder_tombstone_ttl_ms, ?DEFAULT_TOMBSTONE_TTL_MS),
     %% Ownership transitions tell us when to take over (acquired) or hand
-    %% off (released) a partition's reminders.
-    ok = mycelium_shard:subscribe(self()),
+    %% off (released) a partition's reminders. Keep the subscription alive
+    %% across a shard restart.
+    Watch = mycelium_source_monitor:start([mycelium_shard]),
     arm_scan(Scan),
-    {ok, #state{scan_ms = Scan, tombstone_ttl_ms = TombTtl}}.
+    {ok, #state{scan_ms = Scan, tombstone_ttl_ms = TombTtl, watch = Watch}}.
 
 handle_call({remind, Key, FireAtMs, Payload}, _From, State) ->
     {reply, ok, do_remind(Key, FireAtMs, Payload, State)};
@@ -226,13 +228,23 @@ handle_info(scan, State) ->
     arm_scan(State1#state.scan_ms),
     {noreply, State1#state{reminders = Reminders}};
 
+%% Re-subscribe if a watched source (the shard) restarted.
+handle_info({mycelium_source_monitor, retry, Source}, State) ->
+    {noreply, State#state{
+        watch = mycelium_source_monitor:retry(Source, State#state.watch)}};
+
 handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
-    case maps:get(Pid, State#state.subscribers, undefined) of
-        Ref ->
-            Subs = maps:remove(Pid, State#state.subscribers),
-            {noreply, State#state{subscribers = Subs}};
-        _ ->
-            {noreply, State}
+    case mycelium_source_monitor:down(Ref, State#state.watch) of
+        {down, _Source, Watch} ->
+            {noreply, State#state{watch = Watch}};
+        ignore ->
+            case maps:get(Pid, State#state.subscribers, undefined) of
+                Ref ->
+                    Subs = maps:remove(Pid, State#state.subscribers),
+                    {noreply, State#state{subscribers = Subs}};
+                _ ->
+                    {noreply, State}
+            end
     end;
 
 handle_info(_Info, State) ->

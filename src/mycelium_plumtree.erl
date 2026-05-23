@@ -46,6 +46,9 @@
     %% Subscribers for delivered messages
     subscribers = #{} :: #{pid() => reference()},
 
+    %% Keeps our own hyparview-events subscription alive across a restart
+    watch = #{} :: mycelium_source_monitor:watch(),
+
     %% Stats
     gossip_sent = 0 :: non_neg_integer(),
     gossip_received = 0 :: non_neg_integer(),
@@ -91,8 +94,10 @@ get_stats() ->
 %%====================================================================
 
 init([]) ->
-    %% Subscribe to HyParView events
-    mycelium_hyparview_events:subscribe(self()),
+    %% Subscribe to HyParView events, keeping the subscription alive if
+    %% the events process restarts (we need peer_up/peer_down to keep the
+    %% eager/lazy peer lists correct).
+    Watch = mycelium_source_monitor:start([mycelium_hyparview_events]),
 
     %% Initialize eager peers from current active view
     EagerPeers = mycelium:active_view(),
@@ -100,7 +105,7 @@ init([]) ->
     %% Schedule periodic cleanup
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup),
 
-    {ok, #state{eager_peers = EagerPeers}}.
+    {ok, #state{eager_peers = EagerPeers, watch = Watch}}.
 
 handle_call({subscribe, Pid}, _From, State) ->
     case maps:is_key(Pid, State#state.subscribers) of
@@ -264,14 +269,24 @@ handle_info({mycelium_event, {peer_down, Node, _Reason}}, State) ->
     LazyPeers = State#state.lazy_peers -- [Node],
     {noreply, State#state{eager_peers = EagerPeers, lazy_peers = LazyPeers}};
 
-%% Subscriber down
+%% Re-subscribe if a watched source (hyparview events) restarted.
+handle_info({mycelium_source_monitor, retry, Source}, State) ->
+    {noreply, State#state{
+        watch = mycelium_source_monitor:retry(Source, State#state.watch)}};
+
+%% Source restart, or a subscriber, going down.
 handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
-    case maps:get(Pid, State#state.subscribers, undefined) of
-        Ref ->
-            Subs = maps:remove(Pid, State#state.subscribers),
-            {noreply, State#state{subscribers = Subs}};
-        _ ->
-            {noreply, State}
+    case mycelium_source_monitor:down(Ref, State#state.watch) of
+        {down, _Source, Watch} ->
+            {noreply, State#state{watch = Watch}};
+        ignore ->
+            case maps:get(Pid, State#state.subscribers, undefined) of
+                Ref ->
+                    Subs = maps:remove(Pid, State#state.subscribers),
+                    {noreply, State#state{subscribers = Subs}};
+                _ ->
+                    {noreply, State}
+            end
     end;
 
 %% Periodic cleanup using HLC wall time

@@ -46,6 +46,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   replica subscribes to the peer-event bus.
 
 ### Fixed
+- Event subscriptions survive a restart of the source process. Sources
+  keep subscribers in ephemeral state, and a source lives in a different
+  supervision subtree from its subscribers, so a source crash previously
+  dropped the feed silently. Subscribers now monitor the source and
+  re-subscribe via `mycelium_source_monitor` (replicas additionally pull
+  a full sync from peers afterwards). Covers the `mycelium_replica`
+  instances, `mycelium_shard`, `mycelium_reminder`, `mycelium_streams`,
+  `mycelium_service_proxy`, and `mycelium_plumtree`.
 - `mycelium_plumtree` removes peers from both eager and lazy lists on
   `peer_down`. The handler clause silently dropped events because of
   an arity mismatch with the producer.
