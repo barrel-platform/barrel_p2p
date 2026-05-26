@@ -1,12 +1,12 @@
 {application, chat, [
-    {description, "Distributed chat example using Mycelium"},
+    {description, "Distributed chat example using Barrel P2P"},
     {vsn, "0.1.0"},
     {registered, [chat_room_sup]},
     {mod, {chat_app, []}},
     {applications, [
         kernel,
         stdlib,
-        mycelium
+        barrel_p2p
     ]},
     {env, []},
     {modules, []}

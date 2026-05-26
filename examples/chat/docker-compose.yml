@@ -6,7 +6,7 @@ services:
     hostname: seed
     environment:
       - NODE_NAME=chat
-      - COOKIE=mycelium_chat
+      - COOKIE=barrel_p2p_chat
       - CONTACT_NODES=
     networks:
       - chat_network
@@ -20,7 +20,7 @@ services:
     hostname: node1
     environment:
       - NODE_NAME=chat
-      - COOKIE=mycelium_chat
+      - COOKIE=barrel_p2p_chat
       - CONTACT_NODES=chat@seed
     networks:
       - chat_network
@@ -34,7 +34,7 @@ services:
     hostname: node2
     environment:
       - NODE_NAME=chat
-      - COOKIE=mycelium_chat
+      - COOKIE=barrel_p2p_chat
       - CONTACT_NODES=chat@seed
     networks:
       - chat_network
@@ -48,7 +48,7 @@ services:
     hostname: node3
     environment:
       - NODE_NAME=chat
-      - COOKIE=mycelium_chat
+      - COOKIE=barrel_p2p_chat
       - CONTACT_NODES=chat@node1,chat@node2
     networks:
       - chat_network

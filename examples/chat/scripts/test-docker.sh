@@ -42,7 +42,7 @@ echo ""
 echo "=== Checking cluster membership ==="
 for node in seed node1 node2 node3; do
     echo "Active view on $node:"
-    docker compose exec -T $node /app/bin/chat eval "mycelium:active_view()." 2>/dev/null || echo "  (node not ready)"
+    docker compose exec -T $node /app/bin/chat eval "barrel_p2p:active_view()." 2>/dev/null || echo "  (node not ready)"
 done
 
 echo ""
@@ -52,7 +52,7 @@ echo "  docker compose exec seed /app/bin/chat remote_console"
 echo ""
 echo "In the console, try:"
 echo "  chat_client:demo()."
-echo "  mycelium:active_view()."
+echo "  barrel_p2p:active_view()."
 echo "  chat_server:list_rooms()."
 echo ""
 echo "To stop the cluster:"

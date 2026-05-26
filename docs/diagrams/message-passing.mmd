@@ -2,7 +2,7 @@
 sequenceDiagram
     autonumber
     participant APP as Application<br/>(node A)
-    participant MYC as mycelium<br/>(node A)
+    participant MYC as barrel_p2p<br/>(node A)
     participant DIST as quic_dist<br/>(node A)
     participant E as node E<br/>(NOT in A's active view)
 
@@ -19,4 +19,4 @@ sequenceDiagram
     DIST->>E: deliver Msg
     E->>E: gen_server bar receives
 
-    Note over APP,E: The pid lives on node E.<br/>Mycelium is not on the data path<br/>once the channel is open.
+    Note over APP,E: The pid lives on node E.<br/>Barrel P2P is not on the data path<br/>once the channel is open.

@@ -14,7 +14,7 @@ ownership events you react to on churn.
 ## The live-node set
 
 Placement needs every node to agree on the set of members, or the ring
-diverges. Mycelium does not keep a full cluster roster in HyParView
+diverges. Barrel P2P does not keep a full cluster roster in HyParView
 (the active and passive views are bounded, per-node, partial), so the
 shard builds its own **replicated, lease-based live-node set**:
 
@@ -39,7 +39,7 @@ are swept locally so the set stays bounded.
 Agreement is **eventual**. After a join, a leave, or a crash, nodes
 converge once heartbeats and sweeps have propagated; during that window
 they can briefly disagree on an owner. That is the same trade every
-other eventually-consistent piece of mycelium makes.
+other eventually-consistent piece of barrel_p2p makes.
 
 ## The hash ring
 
@@ -71,11 +71,11 @@ diverge. Treat it, and the lease timings, as cluster-wide settings.
 ## Placing keys
 
 ```erlang
-mycelium:place(Key).        %% node() that should own Key
-mycelium:is_owner(Key).     %% am I that node?
-mycelium:owners(Key, 3).    %% top-3 distinct nodes, for replicated placement
-mycelium:partition(Key).    %% 0..ring_size-1 bucket Key falls in
-mycelium:members().         %% the current live set (sorted)
+barrel_p2p:place(Key).        %% node() that should own Key
+barrel_p2p:is_owner(Key).     %% am I that node?
+barrel_p2p:owners(Key, 3).    %% top-3 distinct nodes, for replicated placement
+barrel_p2p:partition(Key).    %% 0..ring_size-1 bucket Key falls in
+barrel_p2p:members().         %% the current live set (sorted)
 ```
 
 `place/1` and friends are lock-free reads off a hot path: the shard
@@ -94,18 +94,18 @@ ones you lost. Subscribe and react:
 
 ```erlang
 init(_) ->
-    ok = mycelium:subscribe_shard(),
+    ok = barrel_p2p:subscribe_shard(),
     {ok, #{}}.
 
-handle_info({mycelium_shard, {acquired, P}}, S) ->
+handle_info({barrel_p2p_shard, {acquired, P}}, S) ->
     %% This node now owns partition P: load / take over its state.
     {noreply, take_over(P, S)};
-handle_info({mycelium_shard, {released, P}}, S) ->
+handle_info({barrel_p2p_shard, {released, P}}, S) ->
     %% This node no longer owns P: stop serving / hand off its state.
     {noreply, hand_off(P, S)}.
 ```
 
-Map your keys to partitions with `mycelium:partition(Key)` so you know
+Map your keys to partitions with `barrel_p2p:partition(Key)` so you know
 which keys an `{acquired, P}` / `{released, P}` event covers.
 
 Events fire only when the live set actually changes, not on every

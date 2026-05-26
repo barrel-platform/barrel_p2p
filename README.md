@@ -1,6 +1,6 @@
-# Mycelium
+# Barrel P2P
 
-Mycelium is an Erlang/OTP library for peer-to-peer clusters.
+Barrel P2P is an Erlang/OTP library for peer-to-peer clusters.
 
 It keeps the Erlang programming model: `Pid ! Msg`, `gen_server`,
 `rpc`, links, monitors, and the usual supervision habits. It changes
@@ -23,7 +23,7 @@ operate when the cluster grows, when every node must connect to every
 other node, when EPMD is not welcome, or when nodes move between
 network paths.
 
-Mycelium keeps your application code close to normal OTP code. You
+Barrel P2P keeps your application code close to normal OTP code. You
 still register processes, call servers, monitor pids, and send
 messages. The library takes care of the cluster shape, peer identity,
 service discovery, and the QUIC dist carrier.
@@ -43,22 +43,22 @@ the list of nodes your application may talk to. It is only the
 maintenance topology.
 
 Application traffic is different. If code on node A sends to a pid on
-node E, OTP can open a dist channel on demand. Mycelium authenticates
+node E, OTP can open a dist channel on demand. Barrel P2P authenticates
 that channel, then the normal Erlang message is delivered.
 
 ![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](docs/diagrams/message-passing.png)
 
-Once you hold the pid, Mycelium is no longer on the application data
+Once you hold the pid, Barrel P2P is no longer on the application data
 path. You use Erlang.
 
 ## Project status
 
-Mycelium is experimental and pre-1.0. APIs may change between minor
+Barrel P2P is experimental and pre-1.0. APIs may change between minor
 releases until a `1.0` tag.
 
 The cryptographic and transport layers, Ed25519 dist auth and the
 QUIC carrier, have unit and multi-node test coverage. They have not
-been independently audited. Do not use Mycelium where a transport
+been independently audited. Do not use Barrel P2P where a transport
 compromise would be costly without doing your own review first.
 
 Bug reports and PRs are welcome. Security reports go through
@@ -66,39 +66,39 @@ Bug reports and PRs are welcome. Security reports go through
 
 ## Five-minute start
 
-Add Mycelium to `rebar.config`:
+Add Barrel P2P to `rebar.config`:
 
 ```erlang
 {deps, [
-    {mycelium, "0.1.0"}
+    {barrel_p2p, "0.1.0"}
 ]}.
 ```
 
-Use Mycelium as the Erlang distribution carrier:
+Use Barrel P2P as the Erlang distribution carrier:
 
 ```text
--proto_dist mycelium
--epmd_module mycelium_epmd
+-proto_dist barrel_p2p
+-epmd_module barrel_p2p_epmd
 -start_epmd false
 ```
 
 Start the application and join a seed:
 
 ```erlang
-application:ensure_all_started(mycelium).
-ok = mycelium:join('seed@192.168.1.10').
+application:ensure_all_started(barrel_p2p).
+ok = barrel_p2p:join('seed@192.168.1.10').
 ```
 
 Register the current process as a service:
 
 ```erlang
-ok = mycelium:register_service(worker_pool, #{shard => 1}).
+ok = barrel_p2p:register_service(worker_pool, #{shard => 1}).
 ```
 
 Find it from another node:
 
 ```erlang
-{ok, _Node, Worker} = mycelium:whereis_service(worker_pool),
+{ok, _Node, Worker} = barrel_p2p:whereis_service(worker_pool),
 Worker ! {work, <<"payload">>}.
 ```
 
@@ -112,7 +112,7 @@ opened on demand over QUIC.
 A small development config:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {active_size, 5},
     {passive_size, 30},
     {listen_port, 9100},
@@ -134,15 +134,15 @@ For production notes, see [run in production](docs/how-to/run-in-production.md).
 
 ## What is included
 
-- **QUIC distribution**. `-proto_dist mycelium` plugs into Erlang's
+- **QUIC distribution**. `-proto_dist barrel_p2p` plugs into Erlang's
   alternative distribution layer. No stock EPMD daemon is required.
 - **HyParView membership**. Each node keeps a bounded active view
   instead of a full mesh.
 - **Service registry**. Processes can be registered by name and found
   from any node through a CRDT-backed registry.
-- **Replicated state**. `mycelium_map` is a gossiped, last-write-wins
+- **Replicated state**. `barrel_p2p_map` is a gossiped, last-write-wins
   key-value map for cluster-wide config, flags, and routing tables;
-  the `mycelium_replica` behaviour underneath is public for custom
+  the `barrel_p2p_replica` behaviour underneath is public for custom
   merge.
 - **Plumtree broadcast**. Registry changes and gossip move through an
   efficient epidemic broadcast tree.
@@ -160,13 +160,13 @@ page that lists its children; the hub pages are linked below.
 
 ### Overview
 
-Read this first if mycelium is new to you.
+Read this first if barrel_p2p is new to you.
 
-- [What is mycelium?](docs/overview/what-is-mycelium.md) — the
+- [What is barrel_p2p?](docs/overview/what-is-barrel_p2p.md) — the
   project in one page, with the architecture diagram and the
   load-bearing ideas.
 - [Benefits and trade-offs](docs/overview/benefits.md) — why pick
-  mycelium, and what you give up.
+  barrel_p2p, and what you give up.
 - [Introduction](docs/overview/introduction.md) — the long
   narrative through every layer.
 - [Getting started](docs/overview/getting-started.md) — boot two
@@ -183,7 +183,7 @@ How each subsystem works, explained one page at a time.
 - [Gossip broadcast](docs/concepts/gossip-broadcast.md) — Plumtree
   push-lazy-push trees, self-healing graft/prune.
 - [Dist channel](docs/concepts/dist-channel.md) —
-  `-proto_dist mycelium` over QUIC, the discovery chain, the
+  `-proto_dist barrel_p2p` over QUIC, the discovery chain, the
   idle GC.
 - [Authentication](docs/concepts/authentication.md) — Ed25519
   mutual challenge-response, trust modes.
@@ -228,9 +228,9 @@ Task-focused recipes for operating a cluster.
 Authoritative material when you know what you are looking for.
 
 - [API overview](docs/reference/api-overview.md) — every public
-  function in `mycelium.erl`, grouped by subsystem.
+  function in `barrel_p2p.erl`, grouped by subsystem.
 - [Configuration](docs/reference/configuration.md) — every key
-  under `{mycelium, [...]}` in sys.config.
+  under `{barrel_p2p, [...]}` in sys.config.
 - [Architecture](docs/reference/architecture.md) — the full
   supervision tree and protocol-level details.
 - [Comparison with Partisan](docs/reference/comparison-with-partisan.md)
@@ -249,7 +249,7 @@ cd examples/chat
 ./scripts/run-demo.sh node 1
 ```
 
-The demo starts Erlang nodes with `-proto_dist mycelium`, generates
+The demo starts Erlang nodes with `-proto_dist barrel_p2p`, generates
 local TLS and Ed25519 material on first boot, and uses the service
 registry to find chat rooms across the cluster.
 
@@ -276,7 +276,7 @@ rebar3 ex_doc
 
 ## Versioning
 
-Mycelium is still in `0.x`.
+Barrel P2P is still in `0.x`.
 
 - Minor bumps, `0.x` to `0.y`, may change documented public APIs.
 - Patch bumps, `0.x.y` to `0.x.y+1`, are non-breaking.

@@ -2,7 +2,7 @@
 
 This handbook picks up where [getting-started.md](../overview/getting-started.md)
 ends. It is written for Erlang developers who already know OTP and
-want to build something real on top of Mycelium.
+want to build something real on top of Barrel P2P.
 
 We will build a small distributed chat application. The point is not
 the chat itself. The point is the practice:
@@ -20,7 +20,7 @@ your own supervisors and `gen_server` modules.
 
 ## The mental model
 
-Mycelium does not ask you to stop writing Erlang. You still build OTP
+Barrel P2P does not ask you to stop writing Erlang. You still build OTP
 trees. You still pass pids around. You still use `gen_server:call/2`,
 monitors, links, and normal messages.
 
@@ -31,7 +31,7 @@ node. That works well for small, trusted clusters. It becomes
 expensive when the cluster grows, and awkward when nodes appear,
 disappear, or move between network paths.
 
-Mycelium splits the problem in two:
+Barrel P2P splits the problem in two:
 
 - **Membership** is kept small. Each node keeps a bounded active view,
   usually five peers, used for gossip and topology maintenance.
@@ -97,7 +97,7 @@ The room name is registered as a *tagged* service name:
 init(Room) ->
     process_flag(trap_exit, true),
     ServiceName = {chat_room, Room},
-    case mycelium:register_service(ServiceName, #{created => erlang:timestamp()}) of
+    case barrel_p2p:register_service(ServiceName, #{created => erlang:timestamp()}) of
         ok          -> {ok, #state{room = Room}};
         {error, Why} -> {stop, Why}
     end.
@@ -109,11 +109,11 @@ A few things are worth pointing out.
 just `Room`. The tuple shape gives us a namespace for chat-room
 services: every name that begins with `chat_room` is unambiguously
 a chat room. When we want to list rooms, we filter on the tag (see
-below). This is a common pattern; mycelium does not care about the
+below). This is a common pattern; barrel_p2p does not care about the
 shape of the name as long as it is hashable.
 
 **`process_flag(trap_exit, true)`.** Not strictly required by
-mycelium, but it is what lets us run cleanup code in `terminate/2`.
+barrel_p2p, but it is what lets us run cleanup code in `terminate/2`.
 A clean exit calls `unregister_service` so the room disappears from
 the cluster's view without waiting for the registry's down-detector.
 
@@ -130,7 +130,7 @@ The room may live on the local node or on a remote node. The caller
 does not need to know. It asks the registry for a pid, then uses the
 pid as Erlang code normally would.
 
-This is the important flow. The service lookup is a Mycelium concern.
+This is the important flow. The service lookup is a Barrel P2P concern.
 The message send is an Erlang distribution concern.
 
 ![Service lookup returns a pid, then OTP opens a QUIC dist channel on demand and delivers the Erlang message.](diagrams/message-passing.png)
@@ -148,7 +148,7 @@ send(Room, Message) ->
 
 %% Helper that unwraps both local and remote whereis_service results.
 find_room(Room) ->
-    case mycelium:whereis_service({chat_room, Room}) of
+    case barrel_p2p:whereis_service({chat_room, Room}) of
         {ok, Pid}             -> {ok, Pid};
         {ok, _Node, Pid}      -> {ok, Pid};
         {error, not_found}    -> {error, not_found}
@@ -211,9 +211,9 @@ handle_info({'DOWN', Ref, process, Pid, _Reason}, S = #state{members = M}) ->
     end;
 ```
 
-This is one of the places where mycelium fades into the background:
+This is one of the places where barrel_p2p fades into the background:
 the monitor is a standard Erlang feature, and it works across the
-mycelium dist channel exactly as it does over the default TCP
+barrel_p2p dist channel exactly as it does over the default TCP
 carrier.
 
 ## Listing rooms
@@ -223,7 +223,7 @@ all registered services and keep only the ones with our tag:
 
 ```erlang
 list_rooms() ->
-    [Room || {chat_room, Room} <- mycelium:list_services()].
+    [Room || {chat_room, Room} <- barrel_p2p:list_services()].
 ```
 
 `list_services/0` returns the set of names registered in the
@@ -268,7 +268,7 @@ init([]) ->
 
 The room is `restart => temporary`: if a room crashes, we do not
 restart it. The clients monitoring it will see the registration
-disappear via `mycelium:subscribe_services/0` (see the next
+disappear via `barrel_p2p:subscribe_services/0` (see the next
 section).
 
 ## The chat client
@@ -284,7 +284,7 @@ rooms, and listens for chat messages:
 
 start() ->
     Pid = spawn_link(fun() ->
-        mycelium:subscribe_services(),
+        barrel_p2p:subscribe_services(),
         listener_loop()
     end),
     {ok, Pid}.
@@ -302,10 +302,10 @@ listener_loop() ->
         {chat_message, Room, FromNode, Text, _Ts} ->
             io:format("[~p] <~p> ~s~n", [Room, FromNode, Text]),
             listener_loop();
-        {mycelium_service_event, {service_registered, {chat_room, Room}, Node}} ->
+        {barrel_p2p_service_event, {service_registered, {chat_room, Room}, Node}} ->
             io:format("*** Room ~p available on ~p~n", [Room, Node]),
             listener_loop();
-        {mycelium_service_event, {service_unregistered, {chat_room, Room}, Node}} ->
+        {barrel_p2p_service_event, {service_unregistered, {chat_room, Room}, Node}} ->
             io:format("*** Room ~p left ~p~n", [Room, Node]),
             listener_loop();
         stop ->
@@ -339,7 +339,7 @@ cd examples/chat
 ```
 
 Each node generates its own TLS material and Ed25519 identity on
-first boot. The script wires the local mycelium source into the
+first boot. The script wires the local barrel_p2p source into the
 release via `_checkouts/`, so any change you make in the parent
 tree is visible after a recompile.
 
@@ -349,7 +349,7 @@ To exercise the cluster:
 %% On node 2
 chat_room_sup:create_room(general).
 chat_client:join(general, self()).
-chat_client:send(general, "hello, mycelium").
+chat_client:send(general, "hello, barrel_p2p").
 ```
 
 You will see the message arrive on the listener, and (on the other
@@ -375,10 +375,10 @@ returns all of them. Picking one (for example, the least loaded) is
 a tiny helper:
 
 ```erlang
--include_lib("mycelium/include/mycelium.hrl").
+-include_lib("barrel_p2p/include/barrel_p2p.hrl").
 
 least_loaded(Name) ->
-    {ok, Entries} = mycelium:lookup(Name),
+    {ok, Entries} = barrel_p2p:lookup(Name),
     Sorted = lists:sort(
         fun(A, B) ->
             maps:get(load, A#service_entry.meta, 0)
@@ -402,7 +402,7 @@ flux. The recommended shape:
 
 ```erlang
 call_service(Name, Request) ->
-    case mycelium:whereis_service(Name, #{retries => 3}) of
+    case barrel_p2p:whereis_service(Name, #{retries => 3}) of
         {ok, Pid} ->
             try gen_server:call(Pid, Request, 5000)
             catch
@@ -432,10 +432,10 @@ goes down:
 
 ```erlang
 init(_) ->
-    mycelium:subscribe_services(),
+    barrel_p2p:subscribe_services(),
     {ok, #{cache => #{}}}.
 
-handle_info({mycelium_service_event, {service_down, Name, _Node, _Reason}}, S) ->
+handle_info({barrel_p2p_service_event, {service_down, Name, _Node, _Reason}}, S) ->
     {noreply, S#{cache := maps:remove(Name, maps:get(cache, S))}};
 handle_info(_, S) ->
     {noreply, S}.
@@ -446,7 +446,7 @@ This pattern lets the cache stay accurate without polling.
 ## When `register_service` is not enough
 
 Sometimes you do not want named processes; you want a *stream* of
-bytes between two nodes. Mycelium ships a tagged-stream multiplex
+bytes between two nodes. Barrel P2P ships a tagged-stream multiplex
 for exactly this case: any application can open a QUIC stream
 between two cluster peers, attach a short binary tag, and hand the
 stream to a handler process.
@@ -456,12 +456,12 @@ shape:
 
 ```erlang
 %% On the receiving side
-mycelium_streams:register_acceptor(<<"chat:dump">>, self()).
+barrel_p2p_streams:register_acceptor(<<"chat:dump">>, self()).
 %% receive {mstream, StreamRef, opened, FromNode} and then
 %% native {quic_dist_stream, StreamRef, {data, _, _}} messages.
 
 %% On the sending side
-{ok, SR} = mycelium_streams:open(<<"chat:dump">>, 'node2@host').
+{ok, SR} = barrel_p2p_streams:open(<<"chat:dump">>, 'node2@host').
 quic_dist:send(SR, <<"transcript starts here\n">>).
 quic_dist:close_stream(SR).
 ```
@@ -486,7 +486,7 @@ A few short notes that will save you time later:
   second. Code that registers and immediately looks up on a
   different node should expect to retry briefly. The
   `whereis_service/2` retry option does this for you.
-- **Active view is not the cluster.** `mycelium:active_view/0`
+- **Active view is not the cluster.** `barrel_p2p:active_view/0`
   returns a small subset of peers; it is not the whole cluster.
   Use `erlang:nodes/0` to see every node you have an open dist
   channel with, or `list_services/0` for service-level visibility.

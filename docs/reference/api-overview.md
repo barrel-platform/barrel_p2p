@@ -1,11 +1,11 @@
 # API overview
 
-Every public function in `mycelium.erl`, grouped by subsystem.
+Every public function in `barrel_p2p.erl`, grouped by subsystem.
 Each entry shows the spec and the stability tier in
 [features.md](../features.md).
 
-For implementation modules (`mycelium_dist_keys`,
-`mycelium_dist_auth`, `mycelium_streams`, etc.), see the
+For implementation modules (`barrel_p2p_dist_keys`,
+`barrel_p2p_dist_auth`, `barrel_p2p_streams`, etc.), see the
 generated [API reference](../api-reference.html) sidebar or the
 per-concept pages.
 
@@ -43,10 +43,10 @@ per-concept pages.
 Events delivered as messages:
 
 ```erlang
-{mycelium_event, {peer_up, Node}}.
-{mycelium_event, {peer_down, Node, Reason}}.
-{mycelium_event, joined}.
-{mycelium_event, left}.
+{barrel_p2p_event, {peer_up, Node}}.
+{barrel_p2p_event, {peer_down, Node, Reason}}.
+{barrel_p2p_event, joined}.
+{barrel_p2p_event, left}.
 ```
 
 ## Service registry
@@ -95,14 +95,14 @@ Events delivered as messages:
 Events delivered as messages:
 
 ```erlang
-{mycelium_service_event, {service_registered, Name, Node}}.
-{mycelium_service_event, {service_unregistered, Name, Node}}.
-{mycelium_service_event, {service_down, Name, Node, Reason}}.
+{barrel_p2p_service_event, {service_registered, Name, Node}}.
+{barrel_p2p_service_event, {service_unregistered, Name, Node}}.
+{barrel_p2p_service_event, {service_down, Name, Node, Reason}}.
 ```
 
-## Via callbacks (`{via, mycelium, Name}`)
+## Via callbacks (`{via, barrel_p2p, Name}`)
 
-The standard name-registration interface. Use mycelium as a
+The standard name-registration interface. Use barrel_p2p as a
 process registry with `gen_server`, `gen_statem`, etc.
 
 ```erlang
@@ -116,14 +116,14 @@ process registry with `gen_server`, `gen_statem`, etc.
 Example:
 
 ```erlang
-%% Start a gen_server registered through mycelium.
-gen_server:start({via, mycelium, my_service}, my_module, [], []).
+%% Start a gen_server registered through barrel_p2p.
+gen_server:start({via, barrel_p2p, my_service}, my_module, [], []).
 
 %% Call it by name.
-gen_server:call({via, mycelium, my_service}, request).
+gen_server:call({via, barrel_p2p, my_service}, request).
 
 %% Send to it.
-mycelium:send(my_service, Msg).
+barrel_p2p:send(my_service, Msg).
 ```
 
 ## Connection migration
@@ -144,7 +144,7 @@ Errors documented under
 
 ```erlang
 %% Campaign for the singleton Name. Returns the initial role;
-%% transitions arrive as {mycelium_leader, Name, {elected, Fence} | revoked}.
+%% transitions arrive as {barrel_p2p_leader, Name, {elected, Fence} | revoked}.
 -spec lead(Name) -> {ok, {leader, non_neg_integer()}} | {ok, follower}
                   | {error, term()}.
 -spec lead(Name, Opts :: #{priority => integer()}) -> same.
@@ -169,7 +169,7 @@ See [leader election](../concepts/leader-election.md).
 -spec partition(Key) -> non_neg_integer().
 %% Current live member set (sorted).
 -spec members() -> [node()].
-%% Subscribe to {mycelium_shard, {acquired | released, Partition}}.
+%% Subscribe to {barrel_p2p_shard, {acquired | released, Partition}}.
 -spec subscribe_shard() -> ok.
 -spec subscribe_shard(Pid :: pid()) -> ok.
 ```
@@ -188,7 +188,7 @@ See [sharded placement](../concepts/sharded-placement.md) and
 -spec remind_after(Key, DelayMs :: non_neg_integer(), Payload) -> ok.
 %% Cancel cluster-wide.
 -spec cancel_reminder(Key) -> ok.
-%% Subscribe to {mycelium_reminder, Key, Payload, Fence}.
+%% Subscribe to {barrel_p2p_reminder, Key, Payload, Fence}.
 -spec subscribe_reminders() -> ok.
 -spec subscribe_reminders(Pid :: pid()) -> ok.
 -spec unsubscribe_reminders(Pid :: pid()) -> ok.
@@ -199,7 +199,7 @@ Delivered to subscribers on the firing (owner) node:
 ```erlang
 %% Fence :: non_neg_integer() is the packed version stamp; stable
 %% across nodes, usable to dedup an idempotent handler.
-{mycelium_reminder, Key, Payload, Fence}.
+{barrel_p2p_reminder, Key, Payload, Fence}.
 ```
 
 See [durable reminders](../concepts/durable-reminders.md) and
@@ -213,7 +213,7 @@ See [durable reminders](../concepts/durable-reminders.md) and
 %% new_map/2 per node). Opts: validator | tombstone_ttl_ms | scan_ms |
 %% prune_on_peer_down.
 -spec new_map(Name :: atom()) -> {ok, pid()} | {error, term()}.
--spec new_map(Name, Opts :: mycelium_map:opts()) -> {ok, pid()} | {error, term()}.
+-spec new_map(Name, Opts :: barrel_p2p_map:opts()) -> {ok, pid()} | {error, term()}.
 %% Stop the map on THIS node (node-local; not a cluster-wide erase).
 -spec delete_map(Name) -> ok.
 %% {error, invalid_value} if the map's validator rejects Value.
@@ -223,7 +223,7 @@ See [durable reminders](../concepts/durable-reminders.md) and
 -spec map_get(Name, Key) -> {ok, term()} | not_found.
 -spec map_keys(Name) -> [term()].
 -spec map_to_list(Name) -> [{term(), term()}].
-%% Subscribe to {mycelium_map, Name, {put, K, V} | {remove, K}}.
+%% Subscribe to {barrel_p2p_map, Name, {put, K, V} | {remove, K}}.
 -spec subscribe_map(Name) -> ok | {error, no_such_map}.
 -spec subscribe_map(Name, Pid :: pid()) -> ok | {error, no_such_map}.
 -spec unsubscribe_map(Name) -> ok | {error, no_such_map}.
@@ -265,70 +265,70 @@ For finer-grained control, the following modules are also
 public. Each one's concept page or how-to has the full surface;
 the entries here are the most commonly used.
 
-### `mycelium_dist_keys`
+### `barrel_p2p_dist_keys`
 
 ```erlang
-mycelium_dist_keys:store_key(Node, PubKey).
-mycelium_dist_keys:lookup_pin(Node).
-mycelium_dist_keys:delete_key(Node).
-mycelium_dist_keys:list_trusted().
-mycelium_dist_keys:set_trust_mode(tofu | strict).
-mycelium_dist_keys:get_trust_mode().
-mycelium_dist_keys:fingerprint(PubKey).
+barrel_p2p_dist_keys:store_key(Node, PubKey).
+barrel_p2p_dist_keys:lookup_pin(Node).
+barrel_p2p_dist_keys:delete_key(Node).
+barrel_p2p_dist_keys:list_trusted().
+barrel_p2p_dist_keys:set_trust_mode(tofu | strict).
+barrel_p2p_dist_keys:get_trust_mode().
+barrel_p2p_dist_keys:fingerprint(PubKey).
 ```
 
 See [configure authentication](../how-to/configure-authentication.md).
 
-### `mycelium_dist_auth`
+### `barrel_p2p_dist_auth`
 
 ```erlang
-mycelium_dist_auth:ensure_keypair().
-mycelium_dist_auth:get_public_key().
-mycelium_dist_auth:is_cookie_only_allowed(Node).
+barrel_p2p_dist_auth:ensure_keypair().
+barrel_p2p_dist_auth:get_public_key().
+barrel_p2p_dist_auth:is_cookie_only_allowed(Node).
 ```
 
-### `mycelium_rotate`
+### `barrel_p2p_rotate`
 
 ```erlang
-mycelium_rotate:rotate_identity().
-mycelium_rotate:rotate_cert().
+barrel_p2p_rotate:rotate_identity().
+barrel_p2p_rotate:rotate_cert().
 ```
 
 See [configure authentication](../how-to/configure-authentication.md).
 
-### `mycelium_streams`
+### `barrel_p2p_streams`
 
 ```erlang
-mycelium_streams:register_acceptor(Tag, Pid).
-mycelium_streams:unregister_acceptor(Tag).
-mycelium_streams:open(Tag, Node).
-mycelium_streams:list_acceptors().
+barrel_p2p_streams:register_acceptor(Tag, Pid).
+barrel_p2p_streams:unregister_acceptor(Tag).
+barrel_p2p_streams:open(Tag, Node).
+barrel_p2p_streams:list_acceptors().
 ```
 
 See the [streams concept](../concepts/streams.md).
 
-### `mycelium_path_stats`
+### `barrel_p2p_path_stats`
 
 ```erlang
-mycelium_path_stats:srtt(Node).
-mycelium_path_stats:summary(Node).
-mycelium_path_stats:connection(Node).
+barrel_p2p_path_stats:srtt(Node).
+barrel_p2p_path_stats:summary(Node).
+barrel_p2p_path_stats:connection(Node).
 ```
 
 Read-only views over the underlying QUIC path stats. Useful for
 diagnostics and migration triggers; see
 [migrate connections](../how-to/migrate-connections.md).
 
-### `mycelium_hlc`
+### `barrel_p2p_hlc`
 
 ```erlang
-mycelium_hlc:now().
-mycelium_hlc:update(PeerTs).
-mycelium_hlc:compare(T1, T2).
-mycelium_hlc:wall_time(Ts).
-mycelium_hlc:logical(Ts).
-mycelium_hlc:to_binary(Ts).
-mycelium_hlc:from_binary(Bin).
+barrel_p2p_hlc:now().
+barrel_p2p_hlc:update(PeerTs).
+barrel_p2p_hlc:compare(T1, T2).
+barrel_p2p_hlc:wall_time(Ts).
+barrel_p2p_hlc:logical(Ts).
+barrel_p2p_hlc:to_binary(Ts).
+barrel_p2p_hlc:from_binary(Bin).
 ```
 
 See the [hybrid logical clocks concept](../concepts/hybrid-logical-clocks.md).

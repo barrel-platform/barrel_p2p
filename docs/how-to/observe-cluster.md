@@ -1,9 +1,9 @@
 # Observability
 
-A mycelium cluster has three categories of telemetry you will want
+A barrel_p2p cluster has three categories of telemetry you will want
 in production: membership transitions, authentication outcomes,
 and dist-layer events (broadcast, GC, migration). All of them go
-through one module, `mycelium_metrics`, which in turn emits to the
+through one module, `barrel_p2p_metrics`, which in turn emits to the
 [`instrument`](https://github.com/benoitc/instrument) library.
 
 The principle: every emit site is wrapped in a `try`/`catch`. A
@@ -16,7 +16,7 @@ short guide on wiring an exporter.
 ## Conventions
 
 - Instrument names are dot-namespaced under
-  `mycelium.<subsystem>.<event>`.
+  `barrel_p2p.<subsystem>.<event>`.
 - Attribute keys are atoms: `peer`, `outcome`, `reason`, `role`,
   `from`, `target`.
 - Counter values are integers; histogram values are milliseconds.
@@ -27,12 +27,12 @@ short guide on wiring an exporter.
 
 | Name                              | Kind    | Attributes              | Fires when                                   |
 |-----------------------------------|---------|-------------------------|----------------------------------------------|
-| `mycelium.hyparview.peer_up`      | counter | `peer`                  | A node enters the local active view          |
-| `mycelium.hyparview.peer_down`    | counter | `peer`, `reason`        | A node leaves the active view                |
-| `mycelium.hyparview.joined`       | counter | -                       | The local node joined the cluster            |
-| `mycelium.hyparview.left`         | counter | -                       | The local node left the cluster              |
-| `mycelium.hyparview.shuffle`      | counter | `target`                | The local node initiated a shuffle           |
-| `mycelium.hyparview.pending_timeout` | counter | `peer`               | A pending JOIN/CONNECT/NEIGHBOR backstop fired |
+| `barrel_p2p.hyparview.peer_up`      | counter | `peer`                  | A node enters the local active view          |
+| `barrel_p2p.hyparview.peer_down`    | counter | `peer`, `reason`        | A node leaves the active view                |
+| `barrel_p2p.hyparview.joined`       | counter | -                       | The local node joined the cluster            |
+| `barrel_p2p.hyparview.left`         | counter | -                       | The local node left the cluster              |
+| `barrel_p2p.hyparview.shuffle`      | counter | `target`                | The local node initiated a shuffle           |
+| `barrel_p2p.hyparview.pending_timeout` | counter | `peer`               | A pending JOIN/CONNECT/NEIGHBOR backstop fired |
 
 `reason` is normalised: an atom stays as-is, a `{tag, _}` tuple is
 reduced to its tag, anything else becomes `other`.
@@ -47,8 +47,8 @@ worth investigating.
 
 | Name                              | Kind      | Attributes              | Records                                       |
 |-----------------------------------|-----------|-------------------------|-----------------------------------------------|
-| `mycelium.dist.auth.attempts`     | counter   | `role`, `outcome`       | One per handshake attempt                     |
-| `mycelium.dist.auth.duration_ms`  | histogram | `role`, `outcome`       | Handshake wall time, milliseconds             |
+| `barrel_p2p.dist.auth.attempts`     | counter   | `role`, `outcome`       | One per handshake attempt                     |
+| `barrel_p2p.dist.auth.duration_ms`  | histogram | `role`, `outcome`       | Handshake wall time, milliseconds             |
 
 `role` is `outgoing` (we dialed) or `incoming` (we accepted).
 `outcome` is `ok` or `fail`. A handshake that crashes counts as
@@ -63,11 +63,11 @@ beyond the configured window: all of these surface as `fail`.
 
 | Name                              | Kind    | Attributes | Fires when                                  |
 |-----------------------------------|---------|------------|--------------------------------------------|
-| `mycelium.plumtree.gossip.sent`   | counter | -          | Each GOSSIP frame placed on the wire        |
-| `mycelium.plumtree.gossip.received` | counter | `from`   | A GOSSIP frame arrives                      |
-| `mycelium.plumtree.ihave.sent`    | counter | -          | Each IHAVE frame placed on the wire         |
-| `mycelium.plumtree.graft.sent`    | counter | `peer`     | A GRAFT request is sent                     |
-| `mycelium.plumtree.prune.sent`    | counter | `peer`     | A PRUNE notification is sent                |
+| `barrel_p2p.plumtree.gossip.sent`   | counter | -          | Each GOSSIP frame placed on the wire        |
+| `barrel_p2p.plumtree.gossip.received` | counter | `from`   | A GOSSIP frame arrives                      |
+| `barrel_p2p.plumtree.ihave.sent`    | counter | -          | Each IHAVE frame placed on the wire         |
+| `barrel_p2p.plumtree.graft.sent`    | counter | `peer`     | A GRAFT request is sent                     |
+| `barrel_p2p.plumtree.prune.sent`    | counter | `peer`     | A PRUNE notification is sent                |
 
 `sent` counters add `length(Peers)` per fanout, so the totals
 match the number of frames placed on the wire, not the number of
@@ -82,7 +82,7 @@ active view.
 
 | Name                       | Kind    | Attributes | Fires when                                |
 |----------------------------|---------|------------|-------------------------------------------|
-| `mycelium.dist_gc.reap`    | counter | `peer`     | The reaper closes an idle dist channel    |
+| `barrel_p2p.dist_gc.reap`    | counter | `peer`     | The reaper closes an idle dist channel    |
 
 A non-zero rate is normal. It means `Pid ! Msg` opened ad-hoc dist
 channels that no one used afterwards. A sustained burst suggests
@@ -93,7 +93,7 @@ workload, or that your application closes dist channels too often.
 
 | Name                       | Kind    | Attributes              | Fires when                                |
 |----------------------------|---------|-------------------------|-------------------------------------------|
-| `mycelium.dist.migrate`    | counter | `peer`, `outcome`       | A call to `mycelium:migrate_peer/1,2`     |
+| `barrel_p2p.dist.migrate`    | counter | `peer`, `outcome`       | A call to `barrel_p2p:migrate_peer/1,2`     |
 
 `outcome` is `ok` when path validation succeeded, otherwise
 `fail`. If you wrote a custom trigger (see
@@ -104,8 +104,8 @@ which peer the trigger acted on.
 
 | Name                                       | Kind    | Attributes | Fires when                              |
 |--------------------------------------------|---------|------------|-----------------------------------------|
-| `mycelium.router.request_dropped`          | counter | -          | A route request was refused (cap reached)|
-| `mycelium.service_proxy.cast_dropped`      | counter | -          | An overlay cast was refused (cap reached)|
+| `barrel_p2p.router.request_dropped`          | counter | -          | A route request was refused (cap reached)|
+| `barrel_p2p.service_proxy.cast_dropped`      | counter | -          | An overlay cast was refused (cap reached)|
 
 These are *operator signals*. A non-zero rate means the router or
 a proxy is hitting its in-flight cap. If sustained, raise
@@ -116,7 +116,7 @@ a proxy is hitting its in-flight cap. If sustained, raise
 
 | Name                                       | Kind    | Attributes | Fires when                                |
 |--------------------------------------------|---------|------------|------------------------------------------|
-| `mycelium.streams.preamble_dropped`        | counter | -          | An inbound stream was reset for not completing the tag preamble |
+| `barrel_p2p.streams.preamble_dropped`        | counter | -          | An inbound stream was reset for not completing the tag preamble |
 
 A non-zero rate suggests a buggy peer is opening streams without
 sending the tag preamble. In production this should be zero.
@@ -153,9 +153,9 @@ init(Req0, State) ->
 Wire it in your router and point your Prometheus scraper at the
 resulting endpoint.
 
-Mycelium emits as soon as its supervision tree is up. Make sure
+Barrel P2P emits as soon as its supervision tree is up. Make sure
 `instrument` is in your release applications list (it is pulled in
-as a transitive dependency of mycelium, so you usually do not have
+as a transitive dependency of barrel_p2p, so you usually do not have
 to add it explicitly).
 
 ### OTLP
@@ -164,13 +164,13 @@ OTLP export is configured through the `instrument` application env
 or through the standard `OTEL_*` environment variables. The
 canonical setup lives in the upstream
 [instrument README](https://github.com/benoitc/instrument);
-mycelium does not add or replace any of it.
+barrel_p2p does not add or replace any of it.
 
 A typical sys.config entry:
 
 ```erlang
 {instrument, [
-    {service_name, <<"my_mycelium_node">>}
+    {service_name, <<"my_barrel_p2p_node">>}
 ]}.
 ```
 
@@ -181,21 +181,21 @@ in the node's environment, this is enough for the metrics to flow.
 
 A short list of metrics that tend to matter in production:
 
-- **`mycelium.dist.auth.attempts{outcome=fail}` rate.**
+- **`barrel_p2p.dist.auth.attempts{outcome=fail}` rate.**
   Sustained failures are either a misconfiguration (wrong
   cookie, wrong proto_dist), a clock issue, a rotation in
   progress, or an active attack. Either way they warrant a
   human's attention.
-- **`mycelium.hyparview.peer_down{reason=nodedown}` spikes.**
+- **`barrel_p2p.hyparview.peer_down{reason=nodedown}` spikes.**
   A burst of node-downs usually means a network event. The
   cluster recovers, but the spike is the trigger for
   investigation.
-- **`mycelium.dist_gc.reap` rate vs steady-state baseline.**
+- **`barrel_p2p.dist_gc.reap` rate vs steady-state baseline.**
   A sudden change either way is worth looking at: a high rate
   suggests an application opening too many ad-hoc dist
   channels; a low rate after a baseline of activity may mean
   channels are not being released.
-- **`mycelium.dist.auth.duration_ms` p95.** A creeping p95 is an
+- **`barrel_p2p.dist.auth.duration_ms` p95.** A creeping p95 is an
   early signal that the cluster is loaded or that the
   authentication code path is contending on file I/O (the
   keypair is read from disk per attempt).

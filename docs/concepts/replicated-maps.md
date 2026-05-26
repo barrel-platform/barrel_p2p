@@ -3,7 +3,7 @@
 A replicated map answers one question: **how do I keep a small piece of
 state that every node can read and any node can update, without standing
 up an external store?** Config, feature flags, a routing or placement
-table, presence, a small catalogue. `mycelium_map` is a named,
+table, presence, a small catalogue. `barrel_p2p_map` is a named,
 gossiped, last-write-wins key-value map for exactly that: control-plane
 state that should be cluster-wide and eventually consistent.
 
@@ -52,11 +52,11 @@ contend with one another.
 
 ## A map is node-local
 
-`mycelium:new_map/1,2` starts a map on the **calling node only**. A named
+`barrel_p2p:new_map/1,2` starts a map on the **calling node only**. A named
 map converges across exactly the nodes that run it; a node that never
 calls `new_map` has no replica for that map and silently misses its data.
 This mirrors the built-in features, which run on every node because
-`mycelium` itself starts them.
+`barrel_p2p` itself starts them.
 
 To make a map cluster-wide you host it on every participating node, one of
 two ways:
@@ -84,10 +84,10 @@ same way.
 Subscribe to observe changes, on local AND remote writes:
 
 ```erlang
-ok = mycelium:subscribe_map(config),
+ok = barrel_p2p:subscribe_map(config),
 
-handle_info({mycelium_map, config, {put, Key, Value}}, S) -> ...;
-handle_info({mycelium_map, config, {remove, Key}}, S) -> ...
+handle_info({barrel_p2p_map, config, {put, Key, Value}}, S) -> ...;
+handle_info({barrel_p2p_map, config, {remove, Key}}, S) -> ...
 ```
 
 The owner monitors subscriber pids and drops them on `DOWN`. Subscribe
@@ -124,7 +124,7 @@ individual nodes (a survivor full-syncs a restarted one), but a whole-cluster
 restart loses its contents unless you opt into persistence.
 
 Pass `persist => true` to back the map with a write-ahead log plus periodic
-snapshots on disk (under `mycelium_map_data_dir`, default `data/maps`, per
+snapshots on disk (under `barrel_p2p_map_data_dir`, default `data/maps`, per
 node). Writes are flushed before the call returns and the map is recovered on
 boot, so a persisted map survives a full-cluster restart. Persisted values
 must be restart-safe data (no pids/ports/refs/funs, which reload as stale
@@ -134,12 +134,12 @@ recover-then-re-converge on restart works best from a quiesced cluster.
 Reads are eventually consistent: there is no consensus, so after a write
 other nodes converge once the delta has propagated, and during a partition
 two sides can briefly disagree. This is the same trade every other
-eventually-consistent piece of mycelium makes. After a partition heals the
+eventually-consistent piece of barrel_p2p makes. After a partition heals the
 map reconverges on its own via periodic anti-entropy (a background full-sync
 pull every `replica_anti_entropy_ms`, default 30s), even on a node whose link
 survived the split and got no fresh connection event.
 
-`mycelium_map` fits small, cluster-wide, eventually-consistent
+`barrel_p2p_map` fits small, cluster-wide, eventually-consistent
 control-plane state. It is the wrong tool for:
 
 - data that needs custom conflict resolution (drop to the
@@ -169,16 +169,16 @@ App env defaults:
 | Key                              | Default | Meaning                                  |
 |----------------------------------|---------|------------------------------------------|
 | `replicated_maps`                | `[]`    | `[{Name, Opts}]` maps started on boot.   |
-| `mycelium_map_scan_ms`           | 1000    | Default `scan_ms` for maps.              |
-| `mycelium_map_tombstone_ttl_ms`  | 3600000 | Default `tombstone_ttl_ms` for maps.     |
-| `mycelium_map_data_dir`          | `data/maps` | Per-node directory for persisted maps.|
+| `barrel_p2p_map_scan_ms`           | 1000    | Default `scan_ms` for maps.              |
+| `barrel_p2p_map_tombstone_ttl_ms`  | 3600000 | Default `tombstone_ttl_ms` for maps.     |
+| `barrel_p2p_map_data_dir`          | `data/maps` | Per-node directory for persisted maps.|
 
 ## Related
 
 - [Share replicated state](../how-to/share-replicated-state.md) is the
   worked recipe.
 - [The replicated substrate](../reference/replicated-substrate.md) is the
-  low-level `mycelium_replica` behaviour underneath, for custom merge.
+  low-level `barrel_p2p_replica` behaviour underneath, for custom merge.
 - [Service registry](service-registry.md) is the same OR-Map model
   specialised for process names.
 - [Gossip broadcast](gossip-broadcast.md) carries the deltas and

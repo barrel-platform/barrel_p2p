@@ -1,6 +1,6 @@
 # Service registry
 
-Mycelium's service registry lets a process register itself under
+Barrel P2P's service registry lets a process register itself under
 a name; every other node in the cluster can then find that
 process. The registration is replicated across the cluster
 without coordination, and it merges deterministically under
@@ -40,15 +40,15 @@ The typical flow:
 
 ```erlang
 %% On node A
-1> mycelium:register_service(my_worker, #{role => primary}).
+1> barrel_p2p:register_service(my_worker, #{role => primary}).
 ok
 
 %% A moment later, on node B. lookup/1 returns #service_entry{}
 %% records (fields: name, pid, node, meta).
-2> mycelium:lookup(my_worker).
+2> barrel_p2p:lookup(my_worker).
 {ok, [{service_entry, my_worker, <0.123.0>, 'node1@host', #{role => primary}}]}
 
-3> {ok, Node, Pid} = mycelium:whereis_service(my_worker).
+3> {ok, Node, Pid} = barrel_p2p:whereis_service(my_worker).
 {ok, 'node1@host', <0.123.0>}
 
 4> Pid ! Msg.   %% standard Erlang send, opens dist on demand
@@ -58,7 +58,7 @@ What happens under the hood:
 
 1. `register_service/2` inserts an entry into the local OR-Map
    with a fresh dot.
-2. The registry's `mycelium_replica` instance builds a delta of
+2. The registry's `barrel_p2p_replica` instance builds a delta of
    "what changed" and broadcasts it through
    [Plumtree](gossip-broadcast.md).
 3. Each peer receives the delta and merges it into its own
@@ -79,18 +79,18 @@ Three lookup primitives, in increasing scope:
 
 ```erlang
 %% Local pids only.
-mycelium:lookup_local(Name) -> {ok, pid()} | {error, not_found}.
+barrel_p2p:lookup_local(Name) -> {ok, pid()} | {error, not_found}.
 
 %% Every replica we know about, including remote ones.
-mycelium:lookup(Name) -> {ok, [#service_entry{}]} | {error, not_found}.
+barrel_p2p:lookup(Name) -> {ok, [#service_entry{}]} | {error, not_found}.
 
 %% Single best match: local preferred, then remote, then overlay.
-mycelium:whereis_service(Name) ->
+barrel_p2p:whereis_service(Name) ->
     {ok, pid()}              %% local
   | {ok, node(), pid()}      %% remote
   | {error, not_found}.
 
-mycelium:whereis_service(Name, #{retries => 3}).
+barrel_p2p:whereis_service(Name, #{retries => 3}).
 ```
 
 `whereis_service/1` is the function you reach for from
@@ -105,7 +105,7 @@ The third argument to `register_service/2` is a map. The map is
 replicated alongside the name and pid:
 
 ```erlang
-mycelium:register_service(worker_service, #{
+barrel_p2p:register_service(worker_service, #{
     shard => 1,
     capacity => 10000,
     version => <<"1.4.2">>
@@ -132,13 +132,13 @@ registering node:
 
 ```erlang
 %% On node A
-mycelium:register_service(worker, #{shard => 1}).
+barrel_p2p:register_service(worker, #{shard => 1}).
 
 %% On node B
-mycelium:register_service(worker, #{shard => 2}).
+barrel_p2p:register_service(worker, #{shard => 2}).
 
 %% From node C
-{ok, Entries} = mycelium:lookup(worker).
+{ok, Entries} = barrel_p2p:lookup(worker).
 %% length(Entries) =:= 2
 ```
 
@@ -152,11 +152,11 @@ existing entries before registering.
 A subscriber receives messages when services come and go:
 
 ```erlang
-mycelium:subscribe_services().
+barrel_p2p:subscribe_services().
 %% Receives:
-%%   {mycelium_service_event, {service_registered, Name, Node}}
-%%   {mycelium_service_event, {service_unregistered, Name, Node}}
-%%   {mycelium_service_event, {service_down, Name, Node, Reason}}
+%%   {barrel_p2p_service_event, {service_registered, Name, Node}}
+%%   {barrel_p2p_service_event, {service_unregistered, Name, Node}}
+%%   {barrel_p2p_service_event, {service_down, Name, Node, Reason}}
 ```
 
 `service_down` fires when the registered pid dies (the registry
@@ -166,27 +166,27 @@ propagates.
 
 ## Via callbacks
 
-Mycelium implements the standard via-name interface, so
+Barrel P2P implements the standard via-name interface, so
 `gen_server` (and any module that uses the same convention) can
-use mycelium names directly:
+use barrel_p2p names directly:
 
 ```erlang
-%% Start a gen_server registered through mycelium
-gen_server:start({via, mycelium, my_service}, my_module, [], []).
+%% Start a gen_server registered through barrel_p2p
+gen_server:start({via, barrel_p2p, my_service}, my_module, [], []).
 
 %% Call it by name
-gen_server:call({via, mycelium, my_service}, request).
+gen_server:call({via, barrel_p2p, my_service}, request).
 
 %% Send to it
-mycelium:send(my_service, Msg).
+barrel_p2p:send(my_service, Msg).
 ```
 
-This makes mycelium a drop-in replacement for `gproc`-style
+This makes barrel_p2p a drop-in replacement for `gproc`-style
 name registration when the name needs to be cluster-wide.
 
 For remote services, the registry returns a *service proxy*: a
 local pid that forwards `gen_server` calls and casts to the
-remote service. The proxy is what makes via-`mycelium` work for
+remote service. The proxy is what makes via-`barrel_p2p` work for
 processes that live on another node.
 
 ## Common patterns
@@ -194,10 +194,10 @@ processes that live on another node.
 ### Pool of workers
 
 ```erlang
--include_lib("mycelium/include/mycelium.hrl").
+-include_lib("barrel_p2p/include/barrel_p2p.hrl").
 
 least_loaded(Name) ->
-    {ok, Entries} = mycelium:lookup(Name),
+    {ok, Entries} = barrel_p2p:lookup(Name),
     Sorted = lists:sort(
         fun(A, B) ->
             maps:get(load, A#service_entry.meta, 0)
@@ -215,7 +215,7 @@ key publishes a load signal that callers can use.
 
 ```erlang
 call_service(Name, Request) ->
-    case mycelium:whereis_service(Name, #{retries => 3}) of
+    case barrel_p2p:whereis_service(Name, #{retries => 3}) of
         {ok, Pid} ->
             call_with_timeout(Pid, Request);
         {ok, _Node, Pid} ->
@@ -237,10 +237,10 @@ call_with_timeout(Pid, Request) ->
 
 ```erlang
 init(_) ->
-    mycelium:subscribe_services(),
+    barrel_p2p:subscribe_services(),
     {ok, #{cache => #{}}}.
 
-handle_info({mycelium_service_event, {service_down, Name, _N, _R}}, S) ->
+handle_info({barrel_p2p_service_event, {service_down, Name, _N, _R}}, S) ->
     {noreply, S#{cache := maps:remove(Name, maps:get(cache, S))}};
 handle_info(_, S) ->
     {noreply, S}.

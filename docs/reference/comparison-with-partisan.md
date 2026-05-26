@@ -1,13 +1,13 @@
-# Mycelium and Partisan
+# Barrel P2P and Partisan
 
-Both mycelium and [Partisan](https://github.com/lasp-lang/partisan)
+Both barrel_p2p and [Partisan](https://github.com/lasp-lang/partisan)
 address the limits of Erlang's built-in distribution: the full-mesh
 topology that becomes expensive past a few dozen nodes, and the
 lack of secure-by-default authentication between peers. They reach
 that target from different directions; this document helps you
 choose between them.
 
-The short version: pick mycelium when you want service discovery,
+The short version: pick barrel_p2p when you want service discovery,
 secure dist out of the box, and few configuration choices. Pick
 Partisan when you want topology flexibility, explicit message
 channels, and a research-grade toolkit.
@@ -22,7 +22,7 @@ with configurable parallelism. Partisan is designed for research
 on distributed protocols and for production systems that need the
 flexibility.
 
-**Mycelium** is an enhancement to Erlang distribution. It runs as
+**Barrel P2P** is an enhancement to Erlang distribution. It runs as
 a proto_dist module, so `Pid ! Msg`, `gen_server:call/2`,
 `rpc:call/4`, and `global` keep working. It ships one membership
 protocol (HyParView), one broadcast protocol (Plumtree), one
@@ -32,7 +32,7 @@ configuration surface is small.
 
 ## Side by side
 
-| Dimension                         | Partisan                                                       | Mycelium                                                                |
+| Dimension                         | Partisan                                                       | Barrel P2P                                                                |
 |-----------------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------|
 | Relationship to Erlang dist       | Replaces                                                       | Enhances (proto_dist module over QUIC)                                  |
 | Topology                          | Configurable (full mesh, HyParView, client-server, custom)     | HyParView only                                                          |
@@ -61,7 +61,7 @@ declare multiple channels with different parallelism degrees, and
 the framework will fan messages out across the configured
 connections.
 
-In mycelium, you reach for whatever you would have reached for in
+In barrel_p2p, you reach for whatever you would have reached for in
 plain Erlang:
 
 ```erlang
@@ -69,7 +69,7 @@ plain Erlang:
 Pid ! Message.
 
 %% Or look up a service by name
-{ok, _Node, Pid} = mycelium:whereis_service(my_service),
+{ok, _Node, Pid} = barrel_p2p:whereis_service(my_service),
 gen_server:call(Pid, Request).
 ```
 
@@ -90,17 +90,17 @@ In Partisan, you pick a topology backend:
 ]}
 ```
 
-In mycelium, you tune HyParView's two main parameters; there is
+In barrel_p2p, you tune HyParView's two main parameters; there is
 no other topology to choose:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {active_size, 5},
     {passive_size, 30}
 ]}
 ```
 
-If you want a non-HyParView topology, mycelium is not the right
+If you want a non-HyParView topology, barrel_p2p is not the right
 library.
 
 ## How service discovery works
@@ -109,17 +109,17 @@ Partisan does not ship service discovery. You can build it on top
 of `partisan_plumtree_backend` (the upstream broadcast layer) or
 integrate an external registry like Consul.
 
-Mycelium ships a service registry:
+Barrel P2P ships a service registry:
 
 ```erlang
 %% Register
-mycelium:register_service(my_service, #{version => "1.0"}).
+barrel_p2p:register_service(my_service, #{version => "1.0"}).
 
 %% Discover anywhere in the cluster
-{ok, _Node, Pid} = mycelium:whereis_service(my_service).
+{ok, _Node, Pid} = barrel_p2p:whereis_service(my_service).
 
 %% Subscribe to changes
-mycelium:subscribe_services().
+barrel_p2p:subscribe_services().
 ```
 
 The registry is a CRDT (an Observed-Remove Map). Adds and
@@ -127,9 +127,9 @@ removes commute; multiple replicas converge without coordination.
 A registration on node A is visible from node B within a fraction
 of a second.
 
-## When to pick mycelium
+## When to pick barrel_p2p
 
-If you can answer "yes" to two or more of these, mycelium is
+If you can answer "yes" to two or more of these, barrel_p2p is
 probably the right choice:
 
 - "I want service discovery in the box, not as a separate
@@ -143,7 +143,7 @@ probably the right choice:
 - "I want a small cluster (10–500 nodes) with secure peer
   identity."
 
-Mycelium is a good fit for microservice-style applications that
+Barrel P2P is a good fit for microservice-style applications that
 need to discover sibling services by name, applications migrating
 off the full-mesh dist into a partial-membership topology, and
 internal tools that want a secure dist without standing up a CA.
@@ -169,7 +169,7 @@ explicit channel control is part of the design.
 
 ## Migration sketches
 
-### Partisan to mycelium
+### Partisan to barrel_p2p
 
 Membership calls change:
 
@@ -178,9 +178,9 @@ Membership calls change:
 partisan_peer_service:join(Node).
 partisan_peer_service:members().
 
-%% Mycelium
-mycelium:join(Node).
-mycelium:active_view().
+%% Barrel P2P
+barrel_p2p:join(Node).
+barrel_p2p:active_view().
 ```
 
 Message forwarding becomes service discovery plus a normal send:
@@ -189,21 +189,21 @@ Message forwarding becomes service discovery plus a normal send:
 %% Partisan
 partisan_peer_service:forward_message(Node, Msg).
 
-%% Mycelium
-{ok, _Node, Pid} = mycelium:whereis_service(target_service),
+%% Barrel P2P
+{ok, _Node, Pid} = barrel_p2p:whereis_service(target_service),
 Pid ! Msg.
 ```
 
 Channels disappear; everything goes through standard Erlang
 distribution. If you depended on channel parallelism for
-throughput, the carrier already provides it: mycelium's QUIC
+throughput, the carrier already provides it: barrel_p2p's QUIC
 connection routes distribution messages across a pool of streams,
 hashing each `{From, To}` process pair onto its own stream (the
 control stream stays separate and highest priority). Independent
 process pairs run in parallel without head-of-line blocking, with
 no channels to declare.
 
-### Mycelium to Partisan
+### Barrel P2P to Partisan
 
 You will need to write or wire in a service-discovery story.
 Either build one on top of Partisan's broadcast layer, or
@@ -220,16 +220,16 @@ projects optimise for different shapes of workload. A few
 qualitative notes:
 
 - **Connection count.** Partisan with full-mesh keeps O(n^2)
-  connections; mycelium and Partisan-with-HyParView keep O(n log n).
-- **Encryption.** Mycelium is encrypted by default (QUIC).
+  connections; barrel_p2p and Partisan-with-HyParView keep O(n log n).
+- **Encryption.** Barrel P2P is encrypted by default (QUIC).
   Partisan adds TLS on top of TCP only when you opt in.
-- **Service-lookup latency.** Mycelium's registry hits the local
+- **Service-lookup latency.** Barrel P2P's registry hits the local
   CRDT cache for known services; Partisan's depends on what you
   built on top of broadcast.
 - **Broadcast cost.** Both projects can use Plumtree; the algorithm
-  is the same. Mycelium ships it integrated; Partisan ships it as
+  is the same. Barrel P2P ships it integrated; Partisan ships it as
   one of several broadcast modules.
-- **Stream parallelism.** mycelium's QUIC carrier hashes each
+- **Stream parallelism.** barrel_p2p's QUIC carrier hashes each
   `{From, To}` process pair onto its own stream from a per-connection
   pool, so independent flows do not head-of-line block one another
   and control traffic is prioritised above data. This is automatic;
@@ -243,13 +243,13 @@ scale to clusters of hundreds of nodes.
 
 | If you need...                          | Use      |
 |----------------------------------------|----------|
-| Built-in service discovery              | Mycelium |
+| Built-in service discovery              | Barrel P2P |
 | Multiple topology backends              | Partisan |
-| Standard `Pid ! Msg` and `gen_server`   | Mycelium |
+| Standard `Pid ! Msg` and `gen_server`   | Barrel P2P |
 | Explicit per-class message channels     | Partisan |
-| Automatic per-pair stream parallelism   | Mycelium |
-| Minimal configuration                   | Mycelium |
+| Automatic per-pair stream parallelism   | Barrel P2P |
+| Minimal configuration                   | Barrel P2P |
 | Maximum flexibility                     | Partisan |
-| QUIC transport + Ed25519 in the box     | Mycelium |
+| QUIC transport + Ed25519 in the box     | Barrel P2P |
 | TCP + your own protocols                | Partisan |
 | Production service mesh on Erlang       | Either   |

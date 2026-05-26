@@ -4,7 +4,7 @@ You want to run something at a future time, somewhere in the cluster,
 and have it survive the node that scheduled it. A cron-like "run the
 nightly rollup at 02:00", a "retry this in 5 minutes", a "expire this
 session at midnight". `erlang:send_after/3` dies with its node;
-`mycelium:remind/3` does not.
+`barrel_p2p:remind/3` does not.
 
 ## Schedule a one-shot job
 
@@ -15,16 +15,16 @@ your process receives the fire:
 -behaviour(gen_server).
 
 init(_) ->
-    ok = mycelium:subscribe_reminders(),
+    ok = barrel_p2p:subscribe_reminders(),
     {ok, #{}}.
 
 schedule_rollup(Date) ->
     Key     = {nightly_rollup, Date},
     FireAt  = at_0200(Date),                 %% ms, system_time scale
     Payload = #{date => Date},
-    mycelium:remind(Key, FireAt, Payload).
+    barrel_p2p:remind(Key, FireAt, Payload).
 
-handle_info({mycelium_reminder, {nightly_rollup, Date}, _Payload, Fence}, S) ->
+handle_info({barrel_p2p_reminder, {nightly_rollup, Date}, _Payload, Fence}, S) ->
     {noreply, run_rollup_once(Date, Fence, S)}.
 ```
 
@@ -47,7 +47,7 @@ When you think in "from now" rather than absolute time:
 
 ```erlang
 %% Retry in 5 minutes.
-mycelium:remind_after({retry, JobId}, 5 * 60 * 1000, JobSpec).
+barrel_p2p:remind_after({retry, JobId}, 5 * 60 * 1000, JobSpec).
 ```
 
 `remind_after/3` converts the delay to an absolute target immediately,
@@ -79,8 +79,8 @@ Re-setting the same `Key` replaces the reminder with a fresh version and
 invalidates the old timer, so reschedule by calling `remind/3` again:
 
 ```erlang
-mycelium:remind(Key, NewFireAt, Payload).   %% replaces
-mycelium:cancel_reminder(Key).              %% cancels cluster-wide
+barrel_p2p:remind(Key, NewFireAt, Payload).   %% replaces
+barrel_p2p:cancel_reminder(Key).              %% cancels cluster-wide
 ```
 
 ## Recurring jobs
@@ -89,10 +89,10 @@ Reminders are one-shot. For a recurring job, re-arm the next occurrence
 from inside the handler:
 
 ```erlang
-handle_info({mycelium_reminder, {nightly_rollup, Date}, P, Fence}, S) ->
+handle_info({barrel_p2p_reminder, {nightly_rollup, Date}, P, Fence}, S) ->
     S1 = run_rollup_once(Date, Fence, S),
     Next = next_day(Date),
-    ok = mycelium:remind({nightly_rollup, Next}, at_0200(Next), P),
+    ok = barrel_p2p:remind({nightly_rollup, Next}, at_0200(Next), P),
     {noreply, S1}.
 ```
 

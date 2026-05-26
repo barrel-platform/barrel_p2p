@@ -7,7 +7,7 @@
 %% Start a chat client that listens for messages
 start() ->
     Pid = spawn_link(fun() ->
-        mycelium:subscribe_services(),
+        barrel_p2p:subscribe_services(),
         listener_loop()
     end),
     {ok, Pid}.
@@ -75,13 +75,13 @@ listener_loop() ->
             io:format("[~p] ~4..0B-~2..0B-~2..0B ~2..0B:~2..0B:~2..0B <~p> ~s~n",
                       [Room, Y, M, D, H, Mi, S, FromNode, Text]),
             listener_loop();
-        {mycelium_service_event, {service_registered, {chat_room, Room}, Node}} ->
+        {barrel_p2p_service_event, {service_registered, {chat_room, Room}, Node}} ->
             io:format("*** Room '~p' available on ~p~n", [Room, Node]),
             listener_loop();
-        {mycelium_service_event, {service_unregistered, {chat_room, Room}, Node}} ->
+        {barrel_p2p_service_event, {service_unregistered, {chat_room, Room}, Node}} ->
             io:format("*** Room '~p' closed on ~p~n", [Room, Node]),
             listener_loop();
-        {mycelium_service_event, _Other} ->
+        {barrel_p2p_service_event, _Other} ->
             listener_loop();
         stop ->
             ok;

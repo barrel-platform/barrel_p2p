@@ -1,7 +1,7 @@
-# Quickstart: a minimal app on Mycelium
+# Quickstart: a minimal app on Barrel P2P
 
 The smallest useful OTP application built on
-[Mycelium](https://github.com/benoitc/mycelium): a worker that registers
+[Barrel P2P](https://github.com/barrel-platform/barrel_p2p): a worker that registers
 itself in the cluster-wide service registry, and a tiny API that discovers
 and calls a worker on any node.
 
@@ -13,13 +13,13 @@ tutorial.
 
 ```
 quickstart/
-├── rebar.config            # mycelium dep + a release
+├── rebar.config            # barrel_p2p dep + a release
 ├── config/
-│   ├── sys.config          # mycelium env (ports, auth, discovery)
+│   ├── sys.config          # barrel_p2p env (ports, auth, discovery)
 │   └── vm.args             # the three dist flags + node name + cookie
 ├── scripts/run-local.sh    # run an isolated node locally (for the 2-node demo)
 └── src/
-    ├── quickstart.app.src   # lists mycelium in `applications`
+    ├── quickstart.app.src   # lists barrel_p2p in `applications`
     ├── quickstart_app.erl   # application behaviour
     ├── quickstart_sup.erl   # supervisor
     ├── quickstart_worker.erl# gen_server that registers a service
@@ -32,22 +32,22 @@ quickstart/
 rebar3 compile
 ```
 
-The dependency is mycelium (which pulls in `quic`, `hlc`, `instrument`).
-`scripts/run-local.sh` links this repo as a `_checkouts/mycelium` so it
+The dependency is barrel_p2p (which pulls in `quic`, `hlc`, `instrument`).
+`scripts/run-local.sh` links this repo as a `_checkouts/barrel_p2p` so it
 builds against your local checkout; for a standalone project use the git or
 hex dependency in `rebar.config`.
 
 ## Try it on one node
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname q1
 ```
 
 ```erlang
 1> quickstart:work(hello).
 {worked_on, q1@yourhost, hello}
-2> mycelium:lookup(quickstart_worker).
+2> barrel_p2p:lookup(quickstart_worker).
 {ok, [{service_entry, quickstart_worker, <0.123.0>, q1@yourhost, #{node => q1@yourhost}}]}
 3> quickstart:who().            %% node name + Ed25519 fingerprint to share
 {q1@yourhost, <<...32 bytes...>>}

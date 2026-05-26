@@ -1,6 +1,6 @@
 # Authentication
 
-Mycelium authenticates every dist connection with Ed25519
+Barrel P2P authenticates every dist connection with Ed25519
 signatures. The authentication runs after the QUIC TLS handshake
 and before Erlang's dist handshake, so two nodes that have not
 proved possession of the right private key never reach the cookie
@@ -14,7 +14,7 @@ recovery).
 
 The QUIC TLS handshake gives us an encrypted transport, but the
 certificate is self-signed. There is no certificate authority
-mycelium expects you to trust, and a fresh node generates its own
+barrel_p2p expects you to trust, and a fresh node generates its own
 TLS material on first boot. So the TLS layer establishes a secure
 channel, but it does not say *who* is on the other side.
 
@@ -89,7 +89,7 @@ different key for the same node atom can be accepted.
 ### TOFU (default)
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {auth_enabled, true},
     {auth_trust_mode, tofu}
 ]}
@@ -106,7 +106,7 @@ The same property powers SSH's `known_hosts` model.
 ### Strict
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {auth_enabled, true},
     {auth_trust_mode, strict}
 ]}
@@ -141,7 +141,7 @@ have a separate "import" step beyond placing the file.
 A few invariants the runtime preserves:
 
 - The private key file is created with mode 0600. The helper that
-  writes secret material (`mycelium_file:write_secure/2`) chmods
+  writes secret material (`barrel_p2p_file:write_secure/2`) chmods
   the temporary file *before* any plaintext bytes are written, so
   a co-tenant cannot race the write.
 - Writes go through a tmp file and rename, so a crash mid-write
@@ -169,7 +169,7 @@ Step 1: generate each node's keypair (the simplest way is to
 boot once and stop):
 
 ```bash
-erl -sname node1 -eval 'application:ensure_all_started(mycelium), init:stop().'
+erl -sname node1 -eval 'application:ensure_all_started(barrel_p2p), init:stop().'
 ```
 
 Step 2: collect the public keys:
@@ -191,7 +191,7 @@ done
 Step 4: flip the mode on every node:
 
 ```erlang
-{mycelium, [{auth_trust_mode, strict}]}
+{barrel_p2p, [{auth_trust_mode, strict}]}
 ```
 
 After this, the cluster will accept only the listed peers. Adding
@@ -205,7 +205,7 @@ restarting:
 
 ```erlang
 PeerPubKey = <<...32 bytes...>>,
-ok = mycelium_dist_keys:store_key('node@host', PeerPubKey).
+ok = barrel_p2p_dist_keys:store_key('node@host', PeerPubKey).
 ```
 
 `store_key/2` writes the file atomically; the runtime is happy to
@@ -247,16 +247,16 @@ Two rotations to keep distinct:
 - **Certificate rotation** (QUIC TLS material). Requires a node
   restart for the listener to load the new credentials.
 
-Both are wrapped by `mycelium_rotate`:
+Both are wrapped by `barrel_p2p_rotate`:
 
 ```erlang
-{ok, Info} = mycelium_rotate:rotate_identity().
+{ok, Info} = barrel_p2p_rotate:rotate_identity().
 %% Info = #{key_file := PrivPath,
 %%          cert_file := PubPath,
 %%          backup_dir := BackupPath,
 %%          restart_required := false}
 
-{ok, Info} = mycelium_rotate:rotate_cert().
+{ok, Info} = barrel_p2p_rotate:rotate_cert().
 %% Info#{restart_required := true}
 ```
 
@@ -267,7 +267,7 @@ is what you copy back if you decide to roll back.
 ### Identity rotation runbook
 
 ```erlang
-{ok, _} = mycelium_rotate:rotate_identity().
+{ok, _} = barrel_p2p_rotate:rotate_identity().
 ```
 
 The new public key takes effect on the next handshake. What you
@@ -289,10 +289,10 @@ do next depends on the peer side's trust mode:
 A cert rotation requires a node restart. The recommended order
 per node:
 
-1. `mycelium:leave/0` so peers move you to passive view
+1. `barrel_p2p:leave/0` so peers move you to passive view
    immediately.
-2. `mycelium_rotate:rotate_cert/0`.
-3. `application:stop(mycelium)` then `init:stop/0`.
+2. `barrel_p2p_rotate:rotate_cert/0`.
+3. `application:stop(barrel_p2p)` then `init:stop/0`.
 4. Bring the node back up; the listener loads the new cert.
 
 Peers will see one `peer_down` event and re-establish on next
@@ -310,18 +310,18 @@ cert rotations, restart the node after the swap.
 
 ```erlang
 %% This node's identity.
-{ok, MyPub} = mycelium_dist_auth:get_public_key().
-mycelium_dist_keys:fingerprint(MyPub).        %% SHA-256 of the pubkey
+{ok, MyPub} = barrel_p2p_dist_auth:get_public_key().
+barrel_p2p_dist_keys:fingerprint(MyPub).        %% SHA-256 of the pubkey
 
 %% All pinned peers.
-mycelium_dist_keys:list_trusted().
+barrel_p2p_dist_keys:list_trusted().
 
 %% A specific peer's pinned key, if any.
-mycelium_dist_keys:lookup_pin('peer@host').
+barrel_p2p_dist_keys:lookup_pin('peer@host').
 %% => not_pinned | {pinned, <<32 bytes>>}
 
 %% Current trust mode.
-mycelium_dist_keys:get_trust_mode().
+barrel_p2p_dist_keys:get_trust_mode().
 %% => tofu | strict
 ```
 
@@ -332,7 +332,7 @@ patterns that are exempt from the Ed25519 handshake. They get
 through on the strength of the dist cookie alone.
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {cookie_only_nodes, ['probe@*', 'monitor@trusted.example']}
 ]}
 ```
@@ -351,7 +351,7 @@ short-circuit to apply.
 
 ## API reference
 
-### `mycelium_dist_keys`
+### `barrel_p2p_dist_keys`
 
 | Function                  | Purpose                                       |
 |---------------------------|-----------------------------------------------|
@@ -366,7 +366,7 @@ short-circuit to apply.
 | `get_trust_mode/0`        | Current trust mode.                           |
 | `fingerprint/1`           | SHA-256 of a public key, for logs.           |
 
-### `mycelium_dist_auth`
+### `barrel_p2p_dist_auth`
 
 | Function                  | Purpose                                       |
 |---------------------------|-----------------------------------------------|
@@ -376,7 +376,7 @@ short-circuit to apply.
 | `is_cookie_only_allowed/1`| Check the `cookie_only_nodes` whitelist.      |
 | `validate_peer_ts/1`      | Wall-clock skew sanity check (defense-in-depth). |
 
-### `mycelium_rotate`
+### `barrel_p2p_rotate`
 
 | Function             | Purpose                                            |
 |----------------------|----------------------------------------------------|
@@ -386,7 +386,7 @@ short-circuit to apply.
 ## Configuration reference
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     %% Master switch. Defaults to true. Setting this to false in
     %% production removes the Ed25519 layer; the dist cookie
     %% becomes the only authentication. Do not do this.
@@ -417,7 +417,7 @@ short-circuit to apply.
 
 ## Security notes
 
-- **Keep `node.key` mode 0600.** Mycelium writes new keys this
+- **Keep `node.key` mode 0600.** Barrel P2P writes new keys this
   way; if you copy files in from elsewhere, verify the
   permissions.
 - **Use strict mode when the network is hostile.** TOFU's
@@ -431,6 +431,6 @@ short-circuit to apply.
   cross-check is 30 seconds wide by default. NTP-level
   synchronisation is sufficient; you do not need millisecond
   precision.
-- **Rotate the dist cookie.** The default cookie `mycelium` is a
+- **Rotate the dist cookie.** The default cookie `barrel_p2p` is a
   placeholder. Set `dist_cookie` to a high-entropy value in any
   environment where you would not be comfortable disabling Ed25519.

@@ -1,14 +1,14 @@
 # Overview
 
-This section introduces mycelium: what it is, why it exists, and
+This section introduces barrel_p2p: what it is, why it exists, and
 how to start using it. Read it in order if you are new to the
 project.
 
 ## In this section
 
-- [What is mycelium?](what-is-mycelium.md) — the project in one
+- [What is barrel_p2p?](what-is-barrel_p2p.md) — the project in one
   page, with the architecture diagram and the load-bearing ideas.
-- [Benefits and trade-offs](benefits.md) — why pick mycelium, and
+- [Benefits and trade-offs](benefits.md) — why pick barrel_p2p, and
   what you give up by doing so.
 - [Introduction](introduction.md) — a longer narrative that walks
   through every layer in plain language.

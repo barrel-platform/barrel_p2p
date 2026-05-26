@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-# Entrypoint for mycelium docker integration tests.
+# Entrypoint for barrel_p2p docker integration tests.
 # Roles: seed, strict_seed, member, auth_test_runner.
 #
-# Mycelium runs on top of upstream `quic_dist'. The Ed25519 identity
+# Barrel P2P runs on top of upstream `quic_dist'. The Ed25519 identity
 # protocol is exposed as a `quic_dist_auth' callback in
-# `mycelium_dist_auth_callback'. Cert/key files are auto-generated
+# `barrel_p2p_dist_auth_callback'. Cert/key files are auto-generated
 # under /app/data/quic before the BEAM is started so quic_dist:listen
 # can load them.
 
@@ -26,7 +26,7 @@ setup_auth_keys() {
 }
 
 # Generate the self-signed TLS material that quic_dist needs to listen.
-# Idempotent; mycelium_quic_cert:ensure_cert/0 only writes new files
+# Idempotent; barrel_p2p_quic_cert:ensure_cert/0 only writes new files
 # when they are missing.
 ensure_quic_cert() {
     local cert_dir="/app/data/quic"
@@ -34,9 +34,9 @@ ensure_quic_cert() {
     erl -noshell -pa /app/_build/test/lib/*/ebin \
         -eval "
             {ok, _} = application:ensure_all_started(public_key),
-            application:load(mycelium),
-            application:set_env(mycelium, quic_cert_dir, \"$cert_dir\"),
-            ok = mycelium_quic_cert:ensure_cert(),
+            application:load(barrel_p2p),
+            application:set_env(barrel_p2p, quic_cert_dir, \"$cert_dir\"),
+            ok = barrel_p2p_quic_cert:ensure_cert(),
             halt(0).
         "
 }
@@ -58,13 +58,13 @@ wait_for_node() {
         ((attempt++))
     done
     echo "Node $node_host is reachable"
-    # The cluster runs with -proto_dist mycelium and the mycelium_epmd
+    # The cluster runs with -proto_dist barrel_p2p and the barrel_p2p_epmd
     # discovery module, so there is no stock EPMD on port 4369 to poll.
     # Docker compose's `service_healthy` dependency (driven by
     # /app/scripts/health_check.sh) is the real readiness gate.
 }
 
-# Start an Erlang node with -proto_dist mycelium.
+# Start an Erlang node with -proto_dist barrel_p2p.
 dist_port_for() {
     # Pinned ports keep cluster-topology.config's static discovery
     # entries valid across runs.
@@ -82,7 +82,7 @@ start_node() {
 
     local contact_config=""
     if [ -n "$contact_node" ]; then
-        contact_config="-mycelium contact_nodes ['$contact_node']"
+        contact_config="-barrel_p2p contact_nodes ['$contact_node']"
     fi
 
     local short_name
@@ -98,31 +98,31 @@ start_node() {
     local auth_config=""
     if [ "$AUTH_ENABLED" = "true" ]; then
         setup_auth_keys
-        auth_config="-mycelium auth_enabled true -mycelium auth_key_dir '\"/app/data/keys\"' -mycelium auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
+        auth_config="-barrel_p2p auth_enabled true -barrel_p2p auth_key_dir '\"/app/data/keys\"' -barrel_p2p auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
     else
-        auth_config="-mycelium auth_enabled false"
+        auth_config="-barrel_p2p auth_enabled false"
     fi
 
     local whitelist_config=""
     if [ -n "$COOKIE_ONLY_NODES" ]; then
-        whitelist_config="-mycelium cookie_only_nodes [$COOKIE_ONLY_NODES]"
+        whitelist_config="-barrel_p2p cookie_only_nodes [$COOKIE_ONLY_NODES]"
     fi
 
     local dist_cookie_config=""
     if [ -n "$DIST_COOKIE" ]; then
-        dist_cookie_config="-mycelium dist_cookie $DIST_COOKIE"
+        dist_cookie_config="-barrel_p2p dist_cookie $DIST_COOKIE"
     fi
 
     local startup_eval
     if [ -n "$contact_node" ]; then
         startup_eval="
-            application:ensure_all_started(mycelium),
-            file:write_file(\"/tmp/mycelium_ready\", <<>>),
+            application:ensure_all_started(barrel_p2p),
+            file:write_file(\"/tmp/barrel_p2p_ready\", <<>>),
             JoinFun = fun JoinLoop(0) ->
                 io:format(\"Failed to join cluster after retries~n\"),
                 ok;
             JoinLoop(N) ->
-                case mycelium:join('$contact_node') of
+                case barrel_p2p:join('$contact_node') of
                     ok ->
                         io:format(\"Successfully joined $contact_node~n\"),
                         ok;
@@ -135,7 +135,7 @@ start_node() {
             JoinFun(30)
         "
     else
-        startup_eval="application:ensure_all_started(mycelium), file:write_file(\"/tmp/mycelium_ready\", <<>>)"
+        startup_eval="application:ensure_all_started(barrel_p2p), file:write_file(\"/tmp/barrel_p2p_ready\", <<>>)"
     fi
 
     echo "Cookie only nodes: ${COOKIE_ONLY_NODES:-none}"
@@ -152,10 +152,10 @@ start_node() {
         $whitelist_config \
         $dist_cookie_config \
         $contact_config \
-        -proto_dist mycelium \
-        -epmd_module mycelium_epmd \
+        -proto_dist barrel_p2p \
+        -epmd_module barrel_p2p_epmd \
         -start_epmd false \
-        -mycelium_dist_port "$dist_port" \
+        -barrel_p2p_dist_port "$dist_port" \
         -eval "$startup_eval" \
         -noshell
 }
@@ -181,24 +181,24 @@ run_auth_tests() {
 
     local auth_config=""
     if [ "$AUTH_ENABLED" = "true" ]; then
-        auth_config="-mycelium auth_enabled true -mycelium auth_key_dir '\"/app/data/keys\"' -mycelium auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
+        auth_config="-barrel_p2p auth_enabled true -barrel_p2p auth_key_dir '\"/app/data/keys\"' -barrel_p2p auth_trust_mode ${AUTH_TRUST_MODE:-tofu}"
     fi
 
     echo "Running authentication tests..."
     cd /app
 
     # Pre-provision the test_runner's Ed25519 keypair into the same
-    # auth_key_dir the cluster nodes use. mycelium_dist_auth_stream
+    # auth_key_dir the cluster nodes use. barrel_p2p_dist_auth_stream
     # reads node.pub/node.key directly off disk on every dist
-    # handshake, and the test_runner does not start the mycelium app
-    # (so mycelium_dist_keys never auto-generates them).
+    # handshake, and the test_runner does not start the barrel_p2p app
+    # (so barrel_p2p_dist_keys never auto-generates them).
     if [ "$AUTH_ENABLED" = "true" ]; then
         erl -noshell -pa /app/_build/test/lib/*/ebin \
             -eval "
                 {ok, _} = application:ensure_all_started(crypto),
-                application:load(mycelium),
-                application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
-                ok = mycelium_dist_auth:ensure_keypair(),
+                application:load(barrel_p2p),
+                application:set_env(barrel_p2p, auth_key_dir, \"/app/data/keys\"),
+                ok = barrel_p2p_dist_auth:ensure_keypair(),
                 halt(0).
             "
     fi
@@ -208,26 +208,26 @@ run_auth_tests() {
     erl \
         -sname test_runner \
         -hidden \
-        -setcookie ${DIST_COOKIE:-mycelium} \
+        -setcookie ${DIST_COOKIE:-barrel_p2p} \
         -pa /app/_build/test/lib/*/ebin \
         -config /app/docker/cluster-topology \
         $auth_config \
-        -proto_dist mycelium \
-        -epmd_module mycelium_epmd \
+        -proto_dist barrel_p2p \
+        -epmd_module barrel_p2p_epmd \
         -start_epmd false \
         -noshell \
         -eval "
-            application:load(mycelium),
-            application:set_env(mycelium, auth_enabled, true),
-            application:set_env(mycelium, auth_key_dir, \"/app/data/keys\"),
-            application:set_env(mycelium, auth_trust_mode, tofu),
-            %% mycelium_dist_keys is the gen_server that records TOFU
+            application:load(barrel_p2p),
+            application:set_env(barrel_p2p, auth_enabled, true),
+            application:set_env(barrel_p2p, auth_key_dir, \"/app/data/keys\"),
+            application:set_env(barrel_p2p, auth_trust_mode, tofu),
+            %% barrel_p2p_dist_keys is the gen_server that records TOFU
             %% pubkeys from each peer. Without it, the auth handshake
             %% reaches store_key_if_new and crashes with noproc.
-            {ok, _} = mycelium_dist_keys:start_link(),
+            {ok, _} = barrel_p2p_dist_keys:start_link(),
             os:putenv(\"TEST_NODES\", \"$TEST_NODES\"),
             case ct:run_test([
-                {suite, mycelium_docker_auth_SUITE},
+                {suite, barrel_p2p_docker_auth_SUITE},
                 {dir, \"/app/test\"},
                 {logdir, \"/app/test_results\"},
                 {config, \"/app/docker/cluster-topology.config\"}

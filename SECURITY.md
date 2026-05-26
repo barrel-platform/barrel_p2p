@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Mycelium is pre-1.0 and unreleased. Only the `main` branch is supported; old commits receive no fixes.
+Barrel P2P is pre-1.0 and unreleased. Only the `main` branch is supported; old commits receive no fixes.
 
 ## Reporting a Vulnerability
 
@@ -22,9 +22,9 @@ If a fix lands publicly before disclosure is coordinated, the commit message wil
 ## Scope
 
 In scope:
-- The Ed25519 distribution authentication (`mycelium_dist_auth*`, `mycelium_dist_keys`).
-- The QUIC dist carrier integration (`mycelium_dist_auth_callback`, `mycelium_discovery`).
-- Multi-hop circuit framing (`mycelium_circuit*`, `mycelium_streams`).
+- The Ed25519 distribution authentication (`barrel_p2p_dist_auth*`, `barrel_p2p_dist_keys`).
+- The QUIC dist carrier integration (`barrel_p2p_dist_auth_callback`, `barrel_p2p_discovery`).
+- Multi-hop circuit framing (`barrel_p2p_circuit*`, `barrel_p2p_streams`).
 - HyParView / Plumtree / OR-Map registry behaviour under adversarial peers.
 
 Out of scope:
@@ -37,6 +37,6 @@ Out of scope:
 These are documented design properties, not vulnerabilities:
 
 - TOFU mode (`auth_trust_mode = tofu`) trusts the first key seen for a node. Use `strict` mode if you need to pre-pin keys.
-- Mycelium has no built-in NAT traversal; bypass is left to an external relay/tunnel adapter (see `docs/external-relay.md`).
+- Barrel P2P has no built-in NAT traversal; bypass is left to an external relay/tunnel adapter (see `docs/external-relay.md`).
 - The `cookie_only_nodes` whitelist and `auth_enabled = false` disable the Ed25519 handshake (and its TLS channel binding) for matching peers. These are reduced-assurance modes: the connection is then gated by the dist cookie over an unauthenticated TLS channel, with no protection against an active MITM. Use `cookie_only_nodes` only for c-nodes that genuinely cannot speak the auth protocol, and never with the default cookie (boot refuses that combination).
 - The QUIC TLS certificate is self-signed (ECDSA P-256). Peer authentication and the anti-relay channel binding come from the Ed25519 layer, not from validating the TLS certificate.

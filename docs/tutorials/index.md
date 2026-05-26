@@ -15,7 +15,7 @@ with a running example.
   source under [`examples/quickstart`](../../examples/quickstart/README.md).
 - [Distributed chat](distributed-chat.md) — a small chat
   application that uses the service registry, service events,
-  and `gen_server` patterns over the mycelium dist channel.
+  and `gen_server` patterns over the barrel_p2p dist channel.
   The full source is under [`examples/chat`](../../examples/chat/README.md).
 
 ## After the tutorials

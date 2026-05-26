@@ -1,6 +1,6 @@
 # Create an application
 
-This tutorial builds a minimal OTP application on mycelium from scratch: a
+This tutorial builds a minimal OTP application on barrel_p2p from scratch: a
 worker that registers itself in the cluster-wide service registry, and a
 small API that discovers and calls a worker on any node. It is the setup
 companion to [Distributed chat](distributed-chat.md), which builds something
@@ -15,13 +15,13 @@ depth.
 ## What you get
 
 A normal OTP app where `Pid ! Msg`, `gen_server:call`, `global`, links and
-monitors all work as usual, but distribution rides mycelium's QUIC carrier
+monitors all work as usual, but distribution rides barrel_p2p's QUIC carrier
 and HyParView membership, and you get a built-in service registry.
 
 ## Prerequisites
 
 - Erlang/OTP 27 or later, and `rebar3`.
-- No EPMD: mycelium does not use it.
+- No EPMD: barrel_p2p does not use it.
 - One UDP port per node (the default `9100` in this example).
 
 ## Step 1: scaffold the app
@@ -37,7 +37,7 @@ In `rebar.config`:
 
 ```erlang
 {deps, [
-    {mycelium, "0.1.0"}
+    {barrel_p2p, "0.1.0"}
 ]}.
 ```
 
@@ -45,25 +45,25 @@ In `rebar.config`:
 rebar3 get-deps && rebar3 compile
 ```
 
-Mycelium pulls in the QUIC transport, `hlc`, and `instrument`.
+Barrel P2P pulls in the QUIC transport, `hlc`, and `instrument`.
 
-## Step 3: declare mycelium as a runtime dependency
+## Step 3: declare barrel_p2p as a runtime dependency
 
 List it in `src/myapp.app.src` so the release boots it before your
-supervisor starts (your services register against a running mycelium):
+supervisor starts (your services register against a running barrel_p2p):
 
 ```erlang
-{applications, [kernel, stdlib, mycelium]}
+{applications, [kernel, stdlib, barrel_p2p]}
 ```
 
 ## Step 4: configure the node
 
-`config/sys.config` (mycelium projects the underlying `quic_dist` wiring
-itself; you only set mycelium env):
+`config/sys.config` (barrel_p2p projects the underlying `quic_dist` wiring
+itself; you only set barrel_p2p env):
 
 ```erlang
 [
- {mycelium, [
+ {barrel_p2p, [
     {active_size, 5}, {passive_size, 30},   %% HyParView views
     {listen_port, 9100},                    %% pin in prod; 0 = OS-assigned
     {contact_nodes, []},                    %% seeds to auto-join at boot
@@ -74,13 +74,13 @@ itself; you only set mycelium env):
 ].
 ```
 
-`config/vm.args` (the three flags switch Erlang's distribution to mycelium):
+`config/vm.args` (the three flags switch Erlang's distribution to barrel_p2p):
 
 ```
 -name myapp@127.0.0.1
 -setcookie quickstart
--proto_dist mycelium
--epmd_module mycelium_epmd
+-proto_dist barrel_p2p
+-epmd_module barrel_p2p_epmd
 -start_epmd false
 ```
 
@@ -99,8 +99,8 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     process_flag(trap_exit, true),
-    ok = mycelium:register_service(myapp_worker, #{node => node()}),
-    ok = mycelium:register_service({worker, node()}, #{}),
+    ok = barrel_p2p:register_service(myapp_worker, #{node => node()}),
+    ok = barrel_p2p:register_service({worker, node()}, #{}),
     {ok, #{}}.
 
 handle_call({work, X}, _From, State) ->
@@ -112,8 +112,8 @@ handle_cast(_Msg, State) -> {noreply, State}.
 handle_info(_Info, State) -> {noreply, State}.
 
 terminate(_Reason, _State) ->
-    mycelium:unregister_service(myapp_worker),
-    mycelium:unregister_service({worker, node()}),
+    barrel_p2p:unregister_service(myapp_worker),
+    barrel_p2p:unregister_service({worker, node()}),
     ok.
 ```
 
@@ -134,7 +134,7 @@ work(X)          -> call(myapp_worker, {work, X}).
 work_on(Node, X) -> call({worker, Node}, {work, X}).
 
 call(Name, Msg) ->
-    case mycelium:whereis_service(Name) of
+    case barrel_p2p:whereis_service(Name) of
         {ok, Pid}        -> gen_server:call(Pid, Msg);
         {ok, _Node, Pid} -> gen_server:call(Pid, Msg);
         {error, not_found} -> {error, no_worker}
@@ -150,14 +150,14 @@ supervisor from your `application` callback. (See `quickstart_sup.erl` and
 ## Step 7: run one node
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname q1
 ```
 
 ```erlang
 1> myapp:work(hello).
 {worked_on, q1@yourhost, hello}
-2> mycelium:lookup(myapp_worker).
+2> barrel_p2p:lookup(myapp_worker).
 {ok, [{service_entry, myapp_worker, <0.123.0>, q1@yourhost, #{node => q1@yourhost}}]}
 ```
 

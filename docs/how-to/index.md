@@ -33,7 +33,7 @@ is X?". For the conceptual side, read the
 - [Schedule durable jobs](schedule-durable-jobs.md) — run work at a
   future time with `remind/3`, surviving the scheduling node's death.
 - [Share replicated state](share-replicated-state.md) — a
-  cluster-wide config/flags map with `mycelium_map`: put, get,
+  cluster-wide config/flags map with `barrel_p2p_map`: put, get,
   subscribe, validate, tune GC.
 
 ## After how-tos

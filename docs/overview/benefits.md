@@ -1,6 +1,6 @@
 # Benefits and trade-offs
 
-This page is a short, honest list. What you get with mycelium,
+This page is a short, honest list. What you get with barrel_p2p,
 what you give up, and what is intentionally out of scope.
 
 ## What you get
@@ -13,7 +13,7 @@ across the cluster. With a few dozen nodes that is fine; past a
 few hundred it starts to bite (kernel resources, monitoring
 overhead, slow startup as joins ripple).
 
-Mycelium keeps each node connected to a small, bounded set of
+Barrel P2P keeps each node connected to a small, bounded set of
 *gossip peers* (the HyParView active view, typically five). The
 cluster as a whole stays fully addressable through OTP's
 demand-driven auto-connect. When you send to a pid on a peer
@@ -46,7 +46,7 @@ the result as a normal pid.
 ### Standard Erlang patterns still work
 
 `Pid ! Msg`, `gen_server:call/2`, `rpc:call/4`, `global`, links,
-and monitors all work over the mycelium carrier exactly as they
+and monitors all work over the barrel_p2p carrier exactly as they
 do over the default TCP carrier. If you ever need to drop down to
 raw distribution semantics, you do not have to rewrite any code
 paths.
@@ -54,7 +54,7 @@ paths.
 ### Connection migration
 
 A QUIC connection can rebind to a new local UDP 4-tuple without
-losing keys or streams. `mycelium:migrate_peer/1,2` is the
+losing keys or streams. `barrel_p2p:migrate_peer/1,2` is the
 trigger. Useful when a node's local network changes (laptop
 switching from Wi-Fi to cellular; a CGNAT shuffle changes the
 outbound IP; a tunnel reconnects).
@@ -72,7 +72,7 @@ socket.
 
 There is one membership protocol (HyParView). No full mesh, no
 client-server, no custom topology backend. If you need any of
-those, mycelium is not the right library; see
+those, barrel_p2p is not the right library; see
 [Partisan](../reference/comparison-with-partisan.md).
 
 ### Per-channel parallelism
@@ -81,7 +81,7 @@ There are no explicit message channels with per-channel
 parallelism. All Erlang dist traffic flows over one bidirectional
 QUIC stream per peer, multiplexed at the QUIC layer. For most
 workloads this matches or exceeds what you get from multiple TCP
-connections; if you require explicit channel control, mycelium is
+connections; if you require explicit channel control, barrel_p2p is
 not the right shape.
 
 ### Tunable consistency for the registry
@@ -93,7 +93,7 @@ second). If you need linearizable naming, build that on top.
 
 ### NAT traversal, hole punching, relay autodiscovery
 
-None of these ship in mycelium. If two peers cannot reach each
+None of these ship in barrel_p2p. If two peers cannot reach each
 other directly, the answer is to wire an external relay through
 the connect-time override hook
 ([route through a relay](../how-to/route-through-relay.md)).
@@ -107,8 +107,8 @@ If you can answer "yes" to any of these, look elsewhere:
 - "I need a research toolkit for experimenting with overlay
   protocols." Use [Partisan](../reference/comparison-with-partisan.md).
 - "I need linearizable cluster-wide naming." Build on top of
-  mycelium or use a coordination service (consul, etcd).
-- "I need a custom transport other than QUIC." Mycelium is QUIC
+  barrel_p2p or use a coordination service (consul, etcd).
+- "I need a custom transport other than QUIC." Barrel P2P is QUIC
   only.
 
 ## Stability tiers
@@ -121,7 +121,7 @@ The public API is split into three tiers, tracked in
 - **beta** — likely stable, may change shape across minors.
 - **experimental** — anything goes.
 
-The cluster membership API, the service registry API, the via-`mycelium`
+The cluster membership API, the service registry API, the via-`barrel_p2p`
 callbacks, and the Ed25519 trust store are `supported`. The
 streams demuxer and connection-migration trigger are `beta`. New
 features land as `experimental` first.

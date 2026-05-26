@@ -24,23 +24,23 @@ usage() {
 cd "$CHAT_DIR"
 
 # Ensure checkouts symlink exists for local development
-if [ ! -L "_checkouts/mycelium" ]; then
+if [ ! -L "_checkouts/barrel_p2p" ]; then
     mkdir -p _checkouts
-    ln -sf ../../.. _checkouts/mycelium
+    ln -sf ../../.. _checkouts/barrel_p2p
 fi
 
-# Ensure mycelium is linked in _build for rebar3 shell
-if [ -d "_build/default/lib" ] && [ ! -e "_build/default/lib/mycelium" ]; then
-    ln -sf ../../../_checkouts/mycelium/_build/default/lib/mycelium _build/default/lib/mycelium
+# Ensure barrel_p2p is linked in _build for rebar3 shell
+if [ -d "_build/default/lib" ] && [ ! -e "_build/default/lib/barrel_p2p" ]; then
+    ln -sf ../../../_checkouts/barrel_p2p/_build/default/lib/barrel_p2p _build/default/lib/barrel_p2p
 fi
 
-# Pass the listen port via -mycelium_dist_port. mycelium_dist
+# Pass the listen port via -barrel_p2p_dist_port. barrel_p2p_dist
 # auto-generates the QUIC TLS cert (data/quic/node.{crt,key}) on
 # first listen and wires the auth callback + discovery module into
 # quic_dist for us; no extra init args are needed.
 dist_args() {
     local port=$1
-    echo "-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false -mycelium_dist_port $port"
+    echo "-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false -barrel_p2p_dist_port $port"
 }
 
 case "${1:-}" in
@@ -64,7 +64,7 @@ case "${1:-}" in
         echo "Starting node${NODE_NUM}, joining seed@${SEED_HOST}..."
         ERL_AFLAGS="$(dist_args $PORT)" \
         rebar3 shell --sname "node${NODE_NUM}" --setcookie chat \
-            --eval "mycelium:join('seed@${SEED_HOST}'), {ok, C} = chat_client:start(), timer:sleep(500), chat_client:join(demo_room, C)."
+            --eval "barrel_p2p:join('seed@${SEED_HOST}'), {ok, C} = chat_client:start(), timer:sleep(500), chat_client:join(demo_room, C)."
         ;;
 
     docker-up)

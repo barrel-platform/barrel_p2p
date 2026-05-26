@@ -36,5 +36,5 @@ examples/chat/data/
 # Bench output (baseline.json is committed; results.json is per-run)
 bench/results.json
 
-# Mycelium runtime data (auto-created by bench / dev shell)
+# Barrel P2P runtime data (auto-created by bench / dev shell)
 /data/

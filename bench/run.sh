@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run mycelium_sync_bench and emit results as JSON.
+# Run barrel_p2p_sync_bench and emit results as JSON.
 #
 # Usage:
 #   ./bench/run.sh [iterations]
@@ -23,7 +23,7 @@ HOST=$(uname -n)
 GIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 
 ESCRIPT=$(cat <<'EOF'
-case mycelium_sync_bench:run(#{iterations => ITERS}) of
+case barrel_p2p_sync_bench:run(#{iterations => ITERS}) of
     Results when is_list(Results) ->
         Format = fun({Name, {Total, PerOp}}) ->
             io_lib:format(

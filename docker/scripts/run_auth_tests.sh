@@ -58,7 +58,7 @@ cleanup
 mkdir -p "$PROJECT_ROOT/test_results"
 
 echo "========================================"
-echo "Mycelium Ed25519 Auth Integration Tests"
+echo "Barrel P2P Ed25519 Auth Integration Tests"
 echo "========================================"
 echo "Project root: $PROJECT_ROOT"
 echo ""

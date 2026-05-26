@@ -1,7 +1,7 @@
 # Getting started
 
 This guide takes a working Erlang/OTP environment and walks you to a
-two-node mycelium cluster, with a real handshake and a real service
+two-node barrel_p2p cluster, with a real handshake and a real service
 lookup. We do not skip the underlying ideas: each step explains what
 the system does and why.
 
@@ -12,12 +12,12 @@ that matter as they appear.
 
 ## What you are about to build
 
-A mycelium cluster is, on the surface, a normal Erlang cluster:
+A barrel_p2p cluster is, on the surface, a normal Erlang cluster:
 `Pid ! Msg`, `rpc:call/4`, `gen_server:call/2`, and `global` all work
 as you expect. Under that surface, three pieces replace the default
 Erlang behaviour:
 
-- **The dist carrier**. Instead of TCP, mycelium runs the distribution
+- **The dist carrier**. Instead of TCP, barrel_p2p runs the distribution
   channel over a single QUIC connection per peer. That gives us
   encryption by default, multiplexed streams on top of the same
   connection, and connection migration when the local network
@@ -52,12 +52,12 @@ two nodes exchanging a message.
 - A single UDP port available on each node (the default is
   `0`, meaning "let the OS assign one"; in production you pin it).
 
-We assume no EPMD daemon is running. Mycelium does not use it: peers
+We assume no EPMD daemon is running. Barrel P2P does not use it: peers
 discover each other through the discovery chain described later.
 
 ## One-time setup: where credentials live
 
-Each mycelium node carries two kinds of credentials on disk. They are
+Each barrel_p2p node carries two kinds of credentials on disk. They are
 generated the first time the node boots; you do not have to create
 them manually.
 
@@ -76,7 +76,7 @@ data/
 The two layers serve different purposes:
 
 - **The TLS material** secures the *transport*. QUIC needs a cert to
-  start a listener. Mycelium uses self-signed certs by default; the
+  start a listener. Barrel P2P uses self-signed certs by default; the
   certificate's identity is the Ed25519 public key recorded below,
   not the CN field.
 - **The Ed25519 keypair** is the node's *identity*. After the QUIC
@@ -90,19 +90,19 @@ Both materials are regenerated on a fresh boot if missing. You can
 also pre-generate the TLS material with the helper script:
 
 ```bash
-_build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh
+_build/default/lib/barrel_p2p/priv/bin/barrel_p2p_gen_cert.sh
 ```
 
 (`--out-dir`, `--cn`, `--days`, `--key-bits`, `--force` are the
 flags; the script is idempotent unless you pass `--force`.)
 
-## Adding mycelium to a project
+## Adding barrel_p2p to a project
 
 In `rebar.config`:
 
 ```erlang
 {deps, [
-    {mycelium, "0.1.0"}
+    {barrel_p2p, "0.1.0"}
 ]}.
 ```
 
@@ -113,18 +113,18 @@ rebar3 get-deps
 rebar3 compile
 ```
 
-That is the full dependency setup. Mycelium pulls in the upstream
+That is the full dependency setup. Barrel P2P pulls in the upstream
 QUIC implementation, `hlc` for hybrid logical clocks, and `instrument`
 for metrics.
 
 ## Configuring the node
 
-Mycelium is opinionated about defaults. A minimal `config/sys.config`
+Barrel P2P is opinionated about defaults. A minimal `config/sys.config`
 that lets you boot a node looks like this:
 
 ```erlang
 [
-    {mycelium, [
+    {barrel_p2p, [
         %% HyParView membership parameters
         {active_size, 5},          %% Maximum concurrent gossip peers
         {passive_size, 30},        %% Known-but-disconnected peers
@@ -162,22 +162,22 @@ of trust modes.
 ## Boot arguments
 
 Two BEAM-level boot flags switch Erlang's distribution layer to
-mycelium:
+barrel_p2p:
 
 ```bash
--proto_dist mycelium
--epmd_module mycelium_epmd
+-proto_dist barrel_p2p
+-epmd_module barrel_p2p_epmd
 -start_epmd false
 ```
 
-The first selects mycelium as the dist module. The second tells
-`net_kernel` to use mycelium's discovery shim instead of the stock
-EPMD daemon. The third disables the daemon entirely; mycelium does
+The first selects barrel_p2p as the dist module. The second tells
+`net_kernel` to use barrel_p2p's discovery shim instead of the stock
+EPMD daemon. The third disables the daemon entirely; barrel_p2p does
 not need it.
 
 These three lines are the entire dist configuration. Everything
 else, certificate paths, the auth callback, the discovery chain, is
-projected by mycelium into the underlying `quic_dist` app
+projected by barrel_p2p into the underlying `quic_dist` app
 environment when the listener starts.
 
 ## Starting one node
@@ -185,26 +185,26 @@ environment when the listener starts.
 The fastest path is a `rebar3 shell` with the boot args injected:
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node1
 ```
 
 Inside the shell:
 
 ```erlang
-1> mycelium:active_view().
+1> barrel_p2p:active_view().
 []
 ```
 
-You have a running mycelium node with no peers yet. The TLS material
+You have a running barrel_p2p node with no peers yet. The TLS material
 and the Ed25519 keypair are in `data/quic/` and `data/keys/`.
 
 To inspect the identity:
 
 ```erlang
-2> {ok, PubKey} = mycelium_dist_auth:get_public_key().
+2> {ok, PubKey} = barrel_p2p_dist_auth:get_public_key().
 {ok, <<...32 bytes...>>}
-3> mycelium_dist_keys:fingerprint(PubKey).
+3> barrel_p2p_dist_keys:fingerprint(PubKey).
 <<...32 bytes SHA-256...>>
 ```
 
@@ -216,23 +216,23 @@ of band.
 Open a second terminal and start a second node:
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node2
 ```
 
 On `node2`, ask to join `node1`:
 
 ```erlang
-1> mycelium:join('node1@yourhost').
+1> barrel_p2p:join('node1@yourhost').
 ok
-2> mycelium:active_view().
+2> barrel_p2p:active_view().
 ['node1@yourhost']
 ```
 
 On `node1`, you will see the symmetric view:
 
 ```erlang
-4> mycelium:active_view().
+4> barrel_p2p:active_view().
 ['node2@yourhost']
 ```
 
@@ -275,16 +275,16 @@ joiner needs just one of them to answer.
 
 ### How a node resolves a seed's address
 
-Mycelium runs no EPMD, so a node name like `seed@10.0.0.1` must be turned
+Barrel P2P runs no EPMD, so a node name like `seed@10.0.0.1` must be turned
 into a UDP `{address, port}` some other way. That is the *discovery chain*:
 a list of backends tried in order, first hit wins.
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {discovery_backends, [
-        mycelium_discovery_static,   %% explicit {Node, {Addr, Port}} table
-        mycelium_discovery_file,     %% shared dir of <node>.endpoint files
-        mycelium_discovery_dns       %% resolve the host part via DNS
+        barrel_p2p_discovery_static,   %% explicit {Node, {Addr, Port}} table
+        barrel_p2p_discovery_file,     %% shared dir of <node>.endpoint files
+        barrel_p2p_discovery_dns       %% resolve the host part via DNS
     ]}
 ]}
 ```
@@ -320,11 +320,11 @@ or a shared `discovery_dir` (a single host or a shared volume).
 
 ### Auto-joining seeds with `contact_nodes`
 
-List the seeds in `contact_nodes` and mycelium joins them at boot, so you
-never call `mycelium:join/1`:
+List the seeds in `contact_nodes` and barrel_p2p joins them at boot, so you
+never call `barrel_p2p:join/1`:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {listen_port, 9100},
     {contact_nodes, ['seed1@10.0.0.1', 'seed2@10.0.0.2']}
 ]}
@@ -343,22 +343,22 @@ everyone else at it.
 
 ### Starting a node in production
 
-In a release the three dist flags go in `vm.args` and the mycelium
+In a release the three dist flags go in `vm.args` and the barrel_p2p
 configuration in `sys.config`:
 
 ```
 ## vm.args
 -name app@10.0.0.5
 -setcookie <your-secret>
--proto_dist mycelium
--epmd_module mycelium_epmd
+-proto_dist barrel_p2p
+-epmd_module barrel_p2p_epmd
 -start_epmd false
 ```
 
 ```erlang
 %% sys.config
 [
-    {mycelium, [
+    {barrel_p2p, [
         {listen_port, 9100},
         {contact_nodes, ['seed1@10.0.0.1', 'seed2@10.0.0.2']},
         {dist_cookie, <<"your-secret">>},
@@ -381,7 +381,7 @@ ports, secrets, sizing, and shutdown.
 
 ## A first service lookup
 
-Service registration is the part of mycelium that you reach for
+Service registration is the part of barrel_p2p that you reach for
 most often when building a real application. A service is a process
 registered under a name; that name is replicated across the cluster
 so any peer can find the process.
@@ -389,7 +389,7 @@ so any peer can find the process.
 On `node1`:
 
 ```erlang
-5> mycelium:register_service(my_worker, #{role => worker}).
+5> barrel_p2p:register_service(my_worker, #{role => worker}).
 ok
 ```
 
@@ -402,10 +402,10 @@ On `node2`, a moment later (replication is asynchronous, typically
 under a second):
 
 ```erlang
-3> mycelium:lookup(my_worker).
+3> barrel_p2p:lookup(my_worker).
 {ok, [{service_entry, my_worker, <0.123.0>, 'node1@yourhost', #{role => worker}}]}
 
-4> {ok, _Node, FoundPid} = mycelium:whereis_service(my_worker).
+4> {ok, _Node, FoundPid} = barrel_p2p:whereis_service(my_worker).
 {ok, 'node1@yourhost', <0.123.0>}
 
 5> FoundPid ! hello.
@@ -421,7 +421,7 @@ Three things to notice:
   service and `{ok, Node, Pid}` for a remote one. It is the function
   you reach for from application code.
 - The pid we got back is the *real* pid on `node1`. The send-bang
-  uses standard Erlang distribution, opened on demand. No mycelium
+  uses standard Erlang distribution, opened on demand. No barrel_p2p
   primitive is on the data path once you hold the pid.
 
 The flow of a cross-node send, when the target is not in the local
@@ -429,7 +429,7 @@ active view, is the part to keep in mind:
 
 ![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](diagrams/message-passing.png)
 
-Mycelium helps you find the pid. OTP sends to it. If no dist channel
+Barrel P2P helps you find the pid. OTP sends to it. If no dist channel
 exists yet, the QUIC channel is opened and authenticated before the
 message is delivered.
 
@@ -438,15 +438,15 @@ message is delivered.
 If your application needs to react to cluster changes:
 
 ```erlang
-6> mycelium:subscribe().
+6> barrel_p2p:subscribe().
 ok
-%% receive {mycelium_event, {peer_up, Node}} | {mycelium_event, {peer_down, Node, Reason}}
+%% receive {barrel_p2p_event, {peer_up, Node}} | {barrel_p2p_event, {peer_down, Node, Reason}}
 
-7> mycelium:subscribe_services().
+7> barrel_p2p:subscribe_services().
 ok
-%% receive {mycelium_service_event, {service_registered, Name, Node}}
-%%       | {mycelium_service_event, {service_unregistered, Name, Node}}
-%%       | {mycelium_service_event, {service_down, Name, Node, Reason}}
+%% receive {barrel_p2p_service_event, {service_registered, Name, Node}}
+%%       | {barrel_p2p_service_event, {service_unregistered, Name, Node}}
+%%       | {barrel_p2p_service_event, {service_down, Name, Node, Reason}}
 ```
 
 These two subscription bus are independent and idempotent: subscribing
@@ -455,23 +455,23 @@ messages, so you can route them through your existing handler.
 
 ## Tearing down
 
-Either call `mycelium:leave/0` for a graceful exit (peers move you
+Either call `barrel_p2p:leave/0` for a graceful exit (peers move you
 to their passive view immediately), or stop the application:
 
 ```erlang
-8> mycelium:leave().
+8> barrel_p2p:leave().
 ok
 ```
 
 In production, the recommended shutdown order is
-`mycelium:leave/0`, then `application:stop(mycelium)`, then
+`barrel_p2p:leave/0`, then `application:stop(barrel_p2p)`, then
 `init:stop/0`. The reasoning is in [deployment.md](../how-to/run-in-production.md).
 
 ## A quick look at what just happened
 
 Stepping back from the commands you typed:
 
-- Two BEAM nodes ran with `-proto_dist mycelium`. That replaced the
+- Two BEAM nodes ran with `-proto_dist barrel_p2p`. That replaced the
   default TCP dist with a QUIC carrier, automatically projected the
   certificate paths and the auth callback, and disabled EPMD.
 - Each node generated its identity material on first boot. No

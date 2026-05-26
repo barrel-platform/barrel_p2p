@@ -1,0 +1,174 @@
+%%% -*- erlang -*-
+%%% Copyright (c) 2026 Benoit Chesneau
+%%% SPDX-License-Identifier: Apache-2.0
+%%%
+%%% Unit tests for barrel_p2p_replica_log: the WAL + snapshot store. These
+%%% exercise recovery (snapshot + log replay), truncation, the repaired-log
+%%% path after an unclean shutdown, idempotent replay, and delete. The HLC
+%%% server is up so OR-Map add/remove/merge work.
+-module(barrel_p2p_replica_log_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+-include_lib("hlc/include/hlc.hrl").
+
+%%====================================================================
+%% Fixtures
+%%====================================================================
+
+setup() ->
+    %% Start the shared HLC server if it is not already up, and remember
+    %% whether WE started it. Leaking it here breaks a later
+    %% `ensure_all_started(barrel_p2p)' when eunit and ct run in one
+    %% invocation (e.g. `rebar3 check'), since barrel_p2p_hlc is the app's
+    %% first child.
+    Started =
+        case whereis(barrel_p2p_hlc) of
+            undefined ->
+                {ok, _} = barrel_p2p_hlc:start_link(),
+                true;
+            _ ->
+                false
+        end,
+    Dir = filename:join(
+        "/tmp",
+        "myc_replica_log_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    {Dir, Started}.
+
+cleanup({Dir, Started}) ->
+    _ = catch disk_log:close(t),
+    os:cmd("rm -rf " ++ Dir),
+    case Started of
+        true -> catch gen_server:stop(barrel_p2p_hlc);
+        false -> ok
+    end,
+    ok.
+
+with_dir(Fun) ->
+    {setup, fun setup/0, fun cleanup/1, fun({Dir, _Started}) -> Fun(Dir) end}.
+
+%% A live value entry for Key, authored by this node.
+entry(Val) ->
+    {value, Val, #{{node(), barrel_p2p_hlc:now()} => true}}.
+
+%%====================================================================
+%% Tests
+%%====================================================================
+
+open_empty_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H),
+        [?_assertEqual(#{}, Map)]
+    end).
+
+append_and_recover_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:append(H, #{a => entry(1)}),
+        ok = barrel_p2p_replica_log:append(H, #{b => entry(2)}),
+        ok = barrel_p2p_replica_log:sync(H),
+        ok = barrel_p2p_replica_log:close(H),
+        %% Reopen: the log replays on top of the (empty) snapshot.
+        {ok, H2, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H2),
+        [
+            ?_assertEqual({ok, 1}, barrel_p2p_ormap:get(a, Map)),
+            ?_assertEqual({ok, 2}, barrel_p2p_ormap:get(b, Map))
+        ]
+    end).
+
+snapshot_truncates_log_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        Map0 = barrel_p2p_ormap:add(a, 1, barrel_p2p_ormap:new()),
+        ok = barrel_p2p_replica_log:append(H, Map0),
+        %% Snapshot writes the full map and truncates the WAL.
+        ok = barrel_p2p_replica_log:snapshot(H, Map0),
+        ok = barrel_p2p_replica_log:append(H, #{b => entry(2)}),
+        ok = barrel_p2p_replica_log:close(H),
+        %% The snapshot file exists and recovery sees both keys (snapshot a
+        %% + post-snapshot logged b).
+        {ok, H2, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H2),
+        [
+            ?_assert(filelib:is_file(filename:join(Dir, "t.snapshot"))),
+            ?_assertEqual({ok, 1}, barrel_p2p_ormap:get(a, Map)),
+            ?_assertEqual({ok, 2}, barrel_p2p_ormap:get(b, Map))
+        ]
+    end).
+
+idempotent_replay_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        E = entry(1),
+        %% The same entry both in the snapshot and replayed from the log:
+        %% merge is idempotent, so it appears once with value 1.
+        ok = barrel_p2p_replica_log:snapshot(H, #{a => E}),
+        ok = barrel_p2p_replica_log:append(H, #{a => E}),
+        ok = barrel_p2p_replica_log:close(H),
+        {ok, H2, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H2),
+        [
+            ?_assertEqual({ok, 1}, barrel_p2p_ormap:get(a, Map)),
+            ?_assertEqual([a], barrel_p2p_ormap:keys(Map))
+        ]
+    end).
+
+tombstone_survives_recovery_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:append(H, #{a => entry(1)}),
+        %% Tombstone minted from the HLC server, so it sorts strictly after
+        %% the value (the remove wins on recovery).
+        ok = barrel_p2p_replica_log:append(H, #{a => {tombstone, barrel_p2p_hlc:now()}}),
+        ok = barrel_p2p_replica_log:close(H),
+        {ok, H2, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H2),
+        %% The remove (tombstone, newer HLC) wins on recovery.
+        [
+            ?_assertEqual(not_found, barrel_p2p_ormap:get(a, Map)),
+            ?_assertMatch({ok, {tombstone, _}}, barrel_p2p_ormap:get_entry(a, Map))
+        ]
+    end).
+
+recover_after_torn_tail_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:append(H, #{a => entry(1)}),
+        ok = barrel_p2p_replica_log:sync(H),
+        ok = barrel_p2p_replica_log:append(H, #{b => entry(2)}),
+        ok = barrel_p2p_replica_log:sync(H),
+        ok = barrel_p2p_replica_log:close(H),
+        %% Simulate a torn final write: chop bytes off the log tail. The
+        %% reopen repairs (disk_log default repair) and the good prefix
+        %% still recovers.
+        LogFile = filename:join(Dir, "t.log"),
+        {ok, Bin} = file:read_file(LogFile),
+        ok = file:write_file(LogFile, binary:part(Bin, 0, byte_size(Bin) - 3)),
+        {ok, H2, Map} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:close(H2),
+        [?_assertEqual({ok, 1}, barrel_p2p_ormap:get(a, Map))]
+    end).
+
+delete_removes_files_test_() ->
+    with_dir(fun(Dir) ->
+        {ok, H, _} = barrel_p2p_replica_log:open(t, Dir),
+        ok = barrel_p2p_replica_log:snapshot(H, #{a => entry(1)}),
+        ok = barrel_p2p_replica_log:close(H),
+        ok = barrel_p2p_replica_log:delete(t, Dir),
+        [
+            ?_assertNot(filelib:is_file(filename:join(Dir, "t.snapshot"))),
+            ?_assertNot(filelib:is_file(filename:join(Dir, "t.log")))
+        ]
+    end).
+
+undefined_handle_is_noop_test_() ->
+    with_dir(fun(_Dir) ->
+        [
+            ?_assertEqual(ok, barrel_p2p_replica_log:append(undefined, #{a => entry(1)})),
+            ?_assertEqual(ok, barrel_p2p_replica_log:sync(undefined)),
+            ?_assertEqual(ok, barrel_p2p_replica_log:snapshot(undefined, #{})),
+            ?_assertEqual(ok, barrel_p2p_replica_log:close(undefined))
+        ]
+    end).

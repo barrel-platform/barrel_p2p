@@ -8,7 +8,7 @@ it survives the node that armed it, and it fires from whichever node
 owns its key when the time comes.
 
 This is built directly on [sharded placement](sharded-placement.md): the
-owner of a reminder is `mycelium:place(Key)`. When that node leaves, the
+owner of a reminder is `barrel_p2p:place(Key)`. When that node leaves, the
 key reassigns to a survivor, and the survivor takes over the unfired
 reminder.
 
@@ -27,7 +27,7 @@ any of them can fire it after the original owner is gone.
 Only the **owner** arms a local timer and fires:
 
 ```
-owner(Key) = mycelium:place(Key)
+owner(Key) = barrel_p2p:place(Key)
 ```
 
 Other nodes hold the reminder in their store but do nothing with it. On
@@ -63,7 +63,7 @@ firing twice.
 Delivery is a message to subscribers on the firing node:
 
 ```erlang
-{mycelium_reminder, Key, Payload, Fence}
+{barrel_p2p_reminder, Key, Payload, Fence}
 ```
 
 `Fence` is the packed version stamp (a positive, comparable integer). It
@@ -72,7 +72,7 @@ handler can use it to deduplicate.
 
 ## What it guarantees
 
-There is no consensus here, the same as everywhere else in mycelium, so
+There is no consensus here, the same as everywhere else in barrel_p2p, so
 the guarantee is stated honestly:
 
 - **Steady state (membership converged): fires exactly once.** One owner,
@@ -136,14 +136,14 @@ dropped tombstone, which would spuriously re-create the reminder.
 
 ```erlang
 %% Fire at an absolute wall-clock instant (ms).
-mycelium:remind(Key, FireAtMs, Payload).
+barrel_p2p:remind(Key, FireAtMs, Payload).
 
 %% Fire DelayMs from now (converted to an absolute target so all
 %% nodes agree).
-mycelium:remind_after(Key, DelayMs, Payload).
+barrel_p2p:remind_after(Key, DelayMs, Payload).
 
 %% Cancel cluster-wide.
-mycelium:cancel_reminder(Key).
+barrel_p2p:cancel_reminder(Key).
 ```
 
 Re-setting an existing `Key` replaces it with a fresh version, which
@@ -158,10 +158,10 @@ so the work runs there:
 
 ```erlang
 init(_) ->
-    ok = mycelium:subscribe_reminders(),
+    ok = barrel_p2p:subscribe_reminders(),
     {ok, #{}}.
 
-handle_info({mycelium_reminder, Key, Payload, Fence}, S) ->
+handle_info({barrel_p2p_reminder, Key, Payload, Fence}, S) ->
     case already_done(Fence) of
         true  -> {noreply, S};                 %% idempotent dedup
         false -> {noreply, run(Key, Payload, Fence, S)}

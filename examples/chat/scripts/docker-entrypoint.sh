@@ -18,7 +18,7 @@ fi
 
 cat > /app/releases/0.1.0/sys.config <<EOF
 [
-    {mycelium, [
+    {barrel_p2p, [
         {active_size, 3},
         {passive_size, 10},
         {shuffle_period, 5000},

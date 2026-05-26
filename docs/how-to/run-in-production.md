@@ -1,6 +1,6 @@
 # Deployment
 
-Practical guidance for running a mycelium cluster in production.
+Practical guidance for running a barrel_p2p cluster in production.
 Pair this with [getting-started.md](../overview/getting-started.md) for the
 initial bring-up and [troubleshooting.md](troubleshoot.md) for
 the symptoms-and-fixes table.
@@ -38,7 +38,7 @@ application talks to many peers ad hoc.
 To set these:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {active_size, 5},
     {passive_size, 30}
 ]}.
@@ -46,7 +46,7 @@ To set these:
 
 ## Network surface
 
-A mycelium node opens one UDP socket. That is the whole
+A barrel_p2p node opens one UDP socket. That is the whole
 externally-visible network footprint, aside from any metrics
 exporter you wire in.
 
@@ -62,7 +62,7 @@ single UDP port.
 For production, pin the dist port (do not leave it at `0`):
 
 ```erlang
-{mycelium, [{listen_port, 9100}]}.
+{barrel_p2p, [{listen_port, 9100}]}.
 ```
 
 Open that port between every pair of cluster nodes in your
@@ -80,7 +80,7 @@ here with their default location and sensitivity:
 | Ed25519 identity public key                       | `data/keys/node.pub` (`auth_key_dir` env)       | Public; advertised in handshake                    |
 | Ed25519 identity private key                      | `data/keys/node.key`                            | **Private**; chmod 0600                            |
 | Trusted peer keys                                 | `data/keys/trusted/<node>.pub`                  | Public; reviewable                                 |
-| Erlang dist cookie                                | `mycelium.dist_cookie` env (default `mycelium`) | **Private**; pre-shared secret                     |
+| Erlang dist cookie                                | `barrel_p2p.dist_cookie` env (default `barrel_p2p`) | **Private**; pre-shared secret                     |
 
 Recommended file mode for the parent directories: 0700 (owner
 only).
@@ -94,14 +94,14 @@ Two recovery properties worth knowing:
 - The trust store is rebuildable from the peers' public keys; you
   do not need to back it up if you can re-derive it.
 
-Mycelium writes new secrets atomically (write to a temp file with
+Barrel P2P writes new secrets atomically (write to a temp file with
 0600 perms, then rename). A crash during a key rotation will not
 leave a permissive transient on disk; the on-disk file is either
 the old one or the new one, never something in between.
 
 ## Configuration reference
 
-Every key below goes under `{mycelium, [...]}` in `sys.config`.
+Every key below goes under `{barrel_p2p, [...]}` in `sys.config`.
 
 | Key                              | Default          | Purpose                                                                  |
 |----------------------------------|------------------|--------------------------------------------------------------------------|
@@ -120,7 +120,7 @@ Every key below goes under `{mycelium, [...]}` in `sys.config`.
 | `auth_handshake_timeout`         | `10000` ms       | Total budget for the Ed25519 handshake                                    |
 | `auth_timestamp_window`          | `30000` ms       | Acceptable peer wall-clock skew                                           |
 | `cookie_only_nodes`              | `[]`             | Patterns of node atoms exempt from Ed25519                                |
-| `dist_cookie`                    | `mycelium`       | Erlang dist cookie applied at app start                                   |
+| `dist_cookie`                    | `barrel_p2p`       | Erlang dist cookie applied at app start                                   |
 | `dist_gc_sweep_period_ms`        | `60000`          | Idle GC sweep cadence                                                     |
 | `dist_gc_min_age_ms`             | `300000`         | Minimum age before GC may reap a channel                                  |
 | `pending_timeout_ms`             | `30000`          | Backstop for HyParView pending entries (silent peers)                     |
@@ -137,7 +137,7 @@ sweep cadence and minimum age are tunable.
 
 ## Logging
 
-Mycelium logs to standard `logger`. The levels we use:
+Barrel P2P logs to standard `logger`. The levels we use:
 
 - `error` for operational failure (cert generation, listener bind
   failure, keypair load mismatch).
@@ -157,10 +157,10 @@ reference when investigating an alert.
 
 The clean shutdown order is three steps:
 
-1. `mycelium:leave/0`. Sends a HyParView `disconnect` to every
+1. `barrel_p2p:leave/0`. Sends a HyParView `disconnect` to every
    active peer so they move you to passive view immediately
    instead of waiting for a `nodedown` failure.
-2. `application:stop(mycelium)`. Tears down the supervision tree
+2. `application:stop(barrel_p2p)`. Tears down the supervision tree
    in reverse order; the dist GC will reap the remaining
    channels from the *other* side over the next sweep window.
 3. `init:stop/0`. Terminates the VM.
@@ -172,7 +172,7 @@ is worth the few extra milliseconds.
 
 ## Rotation runbook
 
-`mycelium_rotate` handles both QUIC TLS material and Ed25519
+`barrel_p2p_rotate` handles both QUIC TLS material and Ed25519
 identity keys. Each call atomically backs the old material up
 under `<dir>/backups/<UTC-timestamp>/`.
 
@@ -181,7 +181,7 @@ under `<dir>/backups/<UTC-timestamp>/`.
 Takes effect on the next handshake:
 
 ```erlang
-{ok, Info} = mycelium_rotate:rotate_identity().
+{ok, Info} = barrel_p2p_rotate:rotate_identity().
 %% Info = #{key_file        := PrivPath,
 %%          cert_file       := PubPath,
 %%          backup_dir      := BackupPath,
@@ -203,9 +203,9 @@ Caveats:
 QUIC TLS material is loaded at listener start. Rotating requires
 a restart:
 
-1. `mycelium:leave/0` so peers move you to passive view promptly.
-2. `mycelium_rotate:rotate_cert/0`.
-3. `application:stop(mycelium)`; `init:stop/0`.
+1. `barrel_p2p:leave/0` so peers move you to passive view promptly.
+2. `barrel_p2p_rotate:rotate_cert/0`.
+3. `application:stop(barrel_p2p)`; `init:stop/0`.
 4. Boot the node back up; the listener picks up the new cert.
 
 Peers see one `peer_down` and re-establish on next demand. The
@@ -231,15 +231,15 @@ A quick checklist before promoting a cluster to production:
 - `active_size` and `passive_size` sized to the cluster.
 - `auth_enabled = true` (the default).
 - `dist_cookie` rotated to a high-entropy secret. The default
-  cookie `mycelium` is a placeholder.
+  cookie `barrel_p2p` is a placeholder.
 - Cert and key directories on persistent storage; rotation
   backup directory included in your backup policy.
 - `instrument` exporter wired to your monitoring backend.
 - Alerts on:
-  - `mycelium.dist.auth.attempts{outcome=fail}` sustained rate.
-  - `mycelium.hyparview.peer_down{reason=nodedown}` spikes.
-  - `mycelium.dist_gc.reap` rate vs steady-state baseline.
-  - `mycelium.dist.auth.duration_ms` p95 trending up.
+  - `barrel_p2p.dist.auth.attempts{outcome=fail}` sustained rate.
+  - `barrel_p2p.hyparview.peer_down{reason=nodedown}` spikes.
+  - `barrel_p2p.dist_gc.reap` rate vs steady-state baseline.
+  - `barrel_p2p.dist.auth.duration_ms` p95 trending up.
 - A documented runbook for cert rotation and identity rotation.
 - A documented procedure for adding and removing a node from the
   cluster.
@@ -248,7 +248,7 @@ A quick checklist before promoting a cluster to production:
 
 Two notes for containerised deployments:
 
-- Mycelium needs persistent storage for `data/quic/` and
+- Barrel P2P needs persistent storage for `data/quic/` and
   `data/keys/`. On Kubernetes, mount a PersistentVolumeClaim
   per pod. On docker-compose, mount a named volume per service.
   Re-generating these on every restart is technically supported

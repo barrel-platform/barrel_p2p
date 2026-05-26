@@ -1,6 +1,6 @@
 # Authentication
 
-Mycelium authenticates every dist connection with Ed25519
+Barrel P2P authenticates every dist connection with Ed25519
 mutual signatures. The authentication runs after the QUIC TLS
 handshake and before Erlang's dist handshake; two peers that
 have not proved possession of the right private key never
@@ -14,7 +14,7 @@ the shape is the way it is. For operational tasks
 ## Why a second identity layer
 
 The QUIC TLS handshake gives us an encrypted transport. The
-certificate is self-signed: there is no authority mycelium
+certificate is self-signed: there is no authority barrel_p2p
 expects you to trust, and a fresh node generates its own TLS
 material on first boot. So the TLS layer establishes a secure
 channel, but it does not say *who* is on the other side.
@@ -134,7 +134,7 @@ file.
 A few invariants the runtime preserves:
 
 - The private key file is created with mode 0600. The helper
-  that writes secret material (`mycelium_file:write_secure/2`)
+  that writes secret material (`barrel_p2p_file:write_secure/2`)
   chmods the temporary file *before* any plaintext bytes are
   written, so a co-tenant cannot race the write.
 - Writes go through a temp file and rename, so a crash
@@ -156,7 +156,7 @@ A small whitelist of node-atom patterns can bypass the Ed25519
 handshake on the strength of the Erlang dist cookie alone:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {cookie_only_nodes, ['probe@*', 'monitor@trusted.example']}
 ]}.
 ```
@@ -174,7 +174,7 @@ the peer for the short-circuit to apply.
 ## Configuration
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     %% Master switch. Defaults to true. Setting this to false in
     %% production removes the Ed25519 layer; the dist cookie
     %% becomes the only authentication. Do not do this.
@@ -205,30 +205,30 @@ the peer for the short-circuit to apply.
 
 ## API
 
-The relevant entry points. The public ones from `mycelium.erl`
+The relevant entry points. The public ones from `barrel_p2p.erl`
 are minimal because most authentication is automatic; the
-inspection and provisioning lives in `mycelium_dist_keys` and
-`mycelium_dist_auth`.
+inspection and provisioning lives in `barrel_p2p_dist_keys` and
+`barrel_p2p_dist_auth`.
 
 ```erlang
 %% Inspect or pin keys.
-mycelium_dist_keys:store_key(Node, PubKey) -> ok.
-mycelium_dist_keys:store_key_if_new(Node, PubKey) -> ok.
-mycelium_dist_keys:lookup_pin(Node) -> not_pinned | {pinned, PubKey}.
-mycelium_dist_keys:delete_key(Node) -> ok.
-mycelium_dist_keys:list_trusted() -> [#peer_key{}].
-mycelium_dist_keys:set_trust_mode(tofu | strict) -> ok.
-mycelium_dist_keys:get_trust_mode() -> tofu | strict.
-mycelium_dist_keys:fingerprint(PubKey) -> binary().  %% SHA-256
+barrel_p2p_dist_keys:store_key(Node, PubKey) -> ok.
+barrel_p2p_dist_keys:store_key_if_new(Node, PubKey) -> ok.
+barrel_p2p_dist_keys:lookup_pin(Node) -> not_pinned | {pinned, PubKey}.
+barrel_p2p_dist_keys:delete_key(Node) -> ok.
+barrel_p2p_dist_keys:list_trusted() -> [#peer_key{}].
+barrel_p2p_dist_keys:set_trust_mode(tofu | strict) -> ok.
+barrel_p2p_dist_keys:get_trust_mode() -> tofu | strict.
+barrel_p2p_dist_keys:fingerprint(PubKey) -> binary().  %% SHA-256
 
 %% Identity.
-mycelium_dist_auth:ensure_keypair() -> ok.
-mycelium_dist_auth:get_public_key() -> {ok, binary()}.
-mycelium_dist_auth:is_cookie_only_allowed(Node) -> boolean().
+barrel_p2p_dist_auth:ensure_keypair() -> ok.
+barrel_p2p_dist_auth:get_public_key() -> {ok, binary()}.
+barrel_p2p_dist_auth:is_cookie_only_allowed(Node) -> boolean().
 
 %% Rotation.
-mycelium_rotate:rotate_identity() -> {ok, Info}.
-mycelium_rotate:rotate_cert() -> {ok, Info}.
+barrel_p2p_rotate:rotate_identity() -> {ok, Info}.
+barrel_p2p_rotate:rotate_cert() -> {ok, Info}.
 ```
 
 ## Related

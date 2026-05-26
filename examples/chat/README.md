@@ -1,6 +1,6 @@
 # Distributed Chat Example
 
-A distributed chat application demonstrating Mycelium's P2P capabilities.
+A distributed chat application demonstrating Barrel P2P's P2P capabilities.
 
 ## Features
 
@@ -13,14 +13,14 @@ A distributed chat application demonstrating Mycelium's P2P capabilities.
 
 ### Setup
 
-The example uses rebar3 checkouts to reference the local mycelium library:
+The example uses rebar3 checkouts to reference the local barrel_p2p library:
 
 ```bash
 cd examples/chat
 
 # Create checkouts symlink (done automatically by run-demo.sh)
 mkdir -p _checkouts
-ln -sf ../../.. _checkouts/mycelium
+ln -sf ../../.. _checkouts/barrel_p2p
 ```
 
 ### Build
@@ -28,8 +28,8 @@ ln -sf ../../.. _checkouts/mycelium
 ```bash
 rebar3 compile
 
-# Link mycelium in _build for rebar3 shell (done automatically by run-demo.sh)
-ln -sf ../../../_checkouts/mycelium/_build/default/lib/mycelium _build/default/lib/mycelium
+# Link barrel_p2p in _build for rebar3 shell (done automatically by run-demo.sh)
+ln -sf ../../../_checkouts/barrel_p2p/_build/default/lib/barrel_p2p _build/default/lib/barrel_p2p
 ```
 
 ### Two-Node Demo
@@ -78,7 +78,7 @@ Testing with 3 nodes shows the partial mesh topology and CRDT replication.
 In the node2 shell:
 ```erlang
 %% Check cluster membership (partial mesh)
-mycelium:active_view().
+barrel_p2p:active_view().
 %% Returns: [seed@hostname] or [node1@hostname]
 
 %% Rooms discovered via CRDT replication
@@ -120,7 +120,7 @@ chat_client:demo().
 rebar3 shell --sname node1 --setcookie chat
 ```
 ```erlang
-mycelium:join('seed@hostname').
+barrel_p2p:join('seed@hostname').
 {ok, C} = chat_client:start().
 timer:sleep(500).
 chat_client:join(demo_room, C).
@@ -132,7 +132,7 @@ chat_client:send(demo_room, "Hello!").
 rebar3 shell --sname node2 --setcookie chat
 ```
 ```erlang
-mycelium:join('seed@hostname').
+barrel_p2p:join('seed@hostname').
 {ok, C} = chat_client:start().
 chat_server:list_rooms().
 chat_room_sup:create_room(help_room).
@@ -178,7 +178,7 @@ docker compose exec seed /app/bin/chat remote_console
 chat_sup (supervisor)
 └── chat_room_sup (simple_one_for_one)
     └── chat_server (gen_server, per room)
-        - Registers as {chat_room, Name} in mycelium
+        - Registers as {chat_room, Name} in barrel_p2p
         - Maintains member list with monitors
         - Broadcasts messages to members
 ```

@@ -1,6 +1,6 @@
-# Running mycelium dist over an external relay
+# Running barrel_p2p dist over an external relay
 
-Mycelium assumes nodes can reach each other directly. The
+Barrel P2P assumes nodes can reach each other directly. The
 codebase contains no NAT traversal, no UDP hole punching, and no
 firewall-bypass logic. When two peers cannot route to each other
 directly, the recommended path is to send the dist UDP traffic
@@ -12,12 +12,12 @@ your environment provides.
 This document describes the seam the upstream
 [`quic_dist`](https://github.com/benoitc/erlang_quic) layer
 exposes for that purpose and gives one worked example. The
-mycelium-specific work is small; most of the integration lives
+barrel_p2p-specific work is small; most of the integration lives
 outside this codebase.
 
 ## The seam: per-node connect-time overrides
 
-Mycelium's distribution layer is `quic_dist`. Before opening a
+Barrel P2P's distribution layer is `quic_dist`. Before opening a
 QUIC connection to a peer, `quic_dist:setup/5` consults a small
 ETS table of per-node overrides:
 
@@ -51,7 +51,7 @@ stream that hands inbound datagrams back to QUIC.
 
 Because the QUIC handshake, the Ed25519 auth callback, and the
 Erlang dist handshake all run on top of whatever socket the
-adapter exposes, no other code in mycelium needs to know about
+adapter exposes, no other code in barrel_p2p needs to know about
 the relay. The adapter looks like a UDP socket to everything
 above it.
 
@@ -76,7 +76,7 @@ true = net_kernel:connect_node('peer@remote').
 ```
 
 `my_relay_adapter` is your module: it implements the `quic_socket`
-adapter contract for whatever protocol your relay speaks. Mycelium
+adapter contract for whatever protocol your relay speaks. Barrel P2P
 does not ship one. The protocol-specific work, including
 authentication against the relay and re-handshake on tunnel
 disconnect, lives in your adapter.
@@ -89,12 +89,12 @@ re-registers on every `{nodedown, 'peer@remote'}` event.
 
 QUIC connection migration lets an established session move to a
 different UDP path without renegotiating keys or losing streams.
-The same `mycelium:migrate_peer/1,2` primitive that handles
+The same `barrel_p2p:migrate_peer/1,2` primitive that handles
 local-network changes also handles relay swaps:
 
 1. Establish a new socket adapter pointing at the new relay path
    (whatever "new relay path" means in your protocol).
-2. Call `mycelium:migrate_peer(Node, #{timeout => 5000})` to
+2. Call `barrel_p2p:migrate_peer(Node, #{timeout => 5000})` to
    migrate the running connection.
 3. After migration succeeds, the dist controller continues
    sending on the new path.
@@ -102,10 +102,10 @@ local-network changes also handles relay swaps:
 See [migration.md](migrate-connections.md) for the migration primitive and
 a watchdog recipe.
 
-## What mycelium does not do
+## What barrel_p2p does not do
 
 It is worth being explicit about what is *not* part of the
-mycelium codebase:
+barrel_p2p codebase:
 
 - No STUN.
 - No UPnP/NAT-PMP/PCP discovery.
@@ -114,7 +114,7 @@ mycelium codebase:
 - No automatic "direct first, then relay" fallback.
 
 The decision of when to relay and when to go direct is the
-operator's. Mycelium provides the seam; you provide the policy.
+operator's. Barrel P2P provides the seam; you provide the policy.
 
 If you need any of these, run them out of process: a sidecar
 daemon, a MASQUE proxy, a tailscale-style mesh. Present the

@@ -2,11 +2,11 @@
 
 The [service registry](service-registry.md)'s CRDT needs a way
 to order events across nodes that does not assume synchronised
-wall clocks. Mycelium uses **hybrid logical clocks** (HLC), an
+wall clocks. Barrel P2P uses **hybrid logical clocks** (HLC), an
 algorithm that combines a wall-clock timestamp with a logical
 counter.
 
-This page explains how HLCs work and where mycelium uses them.
+This page explains how HLCs work and where barrel_p2p uses them.
 
 ## The problem
 
@@ -49,7 +49,7 @@ There are two operations:
 **Generate a new local timestamp.**
 
 ```erlang
-mycelium_hlc:now() -> #timestamp{}.
+barrel_p2p_hlc:now() -> #timestamp{}.
 ```
 
 The implementation reads the local wall clock and ensures the
@@ -59,12 +59,12 @@ generated timestamp on this node.
 **Update on receiving a peer timestamp.**
 
 ```erlang
-mycelium_hlc:update(PeerTs) -> ok.
+barrel_p2p_hlc:update(PeerTs) -> ok.
 ```
 
 Advances the local HLC to be strictly greater than both the
 local reading and the peer's timestamp. The next
-`mycelium_hlc:now/0` returns a value greater than `PeerTs`.
+`barrel_p2p_hlc:now/0` returns a value greater than `PeerTs`.
 
 The algorithm preserves the invariant: for any two events A and
 B in the cluster, if A's HLC < B's HLC, then either A happened
@@ -74,14 +74,14 @@ before B was generated.
 ## Comparing timestamps
 
 ```erlang
-mycelium_hlc:compare(T1, T2) -> lt | eq | gt.
+barrel_p2p_hlc:compare(T1, T2) -> lt | eq | gt.
 ```
 
 Lexicographic order on `(wall_time, logical)`. A timestamp with
 a larger wall_time is greater; ties on wall_time are broken by
 logical.
 
-## Where mycelium uses HLCs
+## Where barrel_p2p uses HLCs
 
 Three subsystems:
 
@@ -92,7 +92,7 @@ Three subsystems:
 - **The router's route cache.** Cached overlay routes are
   stamped with an HLC and aged out by wall-time TTL.
 - **Anywhere an application wants causally-ordered timestamps
-  across the cluster.** The `mycelium_hlc` module is public.
+  across the cluster.** The `barrel_p2p_hlc` module is public.
 
 ## On-the-wire encoding
 
@@ -100,8 +100,8 @@ For network transmission, HLC timestamps encode to a fixed-size
 binary:
 
 ```erlang
-mycelium_hlc:to_binary(Ts) -> binary().    %% 12 bytes
-mycelium_hlc:from_binary(Bin) -> Ts.
+barrel_p2p_hlc:to_binary(Ts) -> binary().    %% 12 bytes
+barrel_p2p_hlc:from_binary(Bin) -> Ts.
 ```
 
 The format is `<<WallTime:64/big, Logical:32/big>>`. Endian and
@@ -125,7 +125,7 @@ If wall clocks drift very far apart, two consequences:
   millisecond-precise expiry across the cluster, do not use
   HLC alone.
 
-Mycelium's own use cases tolerate drift up to a few minutes
+Barrel P2P's own use cases tolerate drift up to a few minutes
 without operational impact.
 
 ## Comparison with alternatives
@@ -143,13 +143,13 @@ counter per timestamp.
 ## API
 
 ```erlang
-mycelium_hlc:now() -> #timestamp{}.
-mycelium_hlc:update(PeerTs) -> ok.
-mycelium_hlc:compare(T1, T2) -> lt | eq | gt.
-mycelium_hlc:wall_time(Ts) -> integer().     %% extract wall_ms
-mycelium_hlc:logical(Ts) -> integer().       %% extract logical
-mycelium_hlc:to_binary(Ts) -> binary().      %% 12 bytes
-mycelium_hlc:from_binary(Bin) -> Ts.
+barrel_p2p_hlc:now() -> #timestamp{}.
+barrel_p2p_hlc:update(PeerTs) -> ok.
+barrel_p2p_hlc:compare(T1, T2) -> lt | eq | gt.
+barrel_p2p_hlc:wall_time(Ts) -> integer().     %% extract wall_ms
+barrel_p2p_hlc:logical(Ts) -> integer().       %% extract logical
+barrel_p2p_hlc:to_binary(Ts) -> binary().      %% 12 bytes
+barrel_p2p_hlc:from_binary(Bin) -> Ts.
 ```
 
 The HLC API is `supported` in
@@ -169,6 +169,6 @@ Yugabyte, others use variants).
 ## Related
 
 - [Service registry](service-registry.md) is the main consumer
-  of HLCs in mycelium.
+  of HLCs in barrel_p2p.
 - [Architecture](../reference/architecture.md) covers the
-  supervision tree position of `mycelium_hlc`.
+  supervision tree position of `barrel_p2p_hlc`.

@@ -137,19 +137,19 @@ Plumtree exposes a small set of metrics. The interesting ratios:
 
 | Metric | Healthy ratio |
 |--------|---------------|
-| `mycelium.plumtree.graft.sent` / `gossip.received` | Should be small. A high ratio means lots of self-healing, which is a symptom of churn in the active view. |
-| `mycelium.plumtree.prune.sent` / `gossip.received` | A non-trivial steady-state value is normal (the tree settling). A spike means the tree is reshaping (peer failures, joins). |
-| `mycelium.plumtree.ihave.sent` | Roughly tracks active-view size × broadcast rate. |
+| `barrel_p2p.plumtree.graft.sent` / `gossip.received` | Should be small. A high ratio means lots of self-healing, which is a symptom of churn in the active view. |
+| `barrel_p2p.plumtree.prune.sent` / `gossip.received` | A non-trivial steady-state value is normal (the tree settling). A spike means the tree is reshaping (peer failures, joins). |
+| `barrel_p2p.plumtree.ihave.sent` | Roughly tracks active-view size × broadcast rate. |
 
 See [observe a cluster](../how-to/observe-cluster.md) for the
 full catalogue.
 
 ## Configuration
 
-There are no operator-tunable Plumtree knobs in mycelium today.
+There are no operator-tunable Plumtree knobs in barrel_p2p today.
 The defaults match the HyParView paper. If you want to tweak the
 deduplication TTL or the graft timeout, the constants live in
-`src/mycelium_plumtree.erl`.
+`src/barrel_p2p_plumtree.erl`.
 
 ## API
 
@@ -160,12 +160,12 @@ service-event broadcasts) are the consumers.
 If you want to broadcast your own message:
 
 ```erlang
-mycelium_plumtree:broadcast(Tag, Payload).
+barrel_p2p_plumtree:broadcast(Tag, Payload).
 
 %% Subscribe to receive broadcasts.
-mycelium_plumtree:subscribe(self()).
+barrel_p2p_plumtree:subscribe(self()).
 %% Receives: {plumtree_broadcast, {Tag, Payload}}
-mycelium_plumtree:unsubscribe(self()).
+barrel_p2p_plumtree:unsubscribe(self()).
 ```
 
 The API is `beta` — the calling shape may change across minor
@@ -178,6 +178,6 @@ tagged-stream multiplex ([streams concept](streams.md)).
 - [Cluster membership](cluster-membership.md) is what produces
   the active-view links Plumtree builds the tree on top of.
 - [Service registry](service-registry.md) is the main consumer
-  of Plumtree broadcasts inside mycelium.
+  of Plumtree broadcasts inside barrel_p2p.
 - [Observe a cluster](../how-to/observe-cluster.md) lists the
   metrics emitted by the gossip layer.

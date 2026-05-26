@@ -1,6 +1,6 @@
 # Security audit preparation
 
-Working document for the external review of mycelium's crypto and
+Working document for the external review of barrel_p2p's crypto and
 transport layers ahead of the first public 0.x release. Delete this
 file once the audit is complete and findings are tracked in
 `docs/features.md` or the CHANGELOG.
@@ -23,26 +23,26 @@ the Erlang process inbox of a peer:
 
 | Module                          | Concern                                                                                       |
 |---------------------------------|-----------------------------------------------------------------------------------------------|
-| `mycelium_dist_auth`            | Ed25519 challenge/response, replay window, timestamp validation, trust-store interaction.     |
-| `mycelium_dist_auth_stream`     | Wire framing for the auth handshake, length-prefix bounds, stream lifecycle.                  |
-| `mycelium_dist_auth_callback`   | Bridge between `quic_dist`'s auth hook and the protocol.                                      |
-| `mycelium_dist_keys`            | Trust-store on-disk format, file permissions, TOFU vs strict semantics.                       |
-| `mycelium_dist_protocol`        | Encode/decode of `HELLO`/`CHALLENGE`/`RESPONSE`/`OK`/`FAIL` (v2); length bounds; no atom mint. |
-| `mycelium_quic_cert`            | Self-signed ECDSA P-256 cert generation, key permissions.                                     |
-| `mycelium_dist`                 | `proto_dist` shim, `application:get_env(quic, dist)` projection, env-override invariants.    |
-| `mycelium_rotate`               | Cert/identity rotation, atomic swap, restore-on-failure semantics.                            |
+| `barrel_p2p_dist_auth`            | Ed25519 challenge/response, replay window, timestamp validation, trust-store interaction.     |
+| `barrel_p2p_dist_auth_stream`     | Wire framing for the auth handshake, length-prefix bounds, stream lifecycle.                  |
+| `barrel_p2p_dist_auth_callback`   | Bridge between `quic_dist`'s auth hook and the protocol.                                      |
+| `barrel_p2p_dist_keys`            | Trust-store on-disk format, file permissions, TOFU vs strict semantics.                       |
+| `barrel_p2p_dist_protocol`        | Encode/decode of `HELLO`/`CHALLENGE`/`RESPONSE`/`OK`/`FAIL` (v2); length bounds; no atom mint. |
+| `barrel_p2p_quic_cert`            | Self-signed ECDSA P-256 cert generation, key permissions.                                     |
+| `barrel_p2p_dist`                 | `proto_dist` shim, `application:get_env(quic, dist)` projection, env-override invariants.    |
+| `barrel_p2p_rotate`               | Cert/identity rotation, atomic swap, restore-on-failure semantics.                            |
 
 ## Out of scope
 
 These are deliberately not in scope for this audit, but worth noting
 in the review report:
 
-- HyParView membership protocol (`mycelium_hyparview*`). DoS surface,
+- HyParView membership protocol (`barrel_p2p_hyparview*`). DoS surface,
   but no confidentiality boundary; treated as a separate concern.
-- CRDT layer (`mycelium_ormap`, `mycelium_hlc`). Data-plane.
-- Service registry (`mycelium_registry*`). Rides over authenticated
+- CRDT layer (`barrel_p2p_ormap`, `barrel_p2p_hlc`). Data-plane.
+- Service registry (`barrel_p2p_registry*`). Rides over authenticated
   dist; no separate handshake.
-- Discovery backends (`mycelium_discovery*`). Read-only resolvers,
+- Discovery backends (`barrel_p2p_discovery*`). Read-only resolvers,
   no authentication of their own.
 
 ## Threat model
@@ -79,7 +79,7 @@ swaps its TLS cert but not its Ed25519 key is rejected.
 
 Audit questions:
 
-1. Does `mycelium_dist_auth_callback` close all paths to an
+1. Does `barrel_p2p_dist_auth_callback` close all paths to an
    `accepted` outcome that bypass the Ed25519 step?
 2. Can a peer in `tofu` trust mode silently re-pin to a new key
    after disconnect/reconnect? (Expected: no, the trust store
@@ -103,7 +103,7 @@ Audit questions:
 
 ## Cookie semantics
 
-The Erlang dist cookie (`mycelium.dist_cookie`, default `mycelium`)
+The Erlang dist cookie (`barrel_p2p.dist_cookie`, default `barrel_p2p`)
 still gates `gen_server` calls between nodes. With Ed25519 auth
 enabled it is redundant for transport-level security, but it is the
 sole barrier when `auth_enabled = false`.
@@ -124,7 +124,7 @@ Audit questions:
 - No forward secrecy beyond what QUIC's ephemeral key exchange
   provides. Long-term Ed25519 keys are used for identity, not key
   exchange.
-- `mycelium_dist_auth` reads keys off disk per attempt rather than
+- `barrel_p2p_dist_auth` reads keys off disk per attempt rather than
   caching in memory. Trade-off against rotation simplicity.
 
 ## Materials for the audit

@@ -1,10 +1,10 @@
 # Connection migration
 
-Mycelium runs the Erlang distribution channel on a single QUIC
+Barrel P2P runs the Erlang distribution channel on a single QUIC
 connection per peer. QUIC supports connection migration: an
 established session can rebind to a new local UDP 4-tuple without
 losing keys, ordering, or streams. RFC 9000 §9 specifies the
-mechanism; mycelium exposes it as a one-shot trigger.
+mechanism; barrel_p2p exposes it as a one-shot trigger.
 
 This document covers when migration is useful, how to call it,
 and a small watchdog recipe for driving it from an application.
@@ -13,7 +13,7 @@ and a small watchdog recipe for driving it from an application.
 
 Three motivating cases:
 
-- A laptop running mycelium moves from Wi-Fi to a wired link, or
+- A laptop running barrel_p2p moves from Wi-Fi to a wired link, or
   from one Wi-Fi network to another, or from Wi-Fi to a cellular
   uplink. The local IP changes; the peer expects packets on the
   old 4-tuple.
@@ -30,15 +30,15 @@ mode) requires a full re-handshake. Migration moves the session
 to the new path in milliseconds, with no observable interruption
 in the Erlang layer.
 
-Migration is *not* something mycelium does on its own. It is an
+Migration is *not* something barrel_p2p does on its own. It is an
 application-driven trigger: you decide when the local network has
 changed enough to warrant a path validation.
 
 ## The API
 
 ```erlang
-ok                              = mycelium:migrate_peer(Node).
-ok                              = mycelium:migrate_peer(Node, #{timeout => 5000}).
+ok                              = barrel_p2p:migrate_peer(Node).
+ok                              = barrel_p2p:migrate_peer(Node, #{timeout => 5000}).
 
 %% Errors:
 {error, not_connected}          %% no current dist channel to Node
@@ -78,7 +78,7 @@ A short note on each error.
 
 ## Writing a trigger
 
-Mycelium does not run an automatic migration policy. The
+Barrel P2P does not run an automatic migration policy. The
 deliberate choice: deciding "the network has changed" depends on
 your environment (mobile device, container with a CGNAT, custom
 tunnel), and a one-size-fits-all heuristic would be wrong for
@@ -86,13 +86,13 @@ half of them.
 
 The pieces you need are already public:
 
-- `mycelium:subscribe/0` produces `peer_up` / `peer_down` events,
+- `barrel_p2p:subscribe/0` produces `peer_up` / `peer_down` events,
   so a trigger knows the current active view.
-- `mycelium_path_stats:srtt/1` returns the smoothed RTT for a
+- `barrel_p2p_path_stats:srtt/1` returns the smoothed RTT for a
   peer's underlying QUIC path.
-- `mycelium_path_stats:summary/1` returns a richer snapshot
+- `barrel_p2p_path_stats:summary/1` returns a richer snapshot
   (srtt, latest_rtt, cwnd, in_flight, congested).
-- `mycelium:migrate_peer/1,2` is the trigger.
+- `barrel_p2p:migrate_peer/1,2` is the trigger.
 
 ### Recipe: srtt-threshold watchdog
 
@@ -113,16 +113,16 @@ start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
 init([]) ->
-    ok = mycelium:subscribe(),
+    ok = barrel_p2p:subscribe(),
     erlang:send_after(?SAMPLE_MS, self(), tick),
     {ok, #{strikes => #{}}}.
 
 handle_info(tick, #{strikes := Strikes} = S) ->
-    NewStrikes = lists:foldl(fun sample/2, Strikes, mycelium:active_view()),
+    NewStrikes = lists:foldl(fun sample/2, Strikes, barrel_p2p:active_view()),
     erlang:send_after(?SAMPLE_MS, self(), tick),
     {noreply, S#{strikes := NewStrikes}};
 
-handle_info({mycelium_event, {peer_down, Node, _}}, #{strikes := Strikes} = S) ->
+handle_info({barrel_p2p_event, {peer_down, Node, _}}, #{strikes := Strikes} = S) ->
     {noreply, S#{strikes := maps:remove(Node, Strikes)}};
 
 handle_info(_, S) ->
@@ -132,13 +132,13 @@ handle_call(_, _, S) -> {reply, ok, S}.
 handle_cast(_, S)    -> {noreply, S}.
 
 sample(Node, Strikes) ->
-    case mycelium_path_stats:srtt(Node) of
+    case barrel_p2p_path_stats:srtt(Node) of
         {ok, Us} when Us > ?THRESHOLD_US ->
             case maps:get(Node, Strikes, 0) of
                 N when N >= 1 ->
                     %% Spawn so we do not block the watchdog tick on
                     %% the synchronous migrate call.
-                    spawn(fun() -> mycelium:migrate_peer(Node) end),
+                    spawn(fun() -> barrel_p2p:migrate_peer(Node) end),
                     maps:remove(Node, Strikes);
                 N ->
                     Strikes#{Node => N + 1}
@@ -170,7 +170,7 @@ call:
 - A docker network reconfiguration.
 
 In each case the trigger code is the same one-line call to
-`mycelium:migrate_peer(Node)`. The trigger itself is your code
+`barrel_p2p:migrate_peer(Node)`. The trigger itself is your code
 and your decision.
 
 ## Multi-peer migration
@@ -180,8 +180,8 @@ route; the others remain reachable). If your local network change
 affects many or all peers, iterate:
 
 ```erlang
-[ spawn(fun() -> mycelium:migrate_peer(N) end)
-  || N <- mycelium:active_view() ].
+[ spawn(fun() -> barrel_p2p:migrate_peer(N) end)
+  || N <- barrel_p2p:active_view() ].
 ```
 
 Spawning per call keeps the trigger from serialising on a slow
@@ -192,7 +192,7 @@ peer's timeout.
 If you are routing some peers through an external relay (see
 [external-relay.md](route-through-relay.md)), the same migration
 primitive applies: register a new socket adapter pointing at the
-new relay path, then call `mycelium:migrate_peer/1,2`. The
+new relay path, then call `barrel_p2p:migrate_peer/1,2`. The
 running QUIC connection migrates to the new path; the dist
 controller continues sending on the new adapter.
 

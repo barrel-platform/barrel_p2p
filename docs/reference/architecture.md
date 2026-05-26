@@ -1,6 +1,6 @@
 # Internals
 
-This document describes how mycelium works underneath the API. It
+This document describes how barrel_p2p works underneath the API. It
 is meant for two readers: Erlang developers who have followed the
 [getting started](../overview/getting-started.md) guide and the
 [practice handbook](../tutorials/distributed-chat.md), and contributors planning a change
@@ -15,11 +15,11 @@ in-tree services that keep the whole picture together.
 ```
 +----------------------------------------------------------+
 |                        Application                       |
-|   mycelium:register_service/2  whereis_service  Pid ! Msg|
+|   barrel_p2p:register_service/2  whereis_service  Pid ! Msg|
 +------------------------+---------------------------------+
                          |
 +------------------------+---------------------------------+
-|                       mycelium.erl                       |
+|                       barrel_p2p.erl                       |
 |   (public API: thin wrappers over the layers below)      |
 +----+--------+--------------+---------------+-------------+
      |        |              |               |
@@ -31,7 +31,7 @@ in-tree services that keep the whole picture together.
                          |
                          v
                 +------------------+
-                |  mycelium_dist   |
+                |  barrel_p2p_dist   |
                 |  (proto_dist     |
                 |   shim + cert    |
                 |   + defaults)    |
@@ -49,53 +49,53 @@ in-tree services that keep the whole picture together.
                 +------------------+
 ```
 
-The application only ever calls into `mycelium.erl`. Every other
+The application only ever calls into `barrel_p2p.erl`. Every other
 module in the diagram is internal; you are free to read its code,
 but you should not depend on its names from outside.
 
 ## Supervision tree
 
-A running mycelium node has the following supervision shape:
+A running barrel_p2p node has the following supervision shape:
 
 ```
-mycelium_sup  (one_for_one)
+barrel_p2p_sup  (one_for_one)
 |
-+- mycelium_hlc           hybrid logical clock for CRDT timestamps
++- barrel_p2p_hlc           hybrid logical clock for CRDT timestamps
 |
-+- mycelium_dist_keys     trust store (ETS) for Ed25519 pins
++- barrel_p2p_dist_keys     trust store (ETS) for Ed25519 pins
 |
-+- mycelium_hyparview_sup (rest_for_one)
-|  +- mycelium_hyparview          HyParView state machine
-|  +- mycelium_hyparview_events   subscriber bus for peer_up/peer_down
-|  +- mycelium_hyparview_shuffle  periodic view exchange timer
-|  +- mycelium_hyparview_cleanup  passive view aging timer
++- barrel_p2p_hyparview_sup (rest_for_one)
+|  +- barrel_p2p_hyparview          HyParView state machine
+|  +- barrel_p2p_hyparview_events   subscriber bus for peer_up/peer_down
+|  +- barrel_p2p_hyparview_shuffle  periodic view exchange timer
+|  +- barrel_p2p_hyparview_cleanup  passive view aging timer
 |
-+- mycelium_plumtree_sup
-|  +- mycelium_plumtree           epidemic broadcast tree
++- barrel_p2p_plumtree_sup
+|  +- barrel_p2p_plumtree           epidemic broadcast tree
 |
-+- mycelium_registry_sup  (rest_for_one)
-|  +- mycelium_registry           local registry + CRDT
-|  +- mycelium_registry_replica   replication driver (mycelium_replica)
++- barrel_p2p_registry_sup  (rest_for_one)
+|  +- barrel_p2p_registry           local registry + CRDT
+|  +- barrel_p2p_registry_replica   replication driver (barrel_p2p_replica)
 |
-+- mycelium_leader               cluster-wide singleton election
-+- mycelium_leader_replica       election replication (mycelium_replica)
++- barrel_p2p_leader               cluster-wide singleton election
++- barrel_p2p_leader_replica       election replication (barrel_p2p_replica)
 |
-+- mycelium_shard                sharded placement (HRW ring)
-+- mycelium_members_replica      lease-based live-node set (mycelium_replica)
-+- mycelium_reminder             durable reminders (owner-fires-once)
-+- mycelium_reminder_replica     reminder store (mycelium_replica)
++- barrel_p2p_shard                sharded placement (HRW ring)
++- barrel_p2p_members_replica      lease-based live-node set (barrel_p2p_replica)
++- barrel_p2p_reminder             durable reminders (owner-fires-once)
++- barrel_p2p_reminder_replica     reminder store (barrel_p2p_replica)
 |
-+- mycelium_proxy_sup     (simple_one_for_one)
-|  +- mycelium_service_proxy * N  per-name remote proxies
++- barrel_p2p_proxy_sup     (simple_one_for_one)
+|  +- barrel_p2p_service_proxy * N  per-name remote proxies
 |
-+- mycelium_router               service overlay routing cache
-+- mycelium_streams              tagged user-stream demultiplexer
-+- mycelium_bridge               dist connection bookkeeping
-+- mycelium_dist_gc              idle dist channel reaper
++- barrel_p2p_router               service overlay routing cache
++- barrel_p2p_streams              tagged user-stream demultiplexer
++- barrel_p2p_bridge               dist connection bookkeeping
++- barrel_p2p_dist_gc              idle dist channel reaper
 ```
 
-The vertical structure is not random. `mycelium_hlc` and
-`mycelium_dist_keys` start first because every other subsystem
+The vertical structure is not random. `barrel_p2p_hlc` and
+`barrel_p2p_dist_keys` start first because every other subsystem
 depends on monotonic timestamps and on the trust store being
 available. The HyParView subtree is restart-as-a-block
 (`rest_for_one`): if the state machine crashes, the event bus,
@@ -130,7 +130,7 @@ the full set of nodes your Erlang code may eventually talk to.
 ### Joining the cluster
 
 When a new node joins, it sends a `JOIN` message to one *contact
-node* it knows about (either explicitly through `mycelium:join/1`
+node* it knows about (either explicitly through `barrel_p2p:join/1`
 or implicitly through the `contact_nodes` config key):
 
 ```
@@ -155,7 +155,7 @@ value spreads farther but costs more messages.
 ### Failure handling
 
 A node failure is detected through the dist channel:
-`net_kernel` reports a `nodedown` event, which mycelium translates
+`net_kernel` reports a `nodedown` event, which barrel_p2p translates
 into a HyParView failure. The protocol then:
 
 1. Moves the failed peer from active to a transient "failed"
@@ -217,7 +217,7 @@ The two interesting consequences:
 
 ## The service registry: an OR-Map CRDT
 
-The service registry is the part of mycelium that requires the
+The service registry is the part of barrel_p2p that requires the
 most thought to use correctly. We use a CRDT because we want
 registration to work without coordination: any node can register
 a service at any time, and all nodes converge to the same view
@@ -242,7 +242,7 @@ same node are ordered, and that two adds from different nodes can
 be compared causally.
 
 ```erlang
--type dot()    :: {node(), mycelium_hlc:timestamp()}.
+-type dot()    :: {node(), barrel_p2p_hlc:timestamp()}.
 -type or_map() :: #{
     Key => {
         dots   :: sets:set(dot()),
@@ -252,19 +252,19 @@ be compared causally.
 ```
 
 Operationally: when you call `register_service/2`, the registry
-adds an entry with a fresh dot, and its `mycelium_replica`
+adds an entry with a fresh dot, and its `barrel_p2p_replica`
 instance broadcasts the delta over Plumtree. When the broadcast reaches
 peer B, B merges the delta into its local OR-Map; from then on
 B's `whereis_service/1` can find the new registration.
 
 ## Sharded placement and the live-node set
 
-`mycelium_shard` answers "which node should own this key" with
+`barrel_p2p_shard` answers "which node should own this key" with
 rendezvous (HRW) hashing over a replicated live-node set. The set is
 NOT the bounded HyParView active view and is not driven by `peer_down`
 (which is active-view churn, not cluster death). Instead each node
 gossips a periodic heartbeat carrying its wall-clock time through its
-own `mycelium_replica` instance (`mycelium_members_replica`); a node is
+own `barrel_p2p_replica` instance (`barrel_p2p_members_replica`); a node is
 in the ring while its lease is fresh (`Now - heartbeat =< member_ttl_ms`),
 and heartbeats too far in the future are rejected so a fast clock cannot
 pin a dead node. The set converges without tombstones: a stale entry in
@@ -273,21 +273,21 @@ a full-sync is already expired by its timestamp.
 The live member list is published to a read-concurrency ETS table, so
 `place/1`, `owners/2`, `is_owner/1`, and `partition/1` are lock-free
 local reads. When the live set changes, the shard diffs the partitions
-this node owns and emits `{mycelium_shard, {acquired | released, P}}`
+this node owns and emits `{barrel_p2p_shard, {acquired | released, P}}`
 to subscribers, which is how consumers hand off partitioned state.
 
 ## Durable reminders
 
-`mycelium_reminder` layers fire-at-most-once timers on placement. A
+`barrel_p2p_reminder` layers fire-at-most-once timers on placement. A
 reminder `Key => {FireAt, Payload, Version}` lives in its own
-`mycelium_replica` instance (`mycelium_reminder_replica`), so every node
+`barrel_p2p_replica` instance (`barrel_p2p_reminder_replica`), so every node
 holds it and it survives the node that armed it. The owner of a reminder
-is `mycelium_shard:place(Key)`; only the owner arms a local
+is `barrel_p2p_shard:place(Key)`; only the owner arms a local
 `erlang:send_after` and fires. The timer is a versioned hint: on timeout
 the owner re-checks that the reminder still exists, still names the same
 version, is still owned here, and is actually due. Firing is
 tombstone-first (gossip the removal, then deliver
-`{mycelium_reminder, Key, Payload, Fence}` locally), and ownership
+`{barrel_p2p_reminder, Key, Payload, Fence}` locally), and ownership
 events plus a periodic `reminder_scan_ms` sweep re-arm a survivor's
 inherited reminders. The result is exactly-once in steady state and
 best-effort under churn or a crash at the fire instant; `Fence` (the
@@ -298,7 +298,7 @@ packed version) lets a handler dedup.
 Standard wall-clock timestamps can move backwards if NTP corrects
 a drifting clock, and they cannot order events from different
 nodes consistently. A pure logical clock (a Lamport clock) orders
-events but loses the connection to physical time. Mycelium uses
+events but loses the connection to physical time. Barrel P2P uses
 **hybrid logical clocks** (HLC), which combine the two.
 
 The shape is `{wall_ms, logical}`:
@@ -309,18 +309,18 @@ The shape is `{wall_ms, logical}`:
 
 The clock has two operations:
 
-- `mycelium_hlc:now/0` produces the next local timestamp, ensuring
+- `barrel_p2p_hlc:now/0` produces the next local timestamp, ensuring
   monotonic progress relative to the previous local timestamp.
-- `mycelium_hlc:update/1` accepts a timestamp from a peer and
+- `barrel_p2p_hlc:update/1` accepts a timestamp from a peer and
   advances the local clock to be greater than both the local
   reading and the peer's timestamp.
 
-HLC timestamps serve two roles in mycelium:
+HLC timestamps serve two roles in barrel_p2p:
 
 - They are the `dot` component in OR-Map adds. This is where
   causality across nodes lives.
 - They are exposed to applications that need cluster-wide
-  ordering without coordinating; the `mycelium_hlc` module is
+  ordering without coordinating; the `barrel_p2p_hlc` module is
   public.
 
 ## Authentication: Ed25519 over a QUIC stream pair
@@ -367,21 +367,21 @@ one file per peer (`<node-atom>.pub`). Writes are atomic
 (write-then-rename) and use 0600 permissions; see
 [authentication.md](../how-to/configure-authentication.md) for the full lifecycle.
 
-## The dist carrier: `mycelium_dist` + `quic_dist`
+## The dist carrier: `barrel_p2p_dist` + `quic_dist`
 
-`mycelium_dist` is the proto_dist module Erlang loads when you
-boot with `-proto_dist mycelium`. It is intentionally a thin
+`barrel_p2p_dist` is the proto_dist module Erlang loads when you
+boot with `-proto_dist barrel_p2p`. It is intentionally a thin
 shim: the bulk of the QUIC transport is upstream
 [`quic_dist`](https://github.com/benoitc/erlang_quic).
 
-What `mycelium_dist:listen/1` does, in order:
+What `barrel_p2p_dist:listen/1` does, in order:
 
 1. **Ensures TLS material.** If `data/quic/node.crt` and
    `data/quic/node.key` exist, it uses them; otherwise it
-   generates a self-signed pair via `mycelium_quic_cert`.
+   generates a self-signed pair via `barrel_p2p_quic_cert`.
 2. **Projects defaults into the `quic.dist` app env.** Sets
-   `auth_callback => {mycelium_dist_auth_callback, authenticate}`,
-   `discovery_module => mycelium_discovery`, and the cert/key
+   `auth_callback => {barrel_p2p_dist_auth_callback, authenticate}`,
+   `discovery_module => barrel_p2p_discovery`, and the cert/key
    paths. User-supplied values under `{quic, [{dist, [...]}]}` in
    `sys.config` always win; this step only fills gaps.
 3. **Validates the projected config.** If `auth_enabled` is
@@ -400,7 +400,7 @@ identity.
 
 ### Discovery
 
-The default `discovery_module` is `mycelium_discovery`, a
+The default `discovery_module` is `barrel_p2p_discovery`, a
 *composing* dispatcher: it asks each backend in a chain until one
 returns a hit, then caches the result. The default backend chain
 is:
@@ -416,7 +416,7 @@ is:
    Useful in environments with proper DNS plumbing.
 
 You can replace the chain entirely by setting
-`mycelium.discovery_backends` in sys.config.
+`barrel_p2p.discovery_backends` in sys.config.
 
 ## The idle dist-channel GC
 
@@ -428,7 +428,7 @@ GC reaps such channels.
 The flow below is the reason the GC exists. A service lookup may
 return a pid on a node outside the local active view. Sending to that
 pid opens an authenticated QUIC dist channel. If the application does
-not keep using it, Mycelium closes it later.
+not keep using it, Barrel P2P closes it later.
 
 ![Sending to a pid outside the active view opens an authenticated QUIC dist channel on demand.](diagrams/message-passing.png)
 
@@ -456,7 +456,7 @@ design relies on its presence; see
 2. Look up in the local cache (populated by gossip).
 3. If neither, ask through the overlay.
 
-The overlay step uses `mycelium_router`: it sends a route request
+The overlay step uses `barrel_p2p_router`: it sends a route request
 to a random active peer with a TTL, which forwards in turn until
 a peer finds the service or the TTL runs out. The path is cached
 on success so subsequent lookups are direct.
@@ -465,8 +465,8 @@ When the resolved service is on a remote node, `whereis_service/2`
 optionally hands you a **service proxy**: a local pid that
 forwards `gen_server` calls and casts to the remote service over
 the dist channel. The proxy is what makes
-`{via, mycelium, Name}` registrations transparent: a caller can
-`gen_server:call({via, mycelium, my_service}, request)` and the
+`{via, barrel_p2p, Name}` registrations transparent: a caller can
+`gen_server:call({via, barrel_p2p, my_service}, request)` and the
 proxy handles the remote dispatch.
 
 Proxies are reference-counted and reaped when the remote service
@@ -476,11 +476,11 @@ goes down.
 
 The dist channel between two peers is multiplexed: the Erlang
 dist control stream is one QUIC bidirectional stream, but the
-application can open additional streams alongside it. Mycelium
-exposes that as `mycelium_streams`, a single demultiplexer per
+application can open additional streams alongside it. Barrel P2P
+exposes that as `barrel_p2p_streams`, a single demultiplexer per
 node.
 
-Wire format: every mycelium-managed user stream starts with
+Wire format: every barrel_p2p-managed user stream starts with
 
 ```
 <<TagLen:8, Tag:TagLen/binary, Payload/binary>>
@@ -501,12 +501,12 @@ reset.
 
 A single QUIC connection can rebind to a new local UDP 4-tuple
 (NIC change, IP change, default-route change) without losing
-keys, streams, or ordering. `mycelium:migrate_peer/1,2` exposes
+keys, streams, or ordering. `barrel_p2p:migrate_peer/1,2` exposes
 that primitive as a synchronous call.
 
-The decision of **when** to migrate is the application's. Mycelium
+The decision of **when** to migrate is the application's. Barrel P2P
 provides the trigger and the path statistics
-(`mycelium_path_stats:srtt/1`); a watchdog can poll, evaluate, and
+(`barrel_p2p_path_stats:srtt/1`); a watchdog can poll, evaluate, and
 call.
 
 The motivating cases are: a mobile node moves between Wi-Fi and
@@ -516,7 +516,7 @@ shuffle; a peer is being routed through a different relay. See
 
 ## Observability
 
-Every metric mycelium emits goes through `mycelium_metrics`. The
+Every metric barrel_p2p emits goes through `barrel_p2p_metrics`. The
 catalog is in [observability.md](../how-to/observe-cluster.md); the design
 note for this document is: emit sites are wrapped in a
 `try`/`catch`, so a misconfigured exporter cannot crash protocol
@@ -527,20 +527,20 @@ code.
 If you want to follow a code path end-to-end, the natural seams
 are:
 
-- A `mycelium:join/1` call. Start in `mycelium_hyparview`'s
-  `handle_call({join, ...})` and follow the `mycelium_bridge`
+- A `barrel_p2p:join/1` call. Start in `barrel_p2p_hyparview`'s
+  `handle_call({join, ...})` and follow the `barrel_p2p_bridge`
   request, the QUIC connect, the auth callback, the dist
   handshake, the `peer_up` event.
-- A `register_service/2` call. Start in `mycelium_registry`'s
+- A `register_service/2` call. Start in `barrel_p2p_registry`'s
   `handle_call({register, ...})` and follow the OR-Map add, the
-  `mycelium_replica` broadcast, the `mycelium_plumtree`
+  `barrel_p2p_replica` broadcast, the `barrel_p2p_plumtree`
   fanout, and the merge on a remote node.
-- A `whereis_service/1` call. Start in `mycelium.erl`, see how
+- A `whereis_service/1` call. Start in `barrel_p2p.erl`, see how
   the local lookup is tried first, then the cache, then the
   overlay route request.
 
 The test suites that exercise each path are named after the
-module under test (`test/mycelium_hyparview_SUITE.erl`,
-`test/mycelium_registry_SUITE.erl`, `test/mycelium_router_SUITE.erl`,
+module under test (`test/barrel_p2p_hyparview_SUITE.erl`,
+`test/barrel_p2p_registry_SUITE.erl`, `test/barrel_p2p_router_SUITE.erl`,
 etc.). [testing.md](../how-to/run-tests.md) lists them and explains the
 docker-only suite for the full transport behaviour.

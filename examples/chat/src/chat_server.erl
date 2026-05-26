@@ -43,7 +43,7 @@ leave_room(Room) ->
     end.
 
 list_rooms() ->
-    Services = mycelium:list_services(),
+    Services = barrel_p2p:list_services(),
     [Room || {chat_room, Room} <- Services].
 
 get_members(Room) ->
@@ -56,7 +56,7 @@ get_members(Room) ->
 
 %% Internal: find room service, handling both local and remote results
 find_room(Room) ->
-    case mycelium:whereis_service({chat_room, Room}) of
+    case barrel_p2p:whereis_service({chat_room, Room}) of
         {ok, Pid} -> {ok, Pid};
         {ok, _Node, Pid} -> {ok, Pid};
         {error, not_found} -> {error, not_found}
@@ -67,7 +67,7 @@ find_room(Room) ->
 init(Room) ->
     process_flag(trap_exit, true),
     ServiceName = {chat_room, Room},
-    case mycelium:register_service(ServiceName, #{created => erlang:timestamp()}) of
+    case barrel_p2p:register_service(ServiceName, #{created => erlang:timestamp()}) of
         ok ->
             io:format("[~p] Room '~p' created~n", [node(), Room]),
             {ok, #state{room = Room}};
@@ -126,5 +126,5 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, #state{room = Room}) ->
     io:format("[~p] Room '~p' shutting down~n", [node(), Room]),
-    mycelium:unregister_service({chat_room, Room}),
+    barrel_p2p:unregister_service({chat_room, Room}),
     ok.

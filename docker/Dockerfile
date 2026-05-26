@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Mycelium integration tests
+# Multi-stage Dockerfile for Barrel P2P integration tests
 # Target: OTP 28+ (Erlang 28)
 
 ARG ERLANG_VERSION=28
@@ -69,7 +69,7 @@ RUN chmod +x /app/scripts/*.sh
 RUN mkdir -p /app/data/keys/trusted && chmod 700 /app/data/keys
 
 # Environment
-ENV ERLANG_COOKIE=mycelium_test_cookie
+ENV ERLANG_COOKIE=barrel_p2p_test_cookie
 ENV NODE_ROLE=member
 ENV NODE_NAME=node@localhost
 

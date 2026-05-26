@@ -1,6 +1,6 @@
 # Introduction
 
-This is the longer companion to [What is mycelium?](what-is-mycelium.md).
+This is the longer companion to [What is barrel_p2p?](what-is-barrel_p2p.md).
 It explains *why* each piece of the system is shaped the way it
 is. Read this once; the per-concept pages then make sense without
 context-switching.
@@ -26,7 +26,7 @@ It struggles outside that envelope. Three specific ways:
   consensus-but-not-quite, and it does not scale much past the
   full mesh.
 
-Mycelium addresses all three, while preserving the property that
+Barrel P2P addresses all three, while preserving the property that
 matters most: standard Erlang code paths still work. `Pid ! Msg`
 is still the right way to send a message.
 
@@ -56,14 +56,14 @@ Why QUIC?
   ship cleartext over a hostile network.
 - **One UDP socket per peer.** A single connection multiplexes
   the Erlang dist control stream plus any application streams
-  (`mycelium_streams`) plus the Ed25519 auth handshake. This is
+  (`barrel_p2p_streams`) plus the Ed25519 auth handshake. This is
   the natural shape for a P2P system.
 - **Connection migration.** A QUIC connection can rebind to a
   new local 4-tuple without losing keys or streams. Useful when
   the local network changes (laptops, CGNAT shuffles, tunnel
   reconnects).
 
-The carrier itself is upstream `quic_dist`. Mycelium is a thin
+The carrier itself is upstream `quic_dist`. Barrel P2P is a thin
 proto_dist shim on top: it auto-generates the self-signed TLS
 material on first boot, projects the right defaults into the
 `quic.dist` app env, and wires the Ed25519 callback. Everything
@@ -73,7 +73,7 @@ else delegates to upstream.
 
 The QUIC TLS handshake gives us a confidential channel, but it
 does not say *who* is on the other side. The certs are
-self-signed; there is no authority mycelium expects you to trust.
+self-signed; there is no authority barrel_p2p expects you to trust.
 
 The Ed25519 layer adds that. Each node has a long-lived Ed25519
 keypair stored on disk. The public key is the node's identity;
@@ -124,7 +124,7 @@ every other node, so `Pid ! Msg` is always a no-op at the
 connection level. In a partial-membership setting, two nodes that
 have never met have no open connection between them.
 
-Mycelium leans on OTP's demand-driven dist auto-connect. When
+Barrel P2P leans on OTP's demand-driven dist auto-connect. When
 `Pid ! Msg` targets a node outside the active view, a fresh
 QUIC channel opens on demand: TLS handshake, Ed25519 mutual auth,
 Erlang dist handshake, and only then does the message flow. If
@@ -173,7 +173,7 @@ A real example: a registration on node A flows like this:
 
 1. The application calls `register_service/2`. The local
    registry updates its OR-Map with a fresh dot.
-2. The registry's `mycelium_replica` instance produces a delta and
+2. The registry's `barrel_p2p_replica` instance produces a delta and
    broadcasts it through Plumtree.
 3. Each eager peer receives the delta, merges into its OR-Map,
    and forwards to its own eager peers. Lazy peers receive an
@@ -190,7 +190,7 @@ the name is "out there". The protocol does the work.
 
 If you want to skim:
 
-- [What is mycelium?](what-is-mycelium.md) is the short version.
+- [What is barrel_p2p?](what-is-barrel_p2p.md) is the short version.
 - [Benefits and trade-offs](benefits.md) tells you when to pick
   this and when not to.
 

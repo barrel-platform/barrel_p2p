@@ -6,9 +6,9 @@ architectural details, comparison with adjacent projects.
 ## In this section
 
 - [API overview](api-overview.md) — every public function in
-  `mycelium.erl`, grouped by subsystem, with stability tier.
+  `barrel_p2p.erl`, grouped by subsystem, with stability tier.
 - [Configuration](configuration.md) — every key under
-  `{mycelium, [...]}` in sys.config, with default, type, and
+  `{barrel_p2p, [...]}` in sys.config, with default, type, and
   one-line purpose.
 - [Architecture](architecture.md) — the full supervision tree,
   protocol-level details that did not fit in the concept pages,
@@ -16,8 +16,8 @@ architectural details, comparison with adjacent projects.
 - [Comparison with Partisan](comparison-with-partisan.md) —
   side-by-side feature matrix, when to pick which library.
 - [The replicated substrate](replicated-substrate.md) — the
-  low-level `mycelium_replica` behaviour and `mycelium_crdt_wire`,
-  for custom merge beyond `mycelium_map`.
+  low-level `barrel_p2p_replica` behaviour and `barrel_p2p_crdt_wire`,
+  for custom merge beyond `barrel_p2p_map`.
 
 ## Related
 

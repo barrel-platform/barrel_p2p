@@ -1,12 +1,12 @@
 # Leader election and singletons
 
 Many applications need "exactly one node runs this job": a cron
-driver, a queue compactor, a shard owner. Mycelium provides this as
-a small campaign-and-notify API. A process calls `mycelium:lead/2`,
+driver, a queue compactor, a shard owner. Barrel P2P provides this as
+a small campaign-and-notify API. A process calls `barrel_p2p:lead/2`,
 the cluster elects one leader, and the leader is re-elected
 automatically when membership changes.
 
-Because mycelium is an AP/gossip system with no consensus layer,
+Because barrel_p2p is an AP/gossip system with no consensus layer,
 election is deterministic rather than coordinated, and each
 leadership term carries a fencing token so a stale leader cannot
 corrupt shared state. This page explains both.
@@ -20,7 +20,7 @@ role, and every later transition arrives as a message:
 ```erlang
 %% The worker process campaigns, then runs only while it leads.
 run() ->
-    case mycelium:lead(report_roller) of
+    case barrel_p2p:lead(report_roller) of
         {ok, {leader, Fence}}  -> start_job(Fence);
         {ok, follower}         -> wait()
     end,
@@ -28,9 +28,9 @@ run() ->
 
 loop() ->
     receive
-        {mycelium_leader, report_roller, {elected, Fence}} ->
+        {barrel_p2p_leader, report_roller, {elected, Fence}} ->
             start_job(Fence), loop();
-        {mycelium_leader, report_roller, revoked} ->
+        {barrel_p2p_leader, report_roller, revoked} ->
             stop_job(), loop()
     end.
 ```
@@ -38,13 +38,13 @@ loop() ->
 Supporting calls:
 
 ```erlang
-mycelium:leader(report_roller).     %% {ok, Node, Pid} | {error, no_leader}
-mycelium:is_leader(report_roller).  %% boolean()
-mycelium:fence(report_roller).      %% {ok, Fence} | {error, not_leader}
-mycelium:resign(report_roller).     %% step down (no `revoked' is sent)
+barrel_p2p:leader(report_roller).     %% {ok, Node, Pid} | {error, no_leader}
+barrel_p2p:is_leader(report_roller).  %% boolean()
+barrel_p2p:fence(report_roller).      %% {ok, Fence} | {error, not_leader}
+barrel_p2p:resign(report_roller).     %% step down (no `revoked' is sent)
 ```
 
-The caller owns its own job lifecycle: mycelium tells it when it
+The caller owns its own job lifecycle: barrel_p2p tells it when it
 holds leadership and when it loses it, and the caller decides what to
 start and stop.
 
@@ -71,13 +71,13 @@ briefly and then converge, which is the same trade the bare
 resources) without giving up the deterministic tiebreaker:
 
 ```erlang
-mycelium:lead(shard_owner, #{priority => 1}).  %% beats priority 0
+barrel_p2p:lead(shard_owner, #{priority => 1}).  %% beats priority 0
 ```
 
 ## Re-election
 
 Re-election is driven by the same membership events the rest of
-mycelium uses:
+barrel_p2p uses:
 
 - A new candidate appears (someone calls `lead/2`): its candidacy
   gossips out, every node recomputes, and a node that loses gets
@@ -101,7 +101,7 @@ resource records the highest token it has accepted and rejects any
 operation whose token is not strictly greater:
 
 ```erlang
-{ok, {leader, Fence}} = mycelium:lead(ledger_writer),
+{ok, {leader, Fence}} = barrel_p2p:lead(ledger_writer),
 ok = ledger:append(Entry, #{fence => Fence}).
 
 %% Inside the resource:
@@ -117,7 +117,7 @@ one leader can actually mutate state".
 
 ### How the token is built
 
-The token is a `non_neg_integer()`, minted from mycelium's
+The token is a `non_neg_integer()`, minted from barrel_p2p's
 [hybrid logical clock](hybrid-logical-clocks.md). When a node takes a
 term it advances its HLC past a replicated per-name high-water mark
 and then takes a fresh timestamp, so the new token is strictly
@@ -130,9 +130,9 @@ above it.
 - **Within a connected partition**, tokens are strictly monotonic:
   each term's token exceeds every earlier term's. This is the
   property the resource check relies on, and it holds across a real
-  leader death (proven in `mycelium_leader_e2e_SUITE`: kill the
+  leader death (proven in `barrel_p2p_leader_e2e_SUITE`: kill the
   leader, the survivor takes over with a strictly greater token).
-- **Across a network partition**, mycelium cannot guarantee
+- **Across a network partition**, barrel_p2p cannot guarantee
   monotonicity without a consensus layer it deliberately does not
   have. Each side may elect its own leader. Safety then rests
   entirely on the resource's reject-if-not-greater check; the HLC
@@ -140,7 +140,7 @@ above it.
   ordered, but you must not assume strict ordering there.
 
 If you need cross-partition exclusivity guarantees, you need a
-consensus system; that is outside mycelium's AP design.
+consensus system; that is outside barrel_p2p's AP design.
 
 ## API
 
@@ -150,8 +150,8 @@ lead(Name) -> {ok, {leader, Fence}} | {ok, follower} | {error, term()}.
 lead(Name, #{priority => integer()}) -> same.
 
 %% Messages delivered to the candidate process:
-%%   {mycelium_leader, Name, {elected, Fence}}
-%%   {mycelium_leader, Name, revoked}
+%%   {barrel_p2p_leader, Name, {elected, Fence}}
+%%   {barrel_p2p_leader, Name, revoked}
 
 resign(Name)    -> ok.
 leader(Name)    -> {ok, node(), pid()} | {error, no_leader}.

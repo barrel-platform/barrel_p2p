@@ -1,6 +1,6 @@
 # Core concepts
 
-These pages explain how each piece of mycelium works. They are
+These pages explain how each piece of barrel_p2p works. They are
 not API references; the goal is to give you a mental model.
 Reach for the [Reference](../reference/index.md) when you need
 exact function signatures or configuration keys.
@@ -25,18 +25,18 @@ natural one.
 - [Hybrid logical clocks](hybrid-logical-clocks.md) — the
   timestamps the CRDT uses to merge concurrent updates.
 - [Leader election](leader-election.md) — cluster-wide singletons
-  via `mycelium:lead/2`, with fencing tokens for safety.
+  via `barrel_p2p:lead/2`, with fencing tokens for safety.
 - [Sharded placement](sharded-placement.md) — consistent hashing
   over a replicated live-node set; `place/1` and ownership events.
 - [Durable reminders](durable-reminders.md) — replicated,
   fire-at-most-once timers that survive the node that armed them.
-- [Replicated maps](replicated-maps.md) — `mycelium_map`, a
+- [Replicated maps](replicated-maps.md) — `barrel_p2p_map`, a
   gossiped last-write-wins key-value map for cluster-wide
   control-plane state.
 
 ## The transport
 
-- [Dist channel](dist-channel.md) — the `-proto_dist mycelium`
+- [Dist channel](dist-channel.md) — the `-proto_dist barrel_p2p`
   shim over `quic_dist`, the discovery chain, the idle GC.
 - [Authentication](authentication.md) — Ed25519 mutual
   challenge-response between TLS handshake and Erlang dist

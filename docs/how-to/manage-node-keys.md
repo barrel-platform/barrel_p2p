@@ -1,6 +1,6 @@
 # Manage node keys
 
-Every mycelium node has two on-disk credentials: an **Ed25519 identity**
+Every barrel_p2p node has two on-disk credentials: an **Ed25519 identity**
 keypair (the node's identity, used to authenticate peers) and a **QUIC TLS
 certificate** (secures the transport). This guide is the task-first version:
 create them, read a node's fingerprint, and share keys so peers trust each
@@ -32,7 +32,7 @@ missing. To create them ahead of time without starting a cluster, boot the
 application once and stop:
 
 ```bash
-erl -sname tmp -eval 'application:ensure_all_started(mycelium), init:stop().'
+erl -sname tmp -eval 'application:ensure_all_started(barrel_p2p), init:stop().'
 ```
 
 This writes `data/keys/node.{pub,key}` and `data/quic/node.{crt,key}`. To
@@ -40,7 +40,7 @@ pre-generate just the TLS material (for example to bake it into an image),
 use the helper script:
 
 ```bash
-_build/default/lib/mycelium/priv/bin/mycelium_gen_cert.sh --out-dir data/quic
+_build/default/lib/barrel_p2p/priv/bin/barrel_p2p_gen_cert.sh --out-dir data/quic
 ```
 
 Flags: `--out-dir`, `--cn`, `--days`, `--key-bits`, `--force` (idempotent
@@ -55,8 +55,8 @@ Share the fingerprint (a SHA-256 of the public key) to verify a node out of
 band, the same way you would compare an SSH host key:
 
 ```erlang
-{ok, Pub} = mycelium_dist_auth:get_public_key().
-mycelium_dist_keys:fingerprint(Pub).        %% <<...32 bytes...>>
+{ok, Pub} = barrel_p2p_dist_auth:get_public_key().
+barrel_p2p_dist_keys:fingerprint(Pub).        %% <<...32 bytes...>>
 ```
 
 ## Share keys with peers
@@ -91,7 +91,7 @@ In `strict` mode a peer is accepted only if its public key is already in
 3. Set strict mode on each node:
 
    ```erlang
-   {mycelium, [{auth_trust_mode, strict}]}
+   {barrel_p2p, [{auth_trust_mode, strict}]}
    ```
 
 Adding a node later means provisioning *its* key on every existing node and
@@ -103,30 +103,30 @@ From an automation tool or a running node, pin a peer's key directly; the
 file is written atomically and picked up without a restart:
 
 ```erlang
-ok = mycelium_dist_keys:store_key('peer@host', PeerPubKey).   %% PeerPubKey :: <<_:256>>
+ok = barrel_p2p_dist_keys:store_key('peer@host', PeerPubKey).   %% PeerPubKey :: <<_:256>>
 ```
 
 ## Verify what is trusted
 
 ```erlang
-mycelium_dist_keys:list_trusted().              %% all pins
-mycelium_dist_keys:lookup_pin('peer@host').     %% not_pinned | {pinned, <<32 bytes>>}
-mycelium_dist_keys:get_trust_mode().            %% tofu | strict
+barrel_p2p_dist_keys:list_trusted().              %% all pins
+barrel_p2p_dist_keys:lookup_pin('peer@host').     %% not_pinned | {pinned, <<32 bytes>>}
+barrel_p2p_dist_keys:get_trust_mode().            %% tofu | strict
 ```
 
 To replace a pin (after a peer rotates its identity, below), delete the old
 one first; TOFU never re-pins over a different key:
 
 ```erlang
-ok = mycelium_dist_keys:delete_key('peer@host').
+ok = barrel_p2p_dist_keys:delete_key('peer@host').
 ```
 
 ## Rotate keys
 
-- **Identity** (Ed25519): `mycelium_rotate:rotate_identity()` takes effect on
+- **Identity** (Ed25519): `barrel_p2p_rotate:rotate_identity()` takes effect on
   the next handshake, no restart. TOFU peers re-pin; strict peers need the
   new public key provisioned first.
-- **Certificate** (TLS): `mycelium_rotate:rotate_cert()` needs a node
+- **Certificate** (TLS): `barrel_p2p_rotate:rotate_cert()` needs a node
   restart to load the new cert; the identity is unaffected.
 
 Both move the old material to a timestamped backup dir for rollback. See the

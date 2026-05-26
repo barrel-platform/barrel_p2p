@@ -18,9 +18,9 @@ init([]) ->
     process_flag(trap_exit, true),
     %% register_service/2 registers the CALLING process (this gen_server).
     %% A generic name, local-preferred by whereis_service/1:
-    ok = mycelium:register_service(quickstart_worker, #{node => node()}),
+    ok = barrel_p2p:register_service(quickstart_worker, #{node => node()}),
     %% ...and a per-node name so a specific node can be targeted:
-    ok = mycelium:register_service({worker, node()}, #{}),
+    ok = barrel_p2p:register_service({worker, node()}, #{}),
     io:format("[~p] quickstart_worker registered~n", [node()]),
     {ok, #{}}.
 
@@ -36,6 +36,6 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    mycelium:unregister_service(quickstart_worker),
-    mycelium:unregister_service({worker, node()}),
+    barrel_p2p:unregister_service(quickstart_worker),
+    barrel_p2p:unregister_service({worker, node()}),
     ok.

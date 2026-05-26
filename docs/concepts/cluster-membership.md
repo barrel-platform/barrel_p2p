@@ -1,6 +1,6 @@
 # Cluster membership
 
-Mycelium does not maintain a full mesh. Each node keeps a small,
+Barrel P2P does not maintain a full mesh. Each node keeps a small,
 bounded set of *gossip peers*; the cluster as a whole remains
 reachable through OTP's demand-driven dist auto-connect. The
 membership protocol that keeps the gossip topology coherent is
@@ -36,10 +36,10 @@ forwarding through these small bounded views.
 
 When a new node joins, it sends a `JOIN` message to one *contact
 node* it knows about. The contact node is either named explicitly
-via `mycelium:join/1` or configured in sys.config:
+via `barrel_p2p:join/1` or configured in sys.config:
 
 ```erlang
-{mycelium, [
+{barrel_p2p, [
     {contact_nodes, ['seed1@host', 'seed2@host']}
 ]}.
 ```
@@ -72,7 +72,7 @@ at the cost of more messages.
 ## Failure handling
 
 A peer failure is detected through the dist channel:
-`net_kernel` reports a `nodedown` event, mycelium translates it
+`net_kernel` reports a `nodedown` event, barrel_p2p translates it
 into a HyParView failure, and the protocol takes over:
 
 1. The failed peer is moved from active to a transient
@@ -120,7 +120,7 @@ the channel if no traffic flows over it.
 
 Two important calls return different things:
 
-- `mycelium:active_view/0` returns the small HyParView gossip
+- `barrel_p2p:active_view/0` returns the small HyParView gossip
   topology. It is bounded by `active_size`. This is the set
   used for gossip and for the broadcast tree.
 - `erlang:nodes/0` returns every node this BEAM currently has a
@@ -129,7 +129,7 @@ Two important calls return different things:
 
 The two sets can differ. After a `Pid ! Msg` to a peer outside
 the active view, that peer appears in `erlang:nodes/0` but not
-in `mycelium:active_view/0`. Once the idle GC reaps the channel,
+in `barrel_p2p:active_view/0`. Once the idle GC reaps the channel,
 it disappears from `erlang:nodes/0` too.
 
 ## Configuration knobs
@@ -151,24 +151,24 @@ For sizing recommendations by cluster size, see
 
 ## API
 
-The relevant entry points in `mycelium.erl`:
+The relevant entry points in `barrel_p2p.erl`:
 
 ```erlang
-mycelium:join(ContactNode) -> ok | {error, term()}.
-mycelium:leave() -> ok.
-mycelium:active_view() -> [node()].
-mycelium:passive_view() -> [node()].
+barrel_p2p:join(ContactNode) -> ok | {error, term()}.
+barrel_p2p:leave() -> ok.
+barrel_p2p:active_view() -> [node()].
+barrel_p2p:passive_view() -> [node()].
 
 %% Subscribe to membership transitions.
-mycelium:subscribe() -> ok.
-mycelium:subscribe(Pid) -> ok.
-mycelium:unsubscribe(Pid) -> ok.
+barrel_p2p:subscribe() -> ok.
+barrel_p2p:subscribe(Pid) -> ok.
+barrel_p2p:unsubscribe(Pid) -> ok.
 
 %% Events delivered as:
-%%   {mycelium_event, {peer_up, Node}}
-%%   {mycelium_event, {peer_down, Node, Reason}}
-%%   {mycelium_event, joined}
-%%   {mycelium_event, left}
+%%   {barrel_p2p_event, {peer_up, Node}}
+%%   {barrel_p2p_event, {peer_down, Node, Reason}}
+%%   {barrel_p2p_event, joined}
+%%   {barrel_p2p_event, left}
 ```
 
 `subscribe/0` is the right entry point if your application needs

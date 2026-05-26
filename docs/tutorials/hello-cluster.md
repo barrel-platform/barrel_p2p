@@ -19,7 +19,7 @@ In your `rebar.config`:
 
 ```erlang
 {deps, [
-    {mycelium, "0.1.0"}
+    {barrel_p2p, "0.1.0"}
 ]}.
 
 {ex_doc, [
@@ -40,7 +40,7 @@ rebar3 compile
 
 ```erlang
 [
-    {mycelium, [
+    {barrel_p2p, [
         {active_size, 5},
         {passive_size, 30},
         {listen_port, 9100},
@@ -55,23 +55,23 @@ rebar3 compile
 In one terminal:
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node1
 ```
 
 In another:
 
 ```bash
-ERL_AFLAGS="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false" \
+ERL_AFLAGS="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false" \
 rebar3 shell --config config/sys.config --sname node2
 ```
 
 On `node2`:
 
 ```erlang
-1> mycelium:join('node1@yourhost').
+1> barrel_p2p:join('node1@yourhost').
 ok
-2> mycelium:active_view().
+2> barrel_p2p:active_view().
 ['node1@yourhost']
 ```
 
@@ -86,14 +86,14 @@ On `node1`:
 ```erlang
 1> Pid = spawn(fun() -> timer:sleep(infinity) end).
 <0.123.0>
-2> mycelium:register_service(my_worker, Pid, #{role => worker}).
+2> barrel_p2p:register_service(my_worker, Pid, #{role => worker}).
 ok
 ```
 
 On `node2`, after a moment:
 
 ```erlang
-3> {ok, _Node, FoundPid} = mycelium:whereis_service(my_worker).
+3> {ok, _Node, FoundPid} = barrel_p2p:whereis_service(my_worker).
 {ok, 'node1@yourhost', <0.123.0>}
 4> FoundPid ! hello.
 hello
@@ -101,14 +101,14 @@ hello
 
 The `whereis_service/1` call returns `{ok, Node, Pid}` for a
 remote service. The send-bang uses standard Erlang distribution
-on top of the mycelium dist channel.
+on top of the barrel_p2p dist channel.
 
 ## Step 5: subscribe to events
 
 Still on `node2`:
 
 ```erlang
-5> mycelium:subscribe_services().
+5> barrel_p2p:subscribe_services().
 ok
 ```
 
@@ -116,15 +116,15 @@ Now have `node1` register and unregister a service:
 
 ```erlang
 %% On node1
-3> mycelium:register_service(another, #{}).
-4> mycelium:unregister_service(another).
+3> barrel_p2p:register_service(another, #{}).
+4> barrel_p2p:unregister_service(another).
 ```
 
 On `node2`, the listening process receives:
 
 ```erlang
-{mycelium_service_event, {service_registered, another, 'node1@yourhost'}}
-{mycelium_service_event, {service_unregistered, another, 'node1@yourhost'}}
+{barrel_p2p_service_event, {service_registered, another, 'node1@yourhost'}}
+{barrel_p2p_service_event, {service_unregistered, another, 'node1@yourhost'}}
 ```
 
 The subscription is per-pid. Use it to invalidate caches or to
@@ -132,8 +132,8 @@ trigger application-level reactions to cluster changes.
 
 ## What this tutorial covered
 
-- Booting a node with `-proto_dist mycelium`.
-- Joining a peer with `mycelium:join/1`.
+- Booting a node with `-proto_dist barrel_p2p`.
+- Joining a peer with `barrel_p2p:join/1`.
 - Registering a service with metadata.
 - Discovering the service from another node.
 - Subscribing to service events.

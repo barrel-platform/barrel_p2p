@@ -6,10 +6,10 @@ system messages, highest priority) alongside a pool of data
 streams: each distribution message is routed onto a data stream by
 hashing its `{From, To}` process pair, so traffic between different
 process pairs flows on independent streams while messages within a
-pair keep their order. On top of that mycelium adds one pair of
+pair keep their order. On top of that barrel_p2p adds one pair of
 unidirectional streams for the
 [Ed25519 authentication](authentication.md) handshake, and
-*application-level* streams managed by `mycelium_streams`.
+*application-level* streams managed by `barrel_p2p_streams`.
 
 This page is about that third category: the tagged user-stream
 multiplex. It is the right tool when message passing is not
@@ -34,7 +34,7 @@ it has its own flow control, and ownership is explicit.
 
 ## The wire shape
 
-Every mycelium-managed user stream starts with a short preamble:
+Every barrel_p2p-managed user stream starts with a short preamble:
 
 ```
 <<TagLen:8, Tag:TagLen/binary, Payload/binary>>
@@ -45,18 +45,18 @@ protocol (`<<"acme.snapshots">>`, `<<"chat:transcripts">>`).
 The demultiplexer reads the first `1 + TagLen` bytes, looks up
 the registered acceptor for the tag, and hands the stream to
 that acceptor process. From then on the acceptor owns the
-stream; mycelium is off the data path.
+stream; barrel_p2p is off the data path.
 
 Reserved tags:
 
-- `<<"mycelium:", _/binary>>` — reserved for future internals.
+- `<<"barrel_p2p:", _/binary>>` — reserved for future internals.
 
 ## Registering an acceptor
 
 To receive streams under a tag, register an acceptor pid:
 
 ```erlang
-mycelium_streams:register_acceptor(<<"my.protocol">>, self()).
+barrel_p2p_streams:register_acceptor(<<"my.protocol">>, self()).
 ```
 
 The acceptor pid receives one
@@ -67,7 +67,7 @@ for the duration of the stream.
 To unregister:
 
 ```erlang
-mycelium_streams:unregister_acceptor(<<"my.protocol">>).
+barrel_p2p_streams:unregister_acceptor(<<"my.protocol">>).
 ```
 
 Only one acceptor per tag per node. Attempting to register a
@@ -82,7 +82,7 @@ that tag are refused with a reset.
 To open a stream to a peer:
 
 ```erlang
-{ok, StreamRef} = mycelium_streams:open(<<"my.protocol">>, 'peer@host').
+{ok, StreamRef} = barrel_p2p_streams:open(<<"my.protocol">>, 'peer@host').
 ```
 
 The call:
@@ -147,9 +147,9 @@ else flows.
 The demultiplexer parks each inbound stream's tag preamble
 buffer until the tag has been fully received. To prevent a
 hostile peer from opening many streams and dripping bytes
-without completing the preamble, mycelium caps the number of
+without completing the preamble, barrel_p2p caps the number of
 in-flight pending streams at 64. Excess streams are reset; a
-metric (`mycelium.streams.preamble_dropped`) tracks the rate.
+metric (`barrel_p2p.streams.preamble_dropped`) tracks the rate.
 
 In a healthy cluster the metric should be zero.
 
@@ -160,7 +160,7 @@ A simple "dump a transcript" protocol between two nodes:
 ```erlang
 %% On the receiving node, register an acceptor.
 DumpReceiver = spawn(fun receive_loop/0),
-mycelium_streams:register_acceptor(<<"chat:dump">>, DumpReceiver).
+barrel_p2p_streams:register_acceptor(<<"chat:dump">>, DumpReceiver).
 
 receive_loop() ->
     receive
@@ -183,7 +183,7 @@ transcript_loop(SR, Acc) ->
 
 ```erlang
 %% On the sending node, open and send.
-{ok, SR} = mycelium_streams:open(<<"chat:dump">>, 'peer@host'),
+{ok, SR} = barrel_p2p_streams:open(<<"chat:dump">>, 'peer@host'),
 ok = quic_dist:send(SR, transcript_chunk_1()),
 ok = quic_dist:send(SR, transcript_chunk_2()),
 ok = quic_dist:close_stream(SR).
@@ -215,10 +215,10 @@ Streams shine when:
 ## API
 
 ```erlang
-mycelium_streams:register_acceptor(Tag, Pid) -> ok | {error, conflict}.
-mycelium_streams:unregister_acceptor(Tag) -> ok.
-mycelium_streams:open(Tag, Node) -> {ok, StreamRef} | {error, term()}.
-mycelium_streams:list_acceptors() -> [{Tag, Pid}].
+barrel_p2p_streams:register_acceptor(Tag, Pid) -> ok | {error, conflict}.
+barrel_p2p_streams:unregister_acceptor(Tag) -> ok.
+barrel_p2p_streams:open(Tag, Node) -> {ok, StreamRef} | {error, term()}.
+barrel_p2p_streams:list_acceptors() -> [{Tag, Pid}].
 ```
 
 The streams subsystem is marked `beta` in

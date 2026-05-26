@@ -24,18 +24,18 @@ DATA="data/node${N}"
 mkdir -p "${DATA}/keys" "${DATA}/quic" data/discovery
 
 # Build offline against this repo by linking it as a checkout.
-if [ ! -L "_checkouts/mycelium" ]; then
+if [ ! -L "_checkouts/barrel_p2p" ]; then
     mkdir -p _checkouts
-    ln -sf ../../.. _checkouts/mycelium
+    ln -sf ../../.. _checkouts/barrel_p2p
 fi
 
-DIST="-proto_dist mycelium -epmd_module mycelium_epmd -start_epmd false -mycelium_dist_port ${PORT}"
-DIRS="-mycelium auth_key_dir \"${DATA}/keys\" -mycelium quic_cert_dir \"${DATA}/quic\" -mycelium discovery_dir \"data/discovery\""
+DIST="-proto_dist barrel_p2p -epmd_module barrel_p2p_epmd -start_epmd false -barrel_p2p_dist_port ${PORT}"
+DIRS="-barrel_p2p auth_key_dir \"${DATA}/keys\" -barrel_p2p quic_cert_dir \"${DATA}/quic\" -barrel_p2p discovery_dir \"data/discovery\""
 
 if [ "$N" = "1" ]; then
     EVAL="io:format(\"node1 ready; start node 2 in another terminal~n\")."
 else
-    EVAL="timer:sleep(800), io:format(\"join node1: ~p~n\", [mycelium:join('node1@${HOST}')])."
+    EVAL="timer:sleep(800), io:format(\"join node1: ~p~n\", [barrel_p2p:join('node1@${HOST}')])."
 fi
 
 ERL_AFLAGS="${DIST} ${DIRS}" \

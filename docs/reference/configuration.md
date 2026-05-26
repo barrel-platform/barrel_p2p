@@ -1,12 +1,12 @@
 # Configuration reference
 
-Every key mycelium reads from `sys.config`, with default, type,
-and one-line purpose. Keys live under `{mycelium, [...]}`.
+Every key barrel_p2p reads from `sys.config`, with default, type,
+and one-line purpose. Keys live under `{barrel_p2p, [...]}`.
 
 For the underlying QUIC dist options (set under
 `{quic, [{dist, [...]}]}`), see the
 [upstream `quic_dist` documentation](https://github.com/benoitc/erlang_quic);
-mycelium projects defaults into that block at listen time and
+barrel_p2p projects defaults into that block at listen time and
 respects any user values.
 
 ## Network
@@ -36,10 +36,10 @@ respects any user values.
 
 | Key | Default | Type | Purpose |
 |-----|---------|------|---------|
-| `dist_cookie` | `mycelium` | `atom()` | Erlang dist cookie applied at app start. Override to a high-entropy secret in production. Boot warns when the default is in use, and refuses to start if `cookie_only_nodes` is non-empty while the cookie is still the default. |
+| `dist_cookie` | `barrel_p2p` | `atom()` | Erlang dist cookie applied at app start. Override to a high-entropy secret in production. Boot warns when the default is in use, and refuses to start if `cookie_only_nodes` is non-empty while the cookie is still the default. |
 | `dist_gc_sweep_period_ms` | `60000` | `pos_integer()` | Idle GC sweep cadence. |
 | `dist_gc_min_age_ms` | `300000` | `pos_integer()` | Minimum age before the GC may reap an idle channel. |
-| `discovery_backends` | (default chain) | `[module() \| {module(), term()}]` | Discovery backend modules in order. Default chain: `[mycelium_discovery_static, mycelium_discovery_file, mycelium_discovery_dns]`. |
+| `discovery_backends` | (default chain) | `[module() \| {module(), term()}]` | Discovery backend modules in order. Default chain: `[barrel_p2p_discovery_static, barrel_p2p_discovery_file, barrel_p2p_discovery_dns]`. |
 | `discovery_dir` | `"data/discovery"` | `string()` | Directory the file-based discovery backend reads and writes. |
 
 ## Authentication
@@ -57,11 +57,11 @@ respects any user values.
 
 | Key | Default | Type | Purpose |
 |-----|---------|------|---------|
-| `router_max_in_flight` | `256` | `pos_integer()` | Cap on concurrent overlay route-request handlers. Over-cap requests reply with `{error, overloaded}` and increment `mycelium.router.request_dropped`. |
-| `proxy_cast_max_in_flight` | `32` | `pos_integer()` | Per-proxy cap on concurrent overlay-cast helpers. Over-cap casts are dropped and counted via `mycelium.service_proxy.cast_dropped`. |
+| `router_max_in_flight` | `256` | `pos_integer()` | Cap on concurrent overlay route-request handlers. Over-cap requests reply with `{error, overloaded}` and increment `barrel_p2p.router.request_dropped`. |
+| `proxy_cast_max_in_flight` | `32` | `pos_integer()` | Per-proxy cap on concurrent overlay-cast helpers. Over-cap casts are dropped and counted via `barrel_p2p.service_proxy.cast_dropped`. |
 | `route_cache_sweep_period_ms` | `60000` | `pos_integer()` | Periodic sweep of stale route-cache entries. |
 
-## Placement (`mycelium_shard`)
+## Placement (`barrel_p2p_shard`)
 
 These govern sharded placement and its lease-based live-node set. `ring_size` MUST be identical on every node, or nodes compute different rings and diverge; treat the lease timings as cluster-wide too.
 
@@ -72,7 +72,7 @@ These govern sharded placement and its lease-based live-node set. `ring_size` MU
 | `member_ttl_ms` | `6000` | `pos_integer()` | Lease lifetime. A node drops out of the ring once `Now - last heartbeat` exceeds this. Keep well above `member_heartbeat_ms` plus expected clock skew. |
 | `member_skew_ms` | `5000` | `non_neg_integer()` | Reject heartbeats whose timestamp is more than this far in the future, so a fast clock cannot pin a dead node. |
 
-## Reminders (`mycelium_reminder`)
+## Reminders (`barrel_p2p_reminder`)
 
 Durable reminders build on placement, so they also obey the placement keys above.
 
@@ -82,14 +82,14 @@ Durable reminders build on placement, so they also obey the placement keys above
 | `reminder_tombstone_ttl_ms` | `3600000` | `non_neg_integer()` | Drop fire/cancel tombstones older than this so the replicated store stays bounded. Must exceed max gossip-propagation plus `member_ttl_ms`. |
 | `reminder_data_dir` | `"data/reminders"` | `string()` | Per-node directory for the on-disk reminder store (WAL + snapshot). Reminders persist by default and recover on boot, so they survive a full-cluster restart. Give each node its own path. |
 
-## Replicated maps (`mycelium_map`)
+## Replicated maps (`barrel_p2p_map`)
 
 | Key | Default | Type | Purpose |
 |-----|---------|------|---------|
 | `replicated_maps` | `[]` | `[{atom(), map()}]` | Maps started on every node at boot. Each entry is `{Name, Opts}`. |
-| `mycelium_map_scan_ms` | `1000` | `pos_integer()` | Default tombstone-GC sweep cadence for maps (overridable per map). |
-| `mycelium_map_tombstone_ttl_ms` | `3600000` | `non_neg_integer()` | Default tombstone TTL for maps (overridable per map). |
-| `mycelium_map_data_dir` | `"data/maps"` | `string()` | Per-node directory for maps started with `persist => true` (WAL + snapshot). |
+| `barrel_p2p_map_scan_ms` | `1000` | `pos_integer()` | Default tombstone-GC sweep cadence for maps (overridable per map). |
+| `barrel_p2p_map_tombstone_ttl_ms` | `3600000` | `non_neg_integer()` | Default tombstone TTL for maps (overridable per map). |
+| `barrel_p2p_map_data_dir` | `"data/maps"` | `string()` | Per-node directory for maps started with `persist => true` (WAL + snapshot). |
 
 ## Replication / anti-entropy
 
@@ -103,7 +103,7 @@ Durable reminders build on placement, so they also obey the placement keys above
 
 ```erlang
 [
-    {mycelium, [
+    {barrel_p2p, [
         {active_size, 5},
         {passive_size, 30},
         {listen_port, 9100},
@@ -117,16 +117,16 @@ Durable reminders build on placement, so they also obey the placement keys above
 
 ```erlang
 [
-    {mycelium, [
+    {barrel_p2p, [
         {active_size, 5},
         {passive_size, 30},
         {listen_port, 9100},
         {auth_enabled, true},
         {auth_trust_mode, strict},
-        {auth_key_dir, "/var/lib/mycelium/keys"},
+        {auth_key_dir, "/var/lib/barrel_p2p/keys"},
         {dist_cookie, 'redacted-high-entropy-cookie'},
         {contact_nodes, ['seed1@host', 'seed2@host']},
-        {discovery_backends, [mycelium_discovery_static]}
+        {discovery_backends, [barrel_p2p_discovery_static]}
     ]},
     {quic, [
         {dist, [
@@ -144,7 +144,7 @@ Durable reminders build on placement, so they also obey the placement keys above
 
 ```erlang
 [
-    {mycelium, [
+    {barrel_p2p, [
         {active_size, 7},
         {passive_size, 60},
         {shuffle_period, 15000},

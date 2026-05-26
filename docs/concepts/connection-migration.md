@@ -3,8 +3,8 @@
 A QUIC connection has a property no other Erlang dist carrier
 offers: it can rebind to a new local UDP 4-tuple without losing
 keys, ordering, or streams. RFC 9000 §9 specifies the
-mechanism; mycelium exposes it as a one-shot trigger via
-`mycelium:migrate_peer/1,2`.
+mechanism; barrel_p2p exposes it as a one-shot trigger via
+`barrel_p2p:migrate_peer/1,2`.
 
 This page explains what migration solves and when it makes
 sense. For the watchdog recipe and the operational details, see
@@ -14,7 +14,7 @@ sense. For the watchdog recipe and the operational details, see
 
 Three motivating cases:
 
-- **A laptop running mycelium moves between networks.** Wi-Fi
+- **A laptop running barrel_p2p moves between networks.** Wi-Fi
   to wired, one Wi-Fi network to another, Wi-Fi to cellular.
   The local IP changes; the peer expects packets on the old
   4-tuple.
@@ -41,7 +41,7 @@ the new path.
 
 ## What migration is *not*
 
-Migration is **not** an automatic feature. Mycelium does not
+Migration is **not** an automatic feature. Barrel P2P does not
 poll the local network state and decide when the path has
 changed. Two reasons:
 
@@ -51,13 +51,13 @@ changed. Two reasons:
 - A one-size-fits-all heuristic would be wrong for half of the
   cases that matter.
 
-So mycelium provides the trigger; you provide the policy.
+So barrel_p2p provides the trigger; you provide the policy.
 
 ## The primitive
 
 ```erlang
-ok                              = mycelium:migrate_peer(Node).
-ok                              = mycelium:migrate_peer(Node, #{timeout => 5000}).
+ok                              = barrel_p2p:migrate_peer(Node).
+ok                              = barrel_p2p:migrate_peer(Node, #{timeout => 5000}).
 
 %% Errors:
 {error, not_connected}          %% no current dist channel to Node
@@ -102,7 +102,7 @@ When the migration completes, the following state is preserved:
 - The QUIC connection's TLS keys.
 - The Erlang dist control stream and its in-flight messages.
 - Every application stream
-  ([mycelium_streams](streams.md)) opened on this connection.
+  ([barrel_p2p_streams](streams.md)) opened on this connection.
 - The dist controller process and its registration in
   `net_kernel`.
 
@@ -124,7 +124,7 @@ to another. See [route through a relay](../how-to/route-through-relay.md).
 The flow:
 
 1. Establish a new socket adapter pointing at the new relay.
-2. Call `mycelium:migrate_peer(Node, #{timeout => 5000})`.
+2. Call `barrel_p2p:migrate_peer(Node, #{timeout => 5000})`.
 3. After migration succeeds, the dist controller continues on
    the new path.
 
@@ -135,14 +135,14 @@ traffic.
 
 The watchdog recipe in
 [migrate connections](../how-to/migrate-connections.md) reads
-the QUIC path stats via `mycelium_path_stats`:
+the QUIC path stats via `barrel_p2p_path_stats`:
 
 ```erlang
 %% Smoothed RTT in microseconds.
-mycelium_path_stats:srtt(Node) -> {ok, integer()} | {error, term()}.
+barrel_p2p_path_stats:srtt(Node) -> {ok, integer()} | {error, term()}.
 
 %% Wider snapshot.
-mycelium_path_stats:summary(Node) ->
+barrel_p2p_path_stats:summary(Node) ->
     {ok, #{srtt := integer(),
            latest_rtt := integer(),
            cwnd := integer(),
@@ -167,13 +167,13 @@ The error returns are stable. Code that pattern-matches
 ## API
 
 ```erlang
-mycelium:migrate_peer(Node) -> ok | {error, term()}.
-mycelium:migrate_peer(Node, Opts) -> ok | {error, term()}.
+barrel_p2p:migrate_peer(Node) -> ok | {error, term()}.
+barrel_p2p:migrate_peer(Node, Opts) -> ok | {error, term()}.
 
 %% Path statistics for diagnostics or triggers.
-mycelium_path_stats:srtt(Node) -> {ok, integer()} | {error, term()}.
-mycelium_path_stats:summary(Node) -> {ok, map()} | {error, term()}.
-mycelium_path_stats:connection(Node) -> {ok, pid()} | {error, term()}.
+barrel_p2p_path_stats:srtt(Node) -> {ok, integer()} | {error, term()}.
+barrel_p2p_path_stats:summary(Node) -> {ok, map()} | {error, term()}.
+barrel_p2p_path_stats:connection(Node) -> {ok, pid()} | {error, term()}.
 ```
 
 ## Related

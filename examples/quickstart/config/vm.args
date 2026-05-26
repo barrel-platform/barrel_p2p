@@ -1,7 +1,7 @@
 -name quickstart@127.0.0.1
 -setcookie quickstart
--proto_dist mycelium
--epmd_module mycelium_epmd
+-proto_dist barrel_p2p
+-epmd_module barrel_p2p_epmd
 -start_epmd false
 +K true
 +A 10
