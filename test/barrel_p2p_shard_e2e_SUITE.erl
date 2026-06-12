@@ -48,7 +48,14 @@ end_per_testcase(_Case, _Config) ->
             undefined -> [];
             L -> L
         end,
-    [catch peer:stop(P) || P <- Peers],
+    [
+        try
+            peer:stop(P)
+        catch
+            _:_ -> ok
+        end
+     || P <- Peers
+    ],
     erase(?MODULE),
     ok.
 
@@ -281,7 +288,13 @@ wait_until(Fun, TimeoutMs) ->
     wait_loop(Fun, Deadline).
 
 wait_loop(Fun, Deadline) ->
-    case catch Fun() of
+    case
+        (try
+            Fun()
+        catch
+            _:_ -> false
+        end)
+    of
         true ->
             ok;
         _ ->

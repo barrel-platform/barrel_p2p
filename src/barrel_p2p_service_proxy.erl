@@ -141,8 +141,12 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{name = Name}) ->
-    %% Unregister from global if registered
-    catch global:unregister_name(Name),
+    %% Unregister from global if registered; global may already be down.
+    try
+        global:unregister_name(Name)
+    catch
+        _:_ -> ok
+    end,
     ok.
 
 %%====================================================================

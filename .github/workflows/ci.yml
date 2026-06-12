@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ['27', '28']
+        otp: ['27', '28', '29']
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +21,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
-          rebar3-version: '3.24.0'
+          rebar3-version: '3.27.0'
 
       - name: Cache deps + _build
         uses: actions/cache@v4
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ['27', '28']
+        otp: ['27', '28', '29']
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +56,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
-          rebar3-version: '3.24.0'
+          rebar3-version: '3.27.0'
 
       - name: Cache deps + _build
         uses: actions/cache@v4
@@ -109,8 +109,8 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28'
-          rebar3-version: '3.24.0'
+          otp-version: '29'
+          rebar3-version: '3.27.0'
       - name: XRef
         run: rebar3 xref
 
@@ -122,17 +122,17 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28'
-          rebar3-version: '3.24.0'
+          otp-version: '29'
+          rebar3-version: '3.27.0'
       - name: Restore PLT cache
         uses: actions/cache@v4
         with:
           path: |
             _build/*_plt
             ~/.cache/rebar3
-          key: ${{ runner.os }}-plt-otp28-${{ hashFiles('rebar.lock') }}
+          key: ${{ runner.os }}-plt-otp29-${{ hashFiles('rebar.lock') }}
           restore-keys: |
-            ${{ runner.os }}-plt-otp28-
+            ${{ runner.os }}-plt-otp29-
       - name: Dialyzer
         run: rebar3 dialyzer
 
@@ -144,8 +144,8 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28'
-          rebar3-version: '3.24.0'
+          otp-version: '29'
+          rebar3-version: '3.27.0'
       - name: Check formatting
         run: rebar3 fmt --check
 
@@ -157,8 +157,8 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28'
-          rebar3-version: '3.24.0'
+          otp-version: '29'
+          rebar3-version: '3.27.0'
       - name: Elvis lint
         run: rebar3 lint
 
@@ -182,8 +182,8 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@v1
         with:
-          otp-version: '28'
-          rebar3-version: '3.24.0'
+          otp-version: '29'
+          rebar3-version: '3.27.0'
 
       - name: Start epmd
         run: epmd -daemon

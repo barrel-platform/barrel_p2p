@@ -109,8 +109,16 @@ init_per_group(_Group, Config) ->
     Config.
 
 end_per_group(two_node, Config) ->
-    catch ct_slave:stop(?config(node1, Config)),
-    catch ct_slave:stop(?config(node2, Config)),
+    try
+        ct_slave:stop(?config(node1, Config))
+    catch
+        _:_ -> ok
+    end,
+    try
+        ct_slave:stop(?config(node2, Config))
+    catch
+        _:_ -> ok
+    end,
     ok;
 end_per_group(_Group, _Config) ->
     ok.

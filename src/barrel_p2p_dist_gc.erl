@@ -128,7 +128,12 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    catch net_kernel:monitor_nodes(false, [{node_type, visible}]),
+    %% net_kernel may already be down; unsubscribing is best-effort.
+    try
+        net_kernel:monitor_nodes(false, [{node_type, visible}])
+    catch
+        _:_ -> ok
+    end,
     ok.
 
 %%====================================================================

@@ -58,7 +58,14 @@ end_per_testcase(_Case, _Config) ->
             undefined -> [];
             L -> L
         end,
-    [catch peer:stop(P) || P <- Peers],
+    [
+        try
+            peer:stop(P)
+        catch
+            _:_ -> ok
+        end
+     || P <- Peers
+    ],
     erase(?MODULE),
     ok.
 

@@ -36,7 +36,7 @@ maintenance. The grey nodes are known peers kept in the passive view.
 They are not connected now, but they are warm spares when the topology
 changes.
 
-![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](docs/diagrams/active-view.png)
+![HyParView active view: a node connects to a small set of gossip peers, with additional known peers held in a passive cache.](https://raw.githubusercontent.com/barrel-platform/barrel_p2p/main/docs/diagrams/active-view.png)
 
 The important point: the active view is not the cluster. It is not
 the list of nodes your application may talk to. It is only the
@@ -46,7 +46,7 @@ Application traffic is different. If code on node A sends to a pid on
 node E, OTP can open a dist channel on demand. Barrel P2P authenticates
 that channel, then the normal Erlang message is delivered.
 
-![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](docs/diagrams/message-passing.png)
+![Sending a message to a pid on a node that is not in the local active view: OTP opens a QUIC dist channel on demand, runs Ed25519 auth, then delivers the message.](https://raw.githubusercontent.com/barrel-platform/barrel_p2p/main/docs/diagrams/message-passing.png)
 
 Once you hold the pid, Barrel P2P is no longer on the application data
 path. You use Erlang.

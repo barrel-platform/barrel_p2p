@@ -548,13 +548,25 @@ churn_worker(Id, Iterations, Parent) ->
             case rand:uniform(3) of
                 1 ->
                     %% Register
-                    catch barrel_p2p:register_service(Name);
+                    try
+                        barrel_p2p:register_service(Name)
+                    catch
+                        _:_ -> ok
+                    end;
                 2 ->
                     %% Unregister
-                    catch barrel_p2p:unregister_service(Name);
+                    try
+                        barrel_p2p:unregister_service(Name)
+                    catch
+                        _:_ -> ok
+                    end;
                 3 ->
                     %% Lookup
-                    catch barrel_p2p:lookup(Name)
+                    try
+                        barrel_p2p:lookup(Name)
+                    catch
+                        _:_ -> ok
+                    end
             end,
             timer:sleep(rand:uniform(10))
         end,

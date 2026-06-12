@@ -91,7 +91,13 @@ init_per_group(_Group, Config) ->
 
 end_per_group(three_node, Config) ->
     lists:foreach(
-        fun(N) -> catch ct_slave:stop(N) end,
+        fun(N) ->
+            try
+                ct_slave:stop(N)
+            catch
+                _:_ -> ok
+            end
+        end,
         [Node || {Node, _Dir} <- ?config(nodes, Config)]
     ),
     ok;

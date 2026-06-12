@@ -115,7 +115,7 @@ close(#{log := Log}) ->
 %% used by `delete_map/1' so a re-created map does not reload stale data.
 -spec delete(atom(), file:filename_all()) -> ok.
 delete(Name, Dir) ->
-    _ = catch disk_log:close(Name),
+    _ = disk_log:close(Name),
     _ = file:delete(snapshot_path(Dir, Name)),
     _ = file:delete(log_path(Dir, Name)),
     ok.
