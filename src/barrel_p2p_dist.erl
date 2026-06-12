@@ -221,8 +221,8 @@ build_defaults() ->
 project_init_args() ->
     case init:get_argument(barrel_p2p_dist_port) of
         {ok, [[PortStr] | _]} ->
-            case catch list_to_integer(PortStr) of
-                P when is_integer(P), P >= 0 ->
+            case string:to_integer(PortStr) of
+                {P, ""} when is_integer(P), P >= 0 ->
                     application:set_env(quic, dist_port, P);
                 _ ->
                     ok

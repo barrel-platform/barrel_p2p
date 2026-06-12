@@ -36,11 +36,17 @@ setup() ->
     {Dir, Started}.
 
 cleanup({Dir, Started}) ->
-    _ = catch disk_log:close(t),
+    _ = disk_log:close(t),
     os:cmd("rm -rf " ++ Dir),
     case Started of
-        true -> catch gen_server:stop(barrel_p2p_hlc);
-        false -> ok
+        true ->
+            try
+                gen_server:stop(barrel_p2p_hlc)
+            catch
+                _:_ -> ok
+            end;
+        false ->
+            ok
     end,
     ok.
 

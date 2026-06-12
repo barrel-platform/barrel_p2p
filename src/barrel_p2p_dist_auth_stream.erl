@@ -138,7 +138,7 @@ run_outgoing(Conn, TargetNode, Timeout) ->
                     try
                         do_outgoing(Conn, MyStream, TargetNode, Timeout)
                     after
-                        catch quic:send_data(Conn, MyStream, <<>>, true)
+                        fin_stream(Conn, MyStream)
                     end;
                 {error, Reason} ->
                     {error, {open_auth_stream_failed, Reason}}
@@ -489,7 +489,7 @@ server_send_skip(Conn) ->
         {ok, MyStream} ->
             Msg = barrel_p2p_dist_protocol:encode_ok(),
             _ = stream_send(Conn, MyStream, Msg),
-            catch quic:send_data(Conn, MyStream, <<>>, true),
+            fin_stream(Conn, MyStream),
             warn_cookie_only(),
             {ok, undefined};
         {error, Reason} ->
@@ -519,7 +519,7 @@ server_open_my_stream(Conn, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout) -
                     Conn, MyStream, PeerStream, Buffer, PeerNode, PeerPubKey, Timeout
                 )
             after
-                catch quic:send_data(Conn, MyStream, <<>>, true)
+                fin_stream(Conn, MyStream)
             end;
         {error, Reason} ->
             {error, {open_auth_stream_failed, Reason}}
@@ -708,6 +708,16 @@ stream_send(Conn, StreamId, Msg) ->
     Framed = <<Len:(?LEN_SIZE * 8)/big, Msg/binary>>,
     quic:send_data(Conn, StreamId, Framed, false).
 
+%% Best-effort FIN on our uni stream; the connection may already be
+%% gone, in which case there is nothing left to close.
+fin_stream(Conn, StreamId) ->
+    try
+        _ = quic:send_data(Conn, StreamId, <<>>, true),
+        ok
+    catch
+        _:_ -> ok
+    end.
+
 decode_with_buffer(Conn, StreamId, Buffer, Timeout) ->
     case Buffer of
         <<Len:(?LEN_SIZE * 8)/big, Rest/binary>> when byte_size(Rest) >= Len ->
@@ -808,7 +818,7 @@ send_fail_via_uni(Conn, Reason) ->
     case quic:open_unidirectional_stream(Conn) of
         {ok, S} ->
             send_fail(Conn, S, Reason),
-            catch quic:send_data(Conn, S, <<>>, true),
+            fin_stream(Conn, S),
             ok;
         _ ->
             ok

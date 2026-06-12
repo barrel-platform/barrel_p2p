@@ -37,7 +37,11 @@ setup() ->
     end.
 
 teardown(started) ->
-    catch gen_server:stop(barrel_p2p_hlc),
+    try
+        gen_server:stop(barrel_p2p_hlc)
+    catch
+        _:_ -> ok
+    end,
     ok;
 teardown(_) ->
     ok.

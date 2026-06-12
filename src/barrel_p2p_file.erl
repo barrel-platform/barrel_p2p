@@ -43,7 +43,7 @@ write_secure(Path, Data) ->
                 end
             catch
                 _:Reason ->
-                    catch file:close(F),
+                    _ = file:close(F),
                     _ = file:delete(TmpPath),
                     {error, Reason}
             end;

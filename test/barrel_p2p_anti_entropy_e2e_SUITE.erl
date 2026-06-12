@@ -50,7 +50,14 @@ end_per_testcase(_Case, _Config) ->
             undefined -> [];
             L -> L
         end,
-    [catch peer:stop(P) || P <- Peers],
+    [
+        try
+            peer:stop(P)
+        catch
+            _:_ -> ok
+        end
+     || P <- Peers
+    ],
     erase(?MODULE),
     ok.
 
@@ -131,7 +138,14 @@ map_get_on(Peer, Name, Key) ->
     peer:call(Peer, barrel_p2p, map_get, [Name, Key]).
 
 flush_replicas(Peers, Rep) ->
-    [catch peer:call(P, sys, get_state, [Rep]) || P <- Peers],
+    [
+        try
+            peer:call(P, sys, get_state, [Rep])
+        catch
+            _:_ -> ok
+        end
+     || P <- Peers
+    ],
     ok.
 
 connect_ok(P, N) ->
@@ -223,7 +237,13 @@ wait_until(Fun, TimeoutMs) ->
     wait_loop(Fun, Deadline).
 
 wait_loop(Fun, Deadline) ->
-    case catch Fun() of
+    case
+        (try
+            Fun()
+        catch
+            _:_ -> false
+        end)
+    of
         true ->
             ok;
         _ ->

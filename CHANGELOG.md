@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to the 0.x semantics described in the README
 (a minor bump may break).
 
+## [Unreleased]
+
+### Changed
+- Erlang/OTP 29 support. The bare `catch` operator is deprecated in OTP 29
+  and the project builds with `warnings_as_errors`; every bare `catch` in
+  src and test is now `try ... catch`, or plain return-value handling where
+  the call cannot raise (`file:close/1`, `disk_log:close/1`). Argument
+  parsing in `barrel_p2p_dist` uses `string:to_integer/1` instead of
+  `catch list_to_integer/1`.
+- CI tests OTP 27, 28 and 29 with rebar3 3.27.0; static analysis jobs run
+  on OTP 29.
+- Test profile: meck 0.9.2 -> 1.2.0 (older meck does not compile on
+  OTP 29).
+- Dependency override: `instrument` builds with `nowarn_deprecated_catch`
+  until an OTP 29-clean release is available.
+- Dropped the now-unused elvis `no_catch_expressions` ignore list.
+
 ## [0.1.0] - 2026-05-26
 
 First public release. Barrel P2P is an enhancement to Erlang distribution:

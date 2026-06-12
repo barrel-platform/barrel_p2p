@@ -28,7 +28,11 @@ setup() ->
     ok.
 
 teardown(_) ->
-    catch gen_server:stop(barrel_p2p_streams),
+    try
+        gen_server:stop(barrel_p2p_streams)
+    catch
+        _:_ -> ok
+    end,
     meck:unload(quic_dist),
     ok.
 

@@ -132,7 +132,13 @@ wait_until(Fun, TimeoutMs) ->
     wait_loop(Fun, Deadline).
 
 wait_loop(Fun, Deadline) ->
-    case catch Fun() of
+    case
+        (try
+            Fun()
+        catch
+            _:_ -> false
+        end)
+    of
         true ->
             ok;
         _ ->

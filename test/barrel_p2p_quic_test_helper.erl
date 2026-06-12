@@ -176,14 +176,22 @@ start_slave(Short, ParentPriv, Spec, _ReadyTimeoutMs) ->
             },
             {ok, Slave};
         {error, Reason} ->
-            catch erlang:port_close(P),
+            try
+                erlang:port_close(P)
+            catch
+                _:_ -> ok
+            end,
             error({slave_ready_timeout, Short, Reason, LogFile})
     end.
 
 %% @doc Stop a slave. Polite halt via quic_call, fallback to SIGKILL.
 -spec stop_slave(map()) -> ok.
 stop_slave(Slave) ->
-    catch qcall(Slave, init, stop, [], 1000),
+    try
+        qcall(Slave, init, stop, [], 1000)
+    catch
+        _:_ -> ok
+    end,
     timer:sleep(150),
     case maps:get(os_pid, Slave, undefined) of
         undefined ->
@@ -258,7 +266,13 @@ wait_until(Pred, TotalMs) ->
     do_wait_until(Pred, Deadline).
 
 do_wait_until(Pred, Deadline) ->
-    case (catch Pred()) of
+    case
+        (try
+            Pred()
+        catch
+            _:_ -> false
+        end)
+    of
         true ->
             ok;
         _ ->

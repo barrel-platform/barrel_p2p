@@ -60,7 +60,11 @@ init_per_testcase(_TestCase, Config) ->
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
-    catch meck:unload(barrel_p2p_router),
+    try
+        meck:unload(barrel_p2p_router)
+    catch
+        _:_ -> ok
+    end,
     application:stop(barrel_p2p),
     ok.
 

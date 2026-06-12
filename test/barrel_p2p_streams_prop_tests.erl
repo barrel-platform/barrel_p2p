@@ -36,8 +36,16 @@ setup() ->
     ok.
 
 teardown(_) ->
-    catch gen_server:stop(barrel_p2p_streams),
-    catch meck:unload(quic_dist),
+    try
+        gen_server:stop(barrel_p2p_streams)
+    catch
+        _:_ -> ok
+    end,
+    try
+        meck:unload(quic_dist)
+    catch
+        _:_ -> ok
+    end,
     ok.
 
 prop_test_() ->

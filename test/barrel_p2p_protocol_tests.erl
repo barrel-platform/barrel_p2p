@@ -55,7 +55,11 @@ send_delivers_to_bridge_test() ->
             erlang:error(no_message_received)
         end
     after
-        catch unregister(barrel_p2p_bridge)
+        try
+            unregister(barrel_p2p_bridge)
+        catch
+            _:_ -> ok
+        end
     end.
 
 %% A tagged message is dispatched to barrel_p2p_hyparview:handle_msg/2.
