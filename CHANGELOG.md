@@ -8,6 +8,12 @@ and this project adheres to the 0.x semantics described in the README
 ## [Unreleased]
 
 ### Changed
+- quic 1.4.2 -> 1.8.1. Brings client certificate verification and the
+  security hardening from 1.4.4 (CVE-2026-49457), IPv6 and Happy Eyeballs
+  client connections, 0-RTT, stateless reset on restart, mutual TLS with
+  `require_client_cert`, and post-quantum `x25519mlkem768` key exchange.
+  No barrel_p2p code change: the `{quic, Conn, _}` owner events and the
+  `quic_dist` / `quic_epmd` functions used here are unchanged.
 - Erlang/OTP 29 support. The bare `catch` operator is deprecated in OTP 29
   and the project builds with `warnings_as_errors`; every bare `catch` in
   src and test is now `try ... catch`, or plain return-value handling where
