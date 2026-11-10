@@ -8,7 +8,7 @@ self-contained tutorial.
 
 ## Prerequisites
 
-- Erlang/OTP 27 or later.
+- Erlang/OTP 29 or later.
 - `rebar3`.
 - An empty project (or any project where you can add a
   dependency).

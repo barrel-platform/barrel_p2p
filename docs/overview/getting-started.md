@@ -47,7 +47,7 @@ two nodes exchanging a message.
 
 ## Prerequisites
 
-- Erlang/OTP 27 or later.
+- Erlang/OTP 29 or later.
 - `rebar3`.
 - A single UDP port available on each node (the default is
   `0`, meaning "let the OS assign one"; in production you pin it).

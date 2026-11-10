@@ -8,7 +8,7 @@ Barrel P2P is a peer-to-peer distribution layer for Erlang/OTP: HyParView
 membership, a QUIC + Ed25519 secure transport (`-proto_dist barrel_p2p`), and a
 suite of CRDT-backed cluster services (service registry, leader election,
 sharded placement, durable reminders, replicated maps). Requires Erlang/OTP
-27+ and rebar3. Depends on `hlc`, `quic`, and `instrument`.
+29+ and rebar3. Depends on `hlc`, `quic`, and `instrument`.
 
 ## Required Checks
 

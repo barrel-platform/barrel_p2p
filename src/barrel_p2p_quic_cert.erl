@@ -274,34 +274,15 @@ format_general_time({{Year, Month, Day}, {Hour, Min, Sec}}) ->
     ).
 
 %% @private
-%% Encode a DirectoryString attribute value in the form the local
-%% public_key/asn1 backend accepts. OTP >= 28 (PKIX1Explicit-2009) takes
-%% the typed CHOICE tuple; OTP =< 27 (OTP-PUB-KEY) treats the
-%% AttributeTypeAndValue value as an open type and wants pre-encoded DER.
+%% Encode a DirectoryString attribute value as the typed CHOICE tuple
+%% (PKIX1Explicit-2009).
 dir_string(Str) ->
-    Bin = unicode:characters_to_binary(Str),
-    case otp_major() >= 28 of
-        true -> {utf8String, Bin};
-        false -> public_key:der_encode('X520CommonName', {utf8String, Bin})
-    end.
-
-otp_major() ->
-    try
-        list_to_integer(erlang:system_info(otp_release))
-    catch
-        _:_ -> 0
-    end.
+    {utf8String, unicode:characters_to_binary(Str)}.
 
 %% @private
-%% The SubjectPublicKeyInfo EC parameters, in the form the local asn1
-%% backend accepts: OTP >= 28 takes the ECParameters CHOICE; OTP =< 27
-%% treats it as an open type and wants pre-encoded DER.
+%% The SubjectPublicKeyInfo EC parameters as the ECParameters CHOICE.
 ec_named_curve_params() ->
-    Curve = {namedCurve, ?'secp256r1'},
-    case otp_major() >= 28 of
-        true -> Curve;
-        false -> public_key:der_encode('EcpkParameters', Curve)
-    end.
+    {namedCurve, ?'secp256r1'}.
 
 %% @private
 %% Add days to a datetime.

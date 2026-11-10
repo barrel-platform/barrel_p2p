@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for Barrel P2P integration tests
-# Target: OTP 28+ (Erlang 28)
+# Target: OTP 29+ (Erlang 29)
 
-ARG ERLANG_VERSION=28
+ARG ERLANG_VERSION=29
 FROM erlang:${ERLANG_VERSION}-alpine AS builder
 
 # Install build dependencies. cmake + a C/C++ toolchain are needed by
