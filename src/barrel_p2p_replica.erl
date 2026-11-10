@@ -46,7 +46,7 @@
 
 %% API
 -export([start_link/1]).
--export([broadcast_update/2, broadcast_custom/2]).
+-export([broadcast_entry/3, broadcast_delta/2, broadcast_update/2, broadcast_custom/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -112,7 +112,28 @@
 start_link(#{name := Name} = Config) ->
     gen_server:start_link({local, Name}, ?MODULE, Config, []).
 
-%% Broadcast an OR-Map add/remove on this instance.
+%% Gossip `Key''s entry exactly as it is stored in `Map', the owner's
+%% OR-Map right after a local `barrel_p2p_ormap' write. This is how an owner
+%% replicates its own writes: peers receive the same dots and tombstone
+%% time as the writer holds, so a later full sync from the writer can
+%% never carry an older version of a write than the one it gossiped.
+-spec broadcast_entry(atom(), term(), barrel_p2p_ormap:ormap()) -> ok.
+broadcast_entry(Name, Key, Map) ->
+    case barrel_p2p_ormap:get_entry(Key, Map) of
+        {ok, Entry} -> broadcast_delta(Name, #{Key => Entry});
+        not_found -> ok
+    end.
+
+%% Gossip an OR-Map delta (one or more `{Key, Entry}') as is.
+-spec broadcast_delta(atom(), barrel_p2p_ormap:ormap()) -> ok.
+broadcast_delta(Name, Delta) ->
+    gen_server:cast(Name, {broadcast_delta, Delta}).
+
+%% Broadcast an OR-Map add/remove stamped NOW, in the replica process. Use
+%% it only for a write the caller does not also store in a local OR-Map:
+%% after a local `barrel_p2p_ormap' write, the stamp minted here differs
+%% from the stored one, and a later full sync can repair a peer with the
+%% older stored version. Use `broadcast_entry/3' for those.
 -spec broadcast_update(atom(), {add, term(), term()} | {remove, term()}) -> ok.
 broadcast_update(Name, Update) ->
     gen_server:cast(Name, {broadcast, Update}).
@@ -160,6 +181,9 @@ handle_cast({broadcast, {remove, Key}}, #state{name = Name} = State) ->
     %% Tombstone-as-delta: the receiver's OR-Map merge resolves against
     %% any in-flight value by HLC, so a delayed add cannot resurrect it.
     Delta = #{Key => {tombstone, barrel_p2p_hlc:now()}},
+    barrel_p2p_plumtree:broadcast(Name, {delta, node(), Delta}),
+    {noreply, State};
+handle_cast({broadcast_delta, Delta}, #state{name = Name} = State) ->
     barrel_p2p_plumtree:broadcast(Name, {delta, node(), Delta}),
     {noreply, State};
 handle_cast({broadcast_custom, Payload}, #state{name = Name} = State) ->

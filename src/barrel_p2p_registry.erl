@@ -148,7 +148,7 @@ handle_call({unregister, Name}, _From, State) ->
                         maps:remove(Ref, State#state.monitors)
                 end,
             %% Broadcast removal
-            barrel_p2p_replica:broadcast_update(?REPLICA, {remove, Key}),
+            barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Local),
             %% Emit service event
             barrel_p2p_service_events:notify({service_unregistered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}};
@@ -216,7 +216,7 @@ handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
         {{Name, Pid}, Monitors} ->
             Key = {Name, node()},
             Local = barrel_p2p_ormap:remove(Key, State#state.local),
-            barrel_p2p_replica:broadcast_update(?REPLICA, {remove, Key}),
+            barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Local),
             %% Emit service down event
             barrel_p2p_service_events:notify({service_down, Name, node(), Reason}),
             {noreply, State#state{local = Local, monitors = Monitors}};
@@ -262,7 +262,8 @@ replica_apply_full_sync(_Name, RemoteORMap) ->
 
 replica_full_sync_snapshot(_Name) ->
     ORMap = get_local_ormap(),
-    case barrel_p2p_ormap:is_empty(ORMap) of
+    %% Tombstones count: a peer that missed an unregister learns it here.
+    case map_size(ORMap) =:= 0 of
         true -> empty;
         false -> {sync, ORMap}
     end.
@@ -299,7 +300,7 @@ do_register(Name, Pid, Meta, State) ->
             Ref = monitor(process, Pid),
             Monitors = maps:put(Ref, {Name, Pid}, State#state.monitors),
             %% Broadcast delta via sync
-            barrel_p2p_replica:broadcast_update(?REPLICA, {add, Key, Entry}),
+            barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Local),
             %% Emit service event
             barrel_p2p_service_events:notify({service_registered, Name, node()}),
             {reply, ok, State#state{local = Local, monitors = Monitors}}

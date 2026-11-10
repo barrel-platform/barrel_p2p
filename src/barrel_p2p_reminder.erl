@@ -228,7 +228,7 @@ handle_call({remind_after, Key, DelayMs, Payload}, _From, State) ->
     {reply, ok, do_remind(Key, now_ms() + DelayMs, Payload, State)};
 handle_call({cancel, Key}, _From, State) ->
     Reminders = barrel_p2p_ormap:remove(Key, State#state.reminders),
-    barrel_p2p_replica:broadcast_update(?REPLICA, {remove, Key}),
+    barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Reminders),
     State1 = persist_key(Key, sync, State#state{reminders = Reminders}),
     {reply, ok, disarm(Key, State1)};
 handle_call({subscribe, Pid}, _From, State) ->
@@ -249,8 +249,11 @@ handle_call({unsubscribe, Pid}, _From, State) ->
             {reply, ok, State}
     end;
 handle_call(snapshot, _From, State) ->
+    %% Send any non-empty map. Tombstones count: a peer that missed a
+    %% cancel or a fire during a partition only learns it here, and would
+    %% otherwise fire the reminder again.
     Reply =
-        case barrel_p2p_ormap:is_empty(State#state.reminders) of
+        case map_size(State#state.reminders) =:= 0 of
             true -> empty;
             false -> {sync, State#state.reminders}
         end,
@@ -353,7 +356,7 @@ do_remind(Key, FireAtMs, Payload, State) ->
     H = barrel_p2p_hlc:now(),
     Val = {FireAtMs, Payload, H},
     Reminders = barrel_p2p_ormap:add(Key, Val, State#state.reminders),
-    barrel_p2p_replica:broadcast_update(?REPLICA, {add, Key, Val}),
+    barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Reminders),
     State1 = persist_key(Key, sync, State#state{reminders = Reminders}),
     reconcile_key(Key, State1).
 
@@ -432,7 +435,7 @@ should_fire(Key, H, State) ->
 %% Tombstone-first: commit + gossip the removal, then deliver locally.
 fire(Key, Payload, H, State) ->
     Reminders = barrel_p2p_ormap:remove(Key, State#state.reminders),
-    barrel_p2p_replica:broadcast_update(?REPLICA, {remove, Key}),
+    barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Reminders),
     %% Persist the fire tombstone before delivering, so a restart cannot
     %% re-fire this reminder.
     State1 = persist_key(Key, sync, State#state{reminders = Reminders}),

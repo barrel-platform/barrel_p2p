@@ -170,7 +170,8 @@ replica_apply_full_sync(_Inst, {Cands, Fences}) ->
 
 replica_full_sync_snapshot(_Inst) ->
     {Cands, Fences} = get_state(),
-    case barrel_p2p_ormap:is_empty(Cands) andalso map_size(Fences) =:= 0 of
+    %% Tombstones count: a peer that missed a resign learns it here.
+    case map_size(Cands) =:= 0 andalso map_size(Fences) =:= 0 of
         true -> empty;
         false -> {sync, {Cands, Fences}}
     end.
@@ -195,7 +196,7 @@ handle_call({lead, Name, Priority}, {Pid, _Tag}, State) ->
             Val = {Pid, Priority},
             Cands = barrel_p2p_ormap:add(Key, Val, State#state.cands),
             Local = maps:put(Name, {Pid, Ref, Priority}, State#state.local),
-            barrel_p2p_replica:broadcast_update(?REPLICA, {add, Key, Val}),
+            barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Cands),
             State1 = State#state{cands = Cands, local = Local},
             %% We just added ourselves, so leader_of/2 is non-empty.
             {LNode, LPid} = leader_of(Name, Cands),
@@ -317,7 +318,7 @@ drop_local(Name, Demon, State) ->
             end,
             Key = {Name, node()},
             Cands = barrel_p2p_ormap:remove(Key, State#state.cands),
-            barrel_p2p_replica:broadcast_update(?REPLICA, {remove, Key}),
+            barrel_p2p_replica:broadcast_entry(?REPLICA, Key, Cands),
             State#state{
                 local = Local,
                 cands = Cands,
