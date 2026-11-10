@@ -25,6 +25,7 @@
 -include_lib("hlc/include/hlc.hrl").
 
 -export([new/0, add/3, remove/2, get/2, keys/1, to_list/1]).
+-export([add_dot/4, remove_at/3]).
 -export([merge/2, is_empty/1]).
 -export([get_entry/2]).
 -export([absorb_clock/1, gc_tombstones/2]).
@@ -50,7 +51,13 @@ new() -> #{}.
 %% the tombstone won.
 -spec add(term(), term(), ormap()) -> ormap().
 add(Key, Value, Map) ->
-    Dot = {node(), barrel_p2p_hlc:now()},
+    add_dot(Key, Value, {node(), barrel_p2p_hlc:now()}, Map).
+
+%% Add a key-value pair with an explicit dot. `add/3' is this with a
+%% fresh local dot; a writer that must gossip the exact entry it stored
+%% reads it back with `get_entry/2'.
+-spec add_dot(term(), term(), dot(), ormap()) -> ormap().
+add_dot(Key, Value, Dot, Map) ->
     DotHLC = dot_hlc(Dot),
     case maps:get(Key, Map, undefined) of
         undefined ->
@@ -69,7 +76,12 @@ add(Key, Value, Map) ->
 %% delayed add never resurrects this entry.
 -spec remove(term(), ormap()) -> ormap().
 remove(Key, Map) ->
-    Map#{Key => {tombstone, barrel_p2p_hlc:now()}}.
+    remove_at(Key, barrel_p2p_hlc:now(), Map).
+
+%% Remove a key with a tombstone at an explicit HLC.
+-spec remove_at(term(), barrel_p2p_hlc:timestamp(), ormap()) -> ormap().
+remove_at(Key, HLC, Map) ->
+    Map#{Key => {tombstone, HLC}}.
 
 %% Get the live value for a key. Tombstones return not_found.
 -spec get(term(), ormap()) -> {ok, term()} | not_found.
