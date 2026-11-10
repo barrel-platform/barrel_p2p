@@ -63,18 +63,40 @@ the owner, which must already exist. The per-instance supervisor uses
 ## Broadcasting
 
 ```erlang
-barrel_p2p_replica:broadcast_update(Name, {add, Key, Value}).
-barrel_p2p_replica:broadcast_update(Name, {remove, Key}).
+%% After a local write to the owner's OR-Map:
+Map1 = barrel_p2p_ormap:add(Key, Value, Map),
+barrel_p2p_replica:broadcast_entry(Name, Key, Map1).
+
+barrel_p2p_replica:broadcast_delta(Name, #{Key => Entry}).
 barrel_p2p_replica:broadcast_custom(Name, Payload).
 ```
 
-`broadcast_update/2` gossips OR-Map add/remove deltas: an add carries a
-fresh dot, a remove a tombstone, so the receiver's merge resolves against
-any in-flight value by HLC. `broadcast_custom/2` gossips an arbitrary
-payload on the instance's tag, delivered to `replica_merge_custom/2`. Use
-it for invariants the plain OR-Map cannot express: leader election
-broadcasts `{Name, Fence}` this way to publish the fencing token alongside
-the election (`barrel_p2p_leader.erl:142`, `barrel_p2p_leader.erl:316`).
+`broadcast_entry/3` gossips `Key`'s entry exactly as your owner stored it:
+the same dots for a value, the same HLC for a tombstone. Use it for every
+write you also keep in a local OR-Map. Peers then hold the same version as
+the writer, so a later full sync from the writer can never repair a peer
+with an older copy of the same write. `broadcast_delta/2` gossips a delta
+you built yourself, as is.
+
+`broadcast_update(Name, {add, Key, Value})` and
+`broadcast_update(Name, {remove, Key})` stamp the delta with a fresh HLC in
+the replica process. Use them only for writes with no local OR-Map copy
+(the sharded-placement heartbeat is one). After a local write the two
+stamps differ, which can leave a removed key visible on a peer after a
+partition heals.
+
+`broadcast_custom/2` gossips an arbitrary payload on the instance's tag,
+delivered to `replica_merge_custom/2`. Use it for invariants the plain
+OR-Map cannot express: leader election broadcasts `{Name, Fence}` this way
+to publish the fencing token alongside the election.
+
+`replica_full_sync_snapshot/1` should return `empty` only when your map has
+no entries at all. Tombstones count: a peer that missed a remove during a
+partition learns it only from the snapshot. `barrel_p2p_ormap:is_empty/1`
+ignores tombstones, so do not use it for this check; test
+`map_size(Map) =:= 0`.
+
+The model behind these rules is in [Verification](../concepts/verification.md).
 
 ## Late start and recovery
 

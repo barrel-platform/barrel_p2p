@@ -162,6 +162,24 @@ jobs:
       - name: Elvis lint
         run: rebar3 lint
 
+  tla:
+    name: TLA+ model check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Cache tla2tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/barrel_p2p/tla
+          key: tla2tools-${{ hashFiles('spec/tla/check.sh') }}
+      - name: Model check
+        run: spec/tla/check.sh
+
   bench:
     name: Bench vs baseline
     runs-on: ubuntu-24.04

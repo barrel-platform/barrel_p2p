@@ -7,7 +7,7 @@
 (* replica process, like the barrel_p2p_hlc server), and a FIFO queue of   *)
 (* broadcast casts the replica process has not handled yet. The owner      *)
 (* stamps a write locally; the replica process later turns the queued      *)
-(* cast into a delta (barrel_p2p_replica:handle_cast({broadcast, _})).     *)
+(* cast into a delta (barrel_p2p_replica:handle_cast/2).                   *)
 (*                                                                         *)
 (* Network: deltas ride Plumtree, so they reach any node connected to the  *)
 (* sender through the HyParView links (one relay hop is enough for 3      *)
@@ -37,11 +37,12 @@ CONSTANTS
                     \*   keys) | "dots" (map: drop values all of whose dots
                     \*   are the downed node's)
     AE,             \* periodic anti-entropy (map, reminder)
-    SingleStamp,    \* FALSE: today's code, broadcast_update mints a second
-                    \*   HLC. TRUE: the delta is the entry stored locally.
-    SendTombstones  \* FALSE: today's code, a snapshot with no live value
-                    \*   is not sent (ormap:is_empty/1 ignores tombstones).
-                    \*   TRUE: any non-empty map is sent.
+    SingleStamp,    \* TRUE: the delta is the entry stored locally
+                    \*   (barrel_p2p_replica:broadcast_entry/3). FALSE: the
+                    \*   0.1.x code, broadcast_update/2 minted a second HLC.
+    SendTombstones  \* TRUE: any non-empty map is sent (map_size > 0).
+                    \*   FALSE: the 0.1.x code, a snapshot with no live value
+                    \*   was not sent (ormap:is_empty/1 ignores tombstones).
 
 ASSUME Nodes \subseteq Nat /\ Cardinality(Nodes) =< 3
 ASSUME PruneMode \in {"none", "owner", "dots"}
@@ -132,7 +133,7 @@ Tick(n) ==
     /\ clock' = [clock EXCEPT ![n] = clock[n] + 1]
     /\ UNCHANGED <<map, queue, msgs, link, phase, writes, flips, aeDone, seenTomb, intent>>
 
-\* barrel_p2p_ormap:add/3 in the owner, then broadcast_update(add) cast.
+\* barrel_p2p_ormap:add/3 in the owner, then the broadcast cast.
 \* Single-writer consumers only add when not already registered.
 LocalAdd(n, k, v) ==
     /\ phase = "run"
@@ -153,7 +154,7 @@ LocalAdd(n, k, v) ==
     /\ intent' = [intent EXCEPT ![k] = [w |-> @.w \cup {n}, last |-> v]]
     /\ UNCHANGED <<msgs, link, phase, flips, aeDone, seenTomb>>
 
-\* barrel_p2p_ormap:remove/2 in the owner, then broadcast_update(remove).
+\* barrel_p2p_ormap:remove/2 in the owner, then the broadcast cast.
 LocalRemove(n, k) ==
     /\ phase = "run"
     /\ writes < MaxWrites

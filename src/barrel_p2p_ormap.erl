@@ -112,7 +112,8 @@ to_list(Map) ->
     [{K, V} || {K, {value, V, _Dots}} <- maps:to_list(Map)].
 
 %% A map is empty when it has no live entries; tombstones do not
-%% count.
+%% count. Do not use it to decide whether to send a full-sync snapshot:
+%% a tombstone-only map still carries removes a peer may have missed.
 -spec is_empty(ormap()) -> boolean().
 is_empty(Map) ->
     lists:all(

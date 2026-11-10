@@ -7,6 +7,26 @@ and this project adheres to the 0.x semantics described in the README
 
 ## [Unreleased]
 
+### Fixed
+- A removed entry could stay visible on a peer after a network partition
+  healed. Affected the service registry (a stopped or unregistered service
+  still listed), leader election (a resigned candidate), reminders (a
+  cancelled or already fired reminder could fire again) and replicated
+  maps (a removed key could come back on every node, including the one
+  that removed it). Two causes: a write was gossiped with a different
+  timestamp than the one the writer stored, and the resync after a heal
+  skipped nodes holding only removals. Both are fixed; peers now receive
+  writes exactly as the writer stored them, and removals are always part
+  of the resync.
+
+### Added
+- A TLA+ model of the replication layer, checked in CI. It proves that
+  the registry, leader election and replicated maps converge after any
+  partition within the model's bounds, and it found the bugs above. See
+  the Verification page in the docs.
+- `barrel_p2p_replica:broadcast_entry/3` and `broadcast_delta/2` for
+  custom replicated stores: gossip a write exactly as it was stored.
+
 ### Breaking
 - Erlang/OTP 29 or later is now required. Support for OTP 27 and 28 is
   dropped, along with the fallback certificate encoding those releases
