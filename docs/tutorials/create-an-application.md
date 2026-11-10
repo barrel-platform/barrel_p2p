@@ -20,7 +20,7 @@ and HyParView membership, and you get a built-in service registry.
 
 ## Prerequisites
 
-- Erlang/OTP 27 or later, and `rebar3`.
+- Erlang/OTP 29 or later, and `rebar3`.
 - No EPMD: barrel_p2p does not use it.
 - One UDP port per node (the default `9100` in this example).
 

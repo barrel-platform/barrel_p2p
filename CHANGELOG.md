@@ -7,7 +7,19 @@ and this project adheres to the 0.x semantics described in the README
 
 ## [Unreleased]
 
+### Breaking
+- Erlang/OTP 29 or later is now required. Support for OTP 27 and 28 is
+  dropped, along with the fallback certificate encoding those releases
+  needed.
+
 ### Changed
+- quic 1.8.1 -> 2.6.1 and instrument 1.1.0 -> 2.0.0. No barrel_p2p code
+  change. quic 2.x brings in webtransport, h2 and hackney as new transitive
+  dependencies.
+- instrument 2.0.0 builds cleanly on OTP 29, so the dependency override
+  that silenced its deprecated `catch` warnings is gone.
+- Test and tooling: proper 1.4.0 -> 1.5.0, rebar3_lint 5 -> 6, erlfmt
+  1.7 -> 1.8.
 - quic 1.4.2 -> 1.8.1. Brings client certificate verification and the
   security hardening from 1.4.4 (CVE-2026-49457), IPv6 and Happy Eyeballs
   client connections, 0-RTT, stateless reset on restart, mutual TLS with
@@ -20,12 +32,9 @@ and this project adheres to the 0.x semantics described in the README
   the call cannot raise (`file:close/1`, `disk_log:close/1`). Argument
   parsing in `barrel_p2p_dist` uses `string:to_integer/1` instead of
   `catch list_to_integer/1`.
-- CI tests OTP 27, 28 and 29 with rebar3 3.27.0; static analysis jobs run
-  on OTP 29.
+- CI tests OTP 29 with rebar3 3.27.0.
 - Test profile: meck 0.9.2 -> 1.2.0 (older meck does not compile on
   OTP 29).
-- Dependency override: `instrument` builds with `nowarn_deprecated_catch`
-  until an OTP 29-clean release is available.
 - Dropped the now-unused elvis `no_catch_expressions` ignore list.
 
 ## [0.1.0] - 2026-05-26
