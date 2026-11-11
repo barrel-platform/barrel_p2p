@@ -74,6 +74,47 @@ model detects them.
   hold different dot sets for the same value. A value now keeps only its
   newest dot, which makes merge strictly associative.
 
+## Authentication
+
+`spec/tamarin/` models the distribution auth handshake in Tamarin,
+against an attacker who controls the network, can register names
+with its own keys, and can steal node keys.
+
+| Lemma | Meaning | v2 (0.1.x) | v3 |
+|---|---|---|---|
+| `client_authenticates_target` | The client ends up authenticated to the node it dialed. | falsified | verified |
+| `client_agreement` | An accepted server really ran this handshake. | falsified (role confusion) | verified |
+| `server_agreement` | An accepted client really ran this handshake with this server. | falsified (reflection) | verified |
+| `client_injective_agreement` | Each accepted handshake matches its own server run. | | verified |
+| `dist_name_is_authenticated` | The Erlang dist name is the authenticated name. | falsified | verified, given the quic check |
+
+Three attacks on v2 come out of the model:
+
+- **Name substitution.** Nothing compared the authenticated name
+  with the dialed node or with the dist name. Anyone holding a key
+  the cluster accepts for one name could connect as another node.
+- **Reflection.** Signatures carried no role, and a server signs
+  the client's challenge before verifying the client. An attacker
+  could open two connections to a node and make it sign its own
+  challenge, then be accepted as that node.
+- **Role confusion.** For the same reason, a signature a node made
+  as a client passed as its server response. An attacker running
+  one TLS endpoint could get node N to connect to it and sign a
+  challenge taken from a client that reached the same endpoint
+  while looking for N. The client then accepted the attacker as N.
+  The certificate binding does not help: both legs end at the
+  attacker's certificate.
+
+v3 signs the full transcript with a role label, and the client
+checks the authenticated name against the dialed node.
+`dist_name_is_authenticated` relies on `quic_dist` refusing a dist
+name that differs from the authenticated one. Until barrel_p2p
+depends on a quic release that does this, the server side of that
+lemma does not hold in the code.
+
+The model leaves out timestamps (freshness comes from the nonces),
+the cookie-only path, and TLS beyond the certificate hash.
+
 ## Limits
 
 - **Small bounds.** Three nodes, one key, up to three writes, up to two

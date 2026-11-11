@@ -9,9 +9,11 @@
 %% Generates self-signed certificates for QUIC distribution encryption.
 %% Uses public_key application for certificate creation.
 %%
-%% The certificates are self-signed because QUIC/TLS only provides
-%% encryption - actual node authentication is done via Erlang cookie
-%% (handled by dist_util in erlang_quic).
+%% The certificates are self-signed: TLS provides the encrypted channel,
+%% and node authentication is the Ed25519 handshake that runs on top of
+%% it (barrel_p2p_dist_auth_stream). The handshake binds every signature
+%% to the SHA-256 of this certificate, so a relay presenting another
+%% certificate cannot reuse the signatures.
 
 -include_lib("public_key/include/public_key.hrl").
 

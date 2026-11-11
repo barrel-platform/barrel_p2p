@@ -180,6 +180,32 @@ jobs:
       - name: Model check
         run: spec/tla/check.sh
 
+  tamarin:
+    name: Tamarin protocol proofs
+    runs-on: ubuntu-24.04
+    env:
+      TAMARIN_VERSION: '1.12.0'
+      TAMARIN_SHA256: 201be06f469e47cff554df6ca93db8366fc2c69d70c61fcbd1370a1074b469c6
+      MAUDE_VERSION: '3.5.1'
+      MAUDE_SHA256: 72ed1ca87e3b3d0dfc6ee1436baf154bf04c45ff97d521bec040c5e8dfc8f92c
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tamarin and Maude
+        run: |
+          mkdir -p "$HOME/tamarin" && cd "$HOME/tamarin"
+          curl -fsSL -o tamarin.tar.gz \
+            "https://github.com/tamarin-prover/tamarin-prover/releases/download/$TAMARIN_VERSION/tamarin-prover-$TAMARIN_VERSION-linux64-ubuntu.tar.gz"
+          curl -fsSL -o maude.zip \
+            "https://github.com/maude-lang/Maude/releases/download/Maude$MAUDE_VERSION/Maude-$MAUDE_VERSION-linux-x86_64.zip"
+          echo "$TAMARIN_SHA256  tamarin.tar.gz" | sha256sum -c -
+          echo "$MAUDE_SHA256  maude.zip" | sha256sum -c -
+          tar xzf tamarin.tar.gz
+          unzip -q maude.zip
+          chmod +x tamarin-prover maude
+          echo "$HOME/tamarin" >> "$GITHUB_PATH"
+      - name: Prove
+        run: spec/tamarin/check.sh
+
   bench:
     name: Bench vs baseline
     runs-on: ubuntu-24.04

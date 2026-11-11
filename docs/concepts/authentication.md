@@ -37,50 +37,73 @@ authentication that remains.
 
 When two nodes connect, immediately after the QUIC TLS
 handshake finishes, each side opens one unidirectional QUIC
-stream toward the other. The four streams (two per side, one
-for sending, one for receiving) carry the auth protocol:
+stream toward the other and writes its half of the protocol on
+it (protocol version 3):
 
 ```
-Node A (client)                          Node B (server)
+Node A (client, dialed B)                Node B (server)
       |                                        |
-      |--HELLO(node_A, pubkey_A)-------------->|
-      |<-HELLO(node_B, pubkey_B)---------------|
+      |--HELLO(v3, node_A, pubkey_A)---------->|
+      |<-HELLO(v3, node_B, pubkey_B)-----------|  A checks node_B = B
       |                                        |
       |--CHALLENGE(nonce_A, wall_ts_A)-------->|
       |<-CHALLENGE(nonce_B, wall_ts_B)---------|
       |                                        |
-      |--RESPONSE(sig over nonce_B,ts_B,pub_A)>|
-      |<-RESPONSE(sig over nonce_A,ts_A,pub_B)-|
-      |                                        |
-      |--OK----------------------------------->|
+      |--RESPONSE(sig_A over transcript)------>|
+      |<-RESPONSE(sig_B over transcript)-------|
       |<-OK------------------------------------|
                     |
                     v
            Erlang dist handshake
 ```
 
-Two design points are worth knowing in advance.
+Only the server sends OK. A peer that refuses sends FAIL with a
+reason instead.
 
-**The signed message is bound to the responder's identity and to
-the TLS channel.** A signature is taken over
-`<<nonce, timestamp, responder_pubkey, channel_binding>>`, where
-`channel_binding` is the SHA-256 of the server's QUIC TLS
-certificate. The responder pubkey means a signature from peer X
-cannot be replayed against peer Y. The channel binding means a
-signature cannot be relayed across a different TLS connection:
-the QUIC certs are self-signed and unvalidated, so an active
-on-path attacker could otherwise terminate two TLS legs and relay
-the handshake frames verbatim. The client derives the binding
-from the server cert it observed (`quic:peercert/1`); the server
-from its own listener cert. Under a relay these differ, so
-verification fails. A stolen Ed25519 key alone, or a relayed
-pinned key, does not let an attacker sit in the middle.
+**Each signature covers the whole handshake.** Both sides sign
+the same transcript, differing only in the role byte:
+
+```
+"barrel_p2p-dist-auth-v3" | role | client_name | server_name |
+client_pubkey | server_pubkey | nonce_A | nonce_B | channel_binding
+```
+
+- The **role** stops a server's signature from being replayed as
+  a client's. Without it, an attacker could make a node sign its
+  own challenge and accept "itself".
+- **Both names and both keys** bind the signature to who is
+  talking to whom.
+- **Both nonces** bind it to this handshake. They are fresh
+  random values, so an old signature never verifies again.
+- The **channel binding** is the SHA-256 of the server's QUIC TLS
+  certificate. The client takes it from the certificate it
+  observed (`quic:peercert/1`), the server from its own listener
+  certificate. A relay that terminates two TLS legs sees two
+  different certificates, so a relayed signature fails. A stolen
+  Ed25519 key alone does not let an attacker sit in the middle.
+
+**The authenticated name is the node you dialed.** The client
+refuses a server whose HELLO names a node other than the one it
+dialed (`auth_identity_mismatch`), before sending anything signed.
+A key trusted for some other node cannot stand in for the target.
+
+On the server side, the authenticated name must also be the name
+the peer then uses in the Erlang dist handshake. That check runs
+in `quic_dist` and needs a quic release that supports
+`{ok, {authenticated_node, Node}}` from the auth callback. Until
+barrel_p2p depends on it, a peer holding a key the server accepts
+can authenticate under that key's name and announce another name
+to `dist_util`. Use strict mode and keep every node key private
+until then.
 
 **The window check uses monotonic time.** The wall timestamp
 goes on the wire so peers can sanity-check each other's clocks,
-but the responder's own duration check uses
-`erlang:monotonic_time/1`. An NTP step during the handshake
-will not cause a spurious failure.
+but it is not signed: freshness comes from the nonces. The
+duration check uses `erlang:monotonic_time/1`, so an NTP step
+during the handshake does not cause a spurious failure.
+
+The protocol is checked with Tamarin; see
+[Verification](verification.md#authentication).
 
 ## Trust modes
 

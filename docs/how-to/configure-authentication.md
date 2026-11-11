@@ -32,42 +32,17 @@ the only authentication that remains.
 
 ## The handshake
 
-When two nodes connect, immediately after the QUIC TLS handshake
-finishes, each side opens one unidirectional QUIC stream toward
-the other. The four streams (two per side, one for sending, one
-for receiving) carry the auth protocol:
+The protocol (messages, what each signature covers, the identity
+checks) is described in
+[Authentication](../concepts/authentication.md#the-handshake). For
+operating a cluster you need three facts from it:
 
-```
-Node A (client)                          Node B (server)
-      |                                        |
-      |--HELLO(node_A, pubkey_A)-------------->|
-      |<-HELLO(node_B, pubkey_B)---------------|
-      |                                        |
-      |--CHALLENGE(nonce_A, wall_ts_A)-------->|
-      |<-CHALLENGE(nonce_B, wall_ts_B)---------|
-      |                                        |
-      |--RESPONSE(sig over nonce_B,ts_B,pub_A)>|
-      |<-RESPONSE(sig over nonce_A,ts_A,pub_B)-|
-      |                                        |
-      |--OK----------------------------------->|
-      |<-OK------------------------------------|
-                    |
-                    v
-           Erlang dist handshake
-```
-
-Two design points are worth knowing.
-
-**The signed message includes the responder's own public key.**
-A signature over `<<nonce, timestamp, responder_pubkey>>` is bound
-to the identity the responder claims. A signature from peer X
-cannot be replayed against peer Y to impersonate X, because the
-message X signs is different from the one Y would.
-
-**The window check uses monotonic time.** The wall timestamp goes
-on the wire so peers can sanity-check each other's clocks, but the
-responder's own duration check uses `erlang:monotonic_time/1`. An
-NTP step during the handshake will not cause a spurious failure.
+- Every node must run the same protocol version (currently v3). A
+  node on an older version is refused at HELLO with
+  `{unsupported_version, V}`, so upgrade all nodes together.
+- A client refuses a server that authenticates as a node other than
+  the one it dialed (`auth_identity_mismatch`).
+- The cookie still applies after authentication succeeds.
 
 ## Trust modes
 
@@ -273,13 +248,14 @@ is what you copy back if you decide to roll back.
 The new public key takes effect on the next handshake. What you
 do next depends on the peer side's trust mode:
 
-- **TOFU peers** will see the new identity, notice that they have
-  no pin for this node atom (because the old pin was removed when
-  the operator chose to rotate), and pin the new key. Existing
-  trust entries pointing at the *old* key remain in the peer's
-  store until you clean them out, which means rolling back to the
-  old identity would still succeed; if that is not what you want,
-  also delete the old pin on every peer.
+- **TOFU peers** still hold a pin for the old key, and a pin that
+  differs from the presented key is always rejected
+  (`key_mismatch`). Remove the old pin on every peer, then let the
+  next handshake pin the new key:
+
+  ```erlang
+  ok = barrel_p2p_dist_keys:delete_key('rotated@host').
+  ```
 - **Strict peers** will reject the new identity until you have
   provisioned the new public key on each of them. The rotation
   log line includes the new fingerprint; record it.

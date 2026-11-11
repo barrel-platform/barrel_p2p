@@ -7,6 +7,23 @@ and this project adheres to the 0.x semantics described in the README
 
 ## [Unreleased]
 
+### Security
+- A peer could connect under another node's name. The name proven by the
+  Ed25519 handshake was never compared with the node a client dialed, nor
+  with the name the peer then used in the Erlang dist handshake. With the
+  default trust-on-first-use mode and the default cookie, anyone could
+  join a cluster under a known node's name; in strict mode, one stolen
+  node key was enough to impersonate every node. Clients now refuse a
+  server that authenticates as a node other than the one they dialed. The
+  server-side check needs a quic release that enforces the authenticated
+  name, and will follow.
+- A node's handshake signatures did not say which side produced them, so
+  a signature made in one role passed in the other. An attacker could make
+  a node accept itself as a peer, or impersonate a node to a client that
+  reached the attacker's endpoint, using a signature that node made while
+  connecting to the attacker. Signatures now cover the whole handshake
+  (both names, both keys, both nonces) with the signer's role.
+
 ### Fixed
 - A removal could be lost on a peer after a network partition healed: the
   resync skipped any node whose data held only removals. A stopped service
@@ -38,6 +55,9 @@ and this project adheres to the 0.x semantics described in the README
   that node had made every write to it.
 
 ### Breaking
+- The distribution auth handshake is now protocol version 3. Nodes on
+  version 2 are refused at the first message, so upgrade every node of a
+  cluster together.
 - Erlang/OTP 29 or later is now required. Support for OTP 27 and 28 is
   dropped, along with the fallback certificate encoding those releases
   needed.
