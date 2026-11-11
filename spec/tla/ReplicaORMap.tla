@@ -45,6 +45,10 @@ CONSTANTS
     SingleStamp,    \* TRUE: the delta is the entry stored locally
                     \*   (barrel_p2p_replica:broadcast_entry/3). FALSE: the
                     \*   0.1.x code, broadcast_update/2 minted a second HLC.
+    GC,             \* tombstone GC is on (map, reminder)
+    GcSafe,         \* GC drops a tombstone only when no older value for the
+                    \*   key is held or in flight anywhere: what a TTL longer
+                    \*   than the longest partition achieves in practice
     SendTombstones  \* TRUE: any non-empty map is sent (map_size > 0).
                     \*   FALSE: the 0.1.x code, a snapshot with no live value
                     \*   was not sent (ormap:is_empty/1 ignores tombstones).
@@ -249,6 +253,21 @@ Heal ==
     /\ msgs' = msgs \cup SnapMsgs({p \in Pairs : ~link[p[1]][p[2]]})
     /\ UNCHANGED <<map, clock, queue, writes, flips, aeDone, seenTomb, intent>>
 
+\* gc_tombstones/2 drops a tombstone. seenTomb keeps its history, so an
+\* older value arriving later shows up as a resurrection.
+OlderValue(e, k, ts) == e[k].t = "v" /\ MaxHlc(e[k].d) =< ts
+
+GcTombstone(n, k) ==
+    /\ GC /\ map[n][k].t = "x"
+    /\ GcSafe =>
+        LET ts == map[n][k].ts IN
+        /\ \A x \in Nodes : ~OlderValue(map[x], k, ts)
+        /\ \A msg \in msgs : ~OlderValue(msg.m, k, ts)
+        /\ \A x \in Nodes : \A i \in 1..Len(queue[x]) :
+                ~(queue[x][i].k = k /\ queue[x][i].op = "add")
+    /\ map' = [map EXCEPT ![n][k] = None]
+    /\ UNCHANGED <<clock, queue, msgs, link, phase, writes, flips, aeDone, seenTomb, intent>>
+
 \* Anti-entropy: a pulls b's snapshot (request_sync). Modelled once the
 \* network is idle, and repeated until a full round changes nothing.
 AntiEntropy(a, b) ==
@@ -267,6 +286,7 @@ Next ==
     \/ \E n \in Nodes, k \in Keys : LocalRemove(n, k)
     \/ \E msg \in msgs : Deliver(msg) \/ Lose(msg)
     \/ \E a, b \in Nodes : LinkDown(a, b) \/ LinkUp(a, b) \/ AntiEntropy(a, b)
+    \/ \E n \in Nodes, k \in Keys : GcTombstone(n, k)
     \/ Heal
 
 Spec == Init /\ [][Next]_vars

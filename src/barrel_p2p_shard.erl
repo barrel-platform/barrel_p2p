@@ -74,7 +74,9 @@
     members = [] :: [node()],
     owned = #{} :: #{non_neg_integer() => true},
     subscribers = #{} :: #{pid() => reference()},
-    watch = #{} :: barrel_p2p_source_monitor:watch()
+    watch = #{} :: barrel_p2p_source_monitor:watch(),
+    %% Peers already warned about (see check_clock_offset/4).
+    clock_warned = #{} :: #{node() => true}
 }).
 
 %%====================================================================
@@ -269,7 +271,15 @@ handle_cast({merge_delta, Delta}, State) ->
         State#state.leases,
         Accepted
     ),
-    {noreply, recompute(State#state{leases = Leases})};
+    State1 = maps:fold(
+        fun
+            (Node, {value, {alive, Emit}, _Dots}, S) -> check_clock_offset(Node, Emit, Now, S);
+            (_Node, _Other, S) -> S
+        end,
+        State,
+        Accepted
+    ),
+    {noreply, recompute(State1#state{leases = Leases})};
 handle_cast({apply_full_sync, Snapshot}, State) when is_map(Snapshot) ->
     Now = now_ms(),
     Skew = State#state.skew_ms,
@@ -357,6 +367,32 @@ recompute(State) ->
             NewOwned = compute_owned(Members, State#state.ring_size),
             emit_changes(State#state.owned, NewOwned, State#state.subscribers),
             State#state{leases = Leases, members = Members, owned = NewOwned}
+    end.
+
+%% A heartbeat stamped `Emit' on the sender's clock arrived at `Now' on
+%% ours. If the gap is wider than the lease leaves room for
+%% (member_ttl_ms - member_heartbeat_ms), the two clocks differ enough
+%% that one of us drops the other from the live set while both are healthy,
+%% so a partition gets two owners and its reminders fire twice
+%% (spec/tla/ShardLease.tla). Clocks are outside our control: warn once
+%% per peer so the operator fixes NTP or raises member_ttl_ms.
+check_clock_offset(Node, _Emit, _Now, State) when Node =:= node() ->
+    State;
+check_clock_offset(Node, Emit, Now, #state{ttl_ms = Ttl, heartbeat_ms = Hb} = State) ->
+    Gap = abs(Now - Emit),
+    Room = Ttl - Hb,
+    case Gap > Room andalso not maps:is_key(Node, State#state.clock_warned) of
+        true ->
+            logger:warning(
+                "barrel_p2p_shard: clock offset with ~p is about ~p ms, more than "
+                "member_ttl_ms - member_heartbeat_ms (~p ms). Healthy nodes may drop "
+                "each other from the live set, so partitions get two owners and "
+                "reminders can fire twice. Sync the clocks or raise member_ttl_ms.",
+                [Node, Gap, Room]
+            ),
+            State#state{clock_warned = maps:put(Node, true, State#state.clock_warned)};
+        false ->
+            State
     end.
 
 lww(Node, Emit, Acc) ->

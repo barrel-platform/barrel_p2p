@@ -23,8 +23,12 @@
     removing_a_node_moves_only_its_partitions/1,
     lease_expiry_drops_member/1,
     ownership_events_on_membership_change/1,
-    malformed_gossip_does_not_crash/1
+    malformed_gossip_does_not_crash/1,
+    clock_offset_is_reported/1
 ]).
+
+%% logger handler callback (captures warnings for clock_offset_is_reported)
+-export([log/2]).
 
 -define(RING, 128).
 
@@ -37,7 +41,8 @@ all() ->
         removing_a_node_moves_only_its_partitions,
         lease_expiry_drops_member,
         ownership_events_on_membership_change,
-        malformed_gossip_does_not_crash
+        malformed_gossip_does_not_crash,
+        clock_offset_is_reported
     ].
 
 init_per_testcase(_Case, Config) ->
@@ -189,6 +194,45 @@ ownership_events_on_membership_change(_Config) ->
     ?assertEqual(lists:sort(Lost), lists:sort(Released)),
     ?assert(length(Lost) > 0),
     ok.
+
+%% Two healthy nodes whose clocks differ by more than member_ttl_ms -
+%% member_heartbeat_ms drop each other from the live set, so partitions get
+%% two owners and reminders fire twice (spec/tla/ShardLease.tla). The gap
+%% between a heartbeat's stamp and its arrival exposes the offset: the
+%% shard warns, once per peer.
+clock_offset_is_reported(_Config) ->
+    ok = logger:add_handler(clock_capture, ?MODULE, #{config => #{pid => self()}}),
+    try
+        %% member_ttl_ms 300 - member_heartbeat_ms 100 leaves 200 ms.
+        inject_member_at('skewed@host', erlang:system_time(millisecond) - 1000),
+        _ = barrel_p2p_shard:members(),
+        ?assertMatch({warning, _}, next_log(1000)),
+        inject_member_at('skewed@host', erlang:system_time(millisecond) - 1000),
+        _ = barrel_p2p_shard:members(),
+        ?assertEqual(none, next_log(300))
+    after
+        logger:remove_handler(clock_capture)
+    end,
+    ok.
+
+log(#{level := Level, msg := Msg}, #{config := #{pid := Pid}}) ->
+    case io_lib:format("~p", [Msg]) of
+        Text ->
+            case string:find(lists:flatten(Text), "clock offset") of
+                nomatch -> ok;
+                _ -> Pid ! {captured, Level, Msg}
+            end
+    end.
+
+next_log(Timeout) ->
+    receive
+        {captured, Level, Msg} -> {Level, Msg}
+    after Timeout -> none
+    end.
+
+inject_member_at(Node, Emit) ->
+    Dot = {Node, barrel_p2p_hlc:now()},
+    barrel_p2p_shard:merge_delta(#{Node => {value, {alive, Emit}, #{Dot => true}}}).
 
 %%====================================================================
 %% Helpers

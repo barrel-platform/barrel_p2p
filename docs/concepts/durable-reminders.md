@@ -60,7 +60,9 @@ Firing is **tombstone-first**: the owner writes and gossips the removal
 first biases the system toward not firing twice rather than toward
 firing twice.
 
-Delivery is a message to subscribers on the firing node:
+Delivery is a message to subscribers on the firing node. If no process
+on the owner has subscribed, the fire is still committed (tombstoned)
+and nothing is delivered, so subscribe on every node that can own keys.
 
 ```erlang
 {barrel_p2p_reminder, Key, Payload, Fence}
@@ -76,7 +78,14 @@ There is no consensus here, the same as everywhere else in barrel_p2p, so
 the guarantee is stated honestly:
 
 - **Steady state (membership converged): fires exactly once.** One owner,
-  one timer, tombstone-first.
+  one timer, tombstone-first. One owner needs the nodes' clocks to agree
+  within `member_ttl_ms - member_heartbeat_ms` minus the gossip delay
+  (about 3 s with the defaults). Beyond that, healthy nodes drop each
+  other from the live set, a partition gets two owners, and its
+  reminders fire twice. The shard logs a warning when it sees such an
+  offset (checked in `spec/tla/ShardLease.tla`).
+- **During a network partition: fires on both sides.** Each side owns
+  the key and fires it.
 - **During churn: best-effort.** Before the live-node set converges, two
   nodes can both believe they own the key and both fire before the
   tombstone propagates. No crash is needed for this window to exist.

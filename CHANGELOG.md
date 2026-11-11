@@ -66,6 +66,11 @@ and this project adheres to the 0.x semantics described in the README
   replicated service now sends a write exactly as it stored it.
 
 ### Added
+- A warning when a peer's clock is far enough off that the two nodes would
+  drop each other from the live-node set while both are healthy. In that
+  state, a partition has two owners and its reminders fire twice. Clocks
+  must agree within `member_ttl_ms - member_heartbeat_ms` minus the gossip
+  delay, about 3 seconds with the defaults.
 - A TLA+ model of the replication layer, checked in CI. It proves that
   the registry, leader election and replicated maps converge after any
   partition within the model's bounds, and it found the bugs above. See

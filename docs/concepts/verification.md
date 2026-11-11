@@ -204,6 +204,39 @@ until the candidate updates arrive (one gossip round). The model
 bounds this with a constraint, and checks two nodes: three did not
 fit in the time budget.
 
+## Shard leases and reminders
+
+A reminder fires on the node that owns its key, so firing once in
+steady state comes down to one owner per partition.
+`spec/tla/ShardLease.tla` models two healthy nodes heartbeating with
+clocks that differ, gossip delay, the future-skew guard and lease
+expiry on the receiver's clock.
+
+| Model | Setting (heartbeat 2 s, TTL 6 s, skew 5 s, 1 s gossip) | Result |
+|---|---|---|
+| `MC_lease_behind_ok`, `MC_lease_ahead_ok` | clocks 3 s apart | passes |
+| `MC_lease_behind`, `MC_lease_ahead` | clocks 4 s apart | fails `SingleOwner` |
+
+The bound is `member_ttl_ms - member_heartbeat_ms - gossip delay`, in
+both directions: a node 4 s ahead sees the other 4 s behind and drops
+it. `member_skew_ms` (5 s) does not tighten it. This is a requirement
+on the clocks, not a code defect; the shard now warns when the gap
+between a heartbeat's stamp and its arrival exceeds
+`member_ttl_ms - member_heartbeat_ms`.
+
+During churn and during a partition two nodes can own a key; reminders
+document that as best effort.
+
+## Tombstone GC
+
+`ReplicaORMap.tla` has a GC step for map and reminder tombstones.
+`MC_map_gc` drops a tombstone only when no node holds, and no message
+or queued broadcast carries, an older value for the key, and it passes
+(687,300 states). `MC_map_gc_unsafe` drops any tombstone and fails
+`NoResurrection`: a removed key comes back. In the code the condition
+is approximated by `tombstone_ttl_ms` (one hour by default): it must
+exceed the longest partition you expect to heal from.
+
 ## Authentication
 
 `spec/tamarin/` models the distribution auth handshake in Tamarin,
@@ -253,9 +286,11 @@ the cookie-only path, and TLS beyond the certificate hash.
 - **Abstractions.** An HLC is a natural number. A Plumtree delta reaches
   any node within one relay hop, and reaches its sender at once. `crdt_wire` validation is assumed to
   accept everything.
-- **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
-  on the cutoff rule in its doc comment.
-- **Not modelled yet:** reminders and tombstone GC.
+- **Tombstone GC** is modelled by its safety condition, not its TTL:
+  the model does not represent time, so it cannot check a particular
+  `tombstone_ttl_ms`.
+- **Not modelled:** reminder timers and fire-time accuracy, restarts
+  with on-disk recovery, and the `cookie_only_nodes` path.
 
 The protocol the model describes is specified in [Replication
 protocol](../reference/replication-protocol.md), and the literature it
