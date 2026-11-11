@@ -103,8 +103,8 @@ surprising for a config or routing map: the entries simply stay and
 re-converge.
 
 Set `prune_on_peer_down => true` for presence-style maps, where an entry
-means "node X is here". Then when a node leaves, the keys whose writes were
-all authored by it are dropped locally. The prune is local and eventual,
+means "node X is here". Then when a node leaves, the keys whose latest
+write came from it are dropped locally. The prune is local and eventual,
 not a coordinated delete.
 
 ## Tombstones and GC

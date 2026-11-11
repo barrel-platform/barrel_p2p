@@ -28,6 +28,8 @@ is X?". For the conceptual side, read the
   each other directly.
 - [Run the tests](run-tests.md) — local CT and EUnit suites,
   the gated soak suite, the docker auth integration suite.
+- [Run the model checker](run-the-model-checker.md): check the
+  replication models with TLC and read a counterexample.
 - [Partition state across nodes](partition-state.md) — route keys
   to owners with `place/1` and hand off on ownership events.
 - [Schedule durable jobs](schedule-durable-jobs.md) — run work at a

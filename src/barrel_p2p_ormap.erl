@@ -7,9 +7,9 @@
 %% A last-write-wins map with HLC-tagged tombstones, suitable for
 %% replicating the service registry.
 %%
-%% Each key holds either a `value' entry (a payload plus the set of
-%% dots that have written it) or a `tombstone' entry (an HLC marking
-%% the time of removal). Merge keeps the entry with the greater
+%% Each key holds either a `value' entry (a payload plus the dot of the
+%% write that produced it, the newest write seen for the key) or a
+%% `tombstone' entry (an HLC marking the time of removal). Merge keeps the entry with the greater
 %% HLC (ties between concurrent values broken deterministically by the
 %% node atom, so the merge is commutative and replicas never diverge); a
 %% tombstone newer than any value wins, and an add newer than
@@ -17,14 +17,17 @@
 %% gossip cannot resurrect a removed entry, nor can a delayed remove
 %% silently drop a fresher add.
 %%
-%% This is not a strict CRDT-textbook OR-Map (we do not track
-%% per-add dot history through removes). For the service-registry
-%% use case it gives the property that matters: register/unregister
-%% ordering converges under reorder, partition, and replay.
+%% Keeping only the newest dot makes the merge a strict join-semilattice
+%% (commutative, associative, idempotent; checked exhaustively in
+%% spec/tla/MergeLattice.tla): every replica that has seen the same writes
+%% holds the same entry, not just the same visible value. The dot map
+%% shape `#{Dot => true}' is kept for wire compatibility; an entry from an
+%% older node carrying several dots is reduced to its newest one on merge.
 
 -include_lib("hlc/include/hlc.hrl").
 
 -export([new/0, add/3, remove/2, get/2, keys/1, to_list/1]).
+-export([add_dot/4, remove_at/3]).
 -export([merge/2, is_empty/1]).
 -export([get_entry/2]).
 -export([absorb_clock/1, gc_tombstones/2]).
@@ -50,7 +53,13 @@ new() -> #{}.
 %% the tombstone won.
 -spec add(term(), term(), ormap()) -> ormap().
 add(Key, Value, Map) ->
-    Dot = {node(), barrel_p2p_hlc:now()},
+    add_dot(Key, Value, {node(), barrel_p2p_hlc:now()}, Map).
+
+%% Add a key-value pair with an explicit dot. `add/3' is this with a
+%% fresh local dot; a writer that must gossip the exact entry it stored
+%% reads it back with `get_entry/2'.
+-spec add_dot(term(), term(), dot(), ormap()) -> ormap().
+add_dot(Key, Value, Dot, Map) ->
     DotHLC = dot_hlc(Dot),
     case maps:get(Key, Map, undefined) of
         undefined ->
@@ -60,8 +69,8 @@ add(Key, Value, Map) ->
                 gt -> Map#{Key => {value, Value, #{Dot => true}}};
                 _ -> Map
             end;
-        {value, _OldValue, Dots} ->
-            Map#{Key => {value, Value, Dots#{Dot => true}}}
+        {value, _OldValue, _Dots} ->
+            Map#{Key => {value, Value, #{Dot => true}}}
     end.
 
 %% Remove a key by writing a tombstone tagged with the current HLC.
@@ -69,7 +78,12 @@ add(Key, Value, Map) ->
 %% delayed add never resurrects this entry.
 -spec remove(term(), ormap()) -> ormap().
 remove(Key, Map) ->
-    Map#{Key => {tombstone, barrel_p2p_hlc:now()}}.
+    remove_at(Key, barrel_p2p_hlc:now(), Map).
+
+%% Remove a key with a tombstone at an explicit HLC.
+-spec remove_at(term(), barrel_p2p_hlc:timestamp(), ormap()) -> ormap().
+remove_at(Key, HLC, Map) ->
+    Map#{Key => {tombstone, HLC}}.
 
 %% Get the live value for a key. Tombstones return not_found.
 -spec get(term(), ormap()) -> {ok, term()} | not_found.
@@ -100,7 +114,8 @@ to_list(Map) ->
     [{K, V} || {K, {value, V, _Dots}} <- maps:to_list(Map)].
 
 %% A map is empty when it has no live entries; tombstones do not
-%% count.
+%% count. Do not use it to decide whether to send a full-sync snapshot:
+%% a tombstone-only map still carries removes a peer may have missed.
 -spec is_empty(ormap()) -> boolean().
 is_empty(Map) ->
     lists:all(
@@ -175,20 +190,21 @@ merge(Map1, Map2) ->
 %%====================================================================
 
 merge_entry(undefined, E) ->
-    E;
+    normalize(E);
 merge_entry(E, undefined) ->
-    E;
+    normalize(E);
 merge_entry({value, V1, D1}, {value, V2, D2}) ->
-    MergedDots = maps:merge(D1, D2),
-    %% Last-write-wins by the maximum dot. Compare the full dot
-    %% ({Node, HLC}), not just the HLC: when two concurrent writes land on
-    %% the same HLC (common on a single host, same millisecond) the node
-    %% atom breaks the tie. That keeps the merge commutative, so every
-    %% replica resolves the conflict to the same value instead of diverging
-    %% on argument order.
-    case dot_compare(max_dot(D1), max_dot(D2)) of
-        gt -> {value, V1, MergedDots};
-        _ -> {value, V2, MergedDots}
+    %% Last-write-wins by the maximum dot, and the winner keeps only that
+    %% dot. Compare the full dot ({Node, HLC}), not just the HLC: when two
+    %% concurrent writes land on the same HLC (common on a single host, same
+    %% millisecond) the node atom breaks the tie. That keeps the merge
+    %% commutative, so every replica resolves the conflict to the same value
+    %% instead of diverging on argument order.
+    M1 = max_dot(D1),
+    M2 = max_dot(D2),
+    case dot_compare(M1, M2) of
+        gt -> {value, V1, #{M1 => true}};
+        _ -> {value, V2, #{M2 => true}}
     end;
 merge_entry({tombstone, T1}, {tombstone, T2}) ->
     case barrel_p2p_hlc:compare(T1, T2) of
@@ -198,13 +214,20 @@ merge_entry({tombstone, T1}, {tombstone, T2}) ->
 merge_entry({tombstone, T} = Tomb, {value, _, D} = V) ->
     case barrel_p2p_hlc:compare(T, max_hlc(D)) of
         gt -> Tomb;
-        _ -> V
+        _ -> normalize(V)
     end;
 merge_entry({value, _, D} = V, {tombstone, T} = Tomb) ->
     case barrel_p2p_hlc:compare(T, max_hlc(D)) of
         gt -> Tomb;
-        _ -> V
+        _ -> normalize(V)
     end.
+
+%% Reduce a value entry to its newest dot (entries from older nodes may
+%% carry the full dot history).
+normalize({value, V, Dots}) when map_size(Dots) > 1 ->
+    {value, V, #{max_dot(Dots) => true}};
+normalize(E) ->
+    E.
 
 dot_hlc({_Node, HLC}) -> HLC.
 

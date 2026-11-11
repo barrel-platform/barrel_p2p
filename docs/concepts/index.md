@@ -33,6 +33,8 @@ natural one.
 - [Replicated maps](replicated-maps.md) — `barrel_p2p_map`, a
   gossiped last-write-wins key-value map for cluster-wide
   control-plane state.
+- [Verification](verification.md): what the TLA+ model and the
+  PropEr simulation prove about replication, and their limits.
 
 ## The transport
 

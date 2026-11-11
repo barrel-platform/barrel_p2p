@@ -7,6 +7,36 @@ and this project adheres to the 0.x semantics described in the README
 
 ## [Unreleased]
 
+### Fixed
+- A removal could be lost on a peer after a network partition healed: the
+  resync skipped any node whose data held only removals. A stopped service
+  could stay listed, a resigned leader candidate could stay a candidate, a
+  removed map key could stay on that peer, and a cancelled or already
+  fired reminder could fire again there. Removals are now always part of
+  the resync.
+- The service registry could keep listing an unregistered service on a
+  peer after a partition, because the registry's own copy of a write
+  carried an older timestamp than the copy it sent to peers. Every
+  replicated service now sends a write exactly as it stored it.
+
+### Added
+- A TLA+ model of the replication layer, checked in CI. It proves that
+  the registry, leader election and replicated maps converge after any
+  partition within the model's bounds, and it found the bugs above. See
+  the Verification page in the docs.
+- `barrel_p2p_replica:broadcast_entry/3` and `broadcast_delta/2` for
+  custom replicated stores: gossip a write exactly as it was stored.
+
+### Changed
+- A replicated entry now remembers only its latest write instead of every
+  write it ever had. Replicas that saw the same writes now hold exactly the
+  same state, not just the same visible value. Entries from nodes on the
+  previous version are converted on arrival, so mixed clusters keep
+  converging.
+- Replicated maps with `prune_on_peer_down` now drop a key when its latest
+  write came from the node that left. Before, a key was dropped only if
+  that node had made every write to it.
+
 ### Breaking
 - Erlang/OTP 29 or later is now required. Support for OTP 27 and 28 is
   dropped, along with the fallback certificate encoding those releases

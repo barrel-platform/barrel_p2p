@@ -292,7 +292,7 @@ handle_call({put, Key, Value}, _From, State) ->
             Map = barrel_p2p_ormap:add(Key, Value, State#state.map),
             ets:insert(State#state.tab, {Key, Value}),
             notify(State, {put, Key, Value}),
-            barrel_p2p_replica:broadcast_update(State#state.replica, {add, Key, Value}),
+            barrel_p2p_replica:broadcast_entry(State#state.replica, Key, Map),
             {reply, ok, persist_key(Key, sync, State#state{map = Map})};
         false ->
             {reply, {error, invalid_value}, State}
@@ -301,7 +301,7 @@ handle_call({remove, Key}, _From, State) ->
     Map = barrel_p2p_ormap:remove(Key, State#state.map),
     ets:delete(State#state.tab, Key),
     notify(State, {remove, Key}),
-    barrel_p2p_replica:broadcast_update(State#state.replica, {remove, Key}),
+    barrel_p2p_replica:broadcast_entry(State#state.replica, Key, Map),
     {reply, ok, persist_key(Key, sync, State#state{map = Map})};
 handle_call({subscribe, Pid}, _From, State) ->
     case maps:is_key(Pid, State#state.subscribers) of
@@ -322,8 +322,10 @@ handle_call({unsubscribe, Pid}, _From, State) ->
             {reply, ok, State}
     end;
 handle_call(snapshot, _From, State) ->
+    %% Send any non-empty map. Tombstones count: a peer that missed a
+    %% remove during a partition only learns it here.
     Reply =
-        case barrel_p2p_ormap:is_empty(State#state.map) of
+        case map_size(State#state.map) =:= 0 of
             true -> empty;
             false -> {sync, State#state.map}
         end,
@@ -418,6 +420,8 @@ drop_key(Key, State) ->
     notify(State, {remove, Key}),
     State#state{map = Map, dirty = true}.
 
+%% A value keeps only its newest dot, so this is "the latest write to
+%% the key came from Node".
 owned_only_by(Key, Node, Map) ->
     case barrel_p2p_ormap:get_entry(Key, Map) of
         {ok, {value, _V, Dots}} ->
