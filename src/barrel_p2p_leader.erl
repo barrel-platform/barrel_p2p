@@ -269,7 +269,7 @@ handle_cast({merge_fence, Name, F}, State) ->
         true ->
             barrel_p2p_hlc:update(F),
             Fences = raise_fence(State#state.fences, Name, F),
-            {noreply, State#state{fences = Fences}};
+            {noreply, maybe_remint(Name, State#state{fences = Fences})};
         false ->
             {noreply, State}
     end;
@@ -278,7 +278,8 @@ handle_cast({apply_full_sync, RemoteCands, RemoteFences}, State) ->
         State#state.cands, RemoteCands, fun valid_candidate/1
     ),
     Fences = merge_fences(State#state.fences, valid_fences(RemoteFences)),
-    {noreply, recompute_local(State#state{cands = Cands, fences = Fences})};
+    State1 = recompute_local(State#state{cands = Cands, fences = Fences}),
+    {noreply, lists:foldl(fun maybe_remint/2, State1, maps:keys(State1#state.my_fence))};
 handle_cast({remove_node, Node}, State) ->
     Cands = maps:filter(
         fun({_Name, N}, _Entry) -> N =/= Node end,
@@ -344,6 +345,32 @@ become_leader(Name, State) ->
     MyFence = maps:put(Name, F, State#state.my_fence),
     barrel_p2p_replica:broadcast_custom(?REPLICA, {Name, F}),
     {barrel_p2p_hlc:pack(F), State#state{fences = Fences, my_fence = MyFence}}.
+
+%% A leader whose fence is below the high-water mark mints a new one above
+%% it. This happens when another node minted a higher fence while it
+%% briefly believed it led (it had not yet learned of this candidate):
+%% that fence may already have been used, so a resource that keeps the
+%% highest fence it accepted would refuse this leader's token for good.
+%% The owner gets a new {elected, Fence}.
+maybe_remint(Name, State) ->
+    case
+        {
+            maps:get(Name, State#state.my_fence, undefined),
+            maps:get(Name, State#state.fences, undefined)
+        }
+    of
+        {Mine, High} when Mine =/= undefined, High =/= undefined ->
+            case barrel_p2p_hlc:compare(High, Mine) of
+                gt ->
+                    {Fence, S} = become_leader(Name, State),
+                    notify_local(Name, {elected, Fence}, S),
+                    S;
+                _ ->
+                    State
+            end;
+        _ ->
+            State
+    end.
 
 %% Recompute leadership for every local campaign and fire transitions.
 recompute_local(State) ->

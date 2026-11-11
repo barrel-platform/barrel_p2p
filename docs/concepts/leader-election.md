@@ -98,21 +98,28 @@ split-brain hazard, and election alone does not solve it.
 The fix is a **fencing token**. Each leadership term mints one, and
 the leader stamps it on every write to the protected resource. The
 resource records the highest token it has accepted and rejects any
-operation whose token is not strictly greater:
+operation whose token is lower:
 
 ```erlang
 {ok, {leader, Fence}} = barrel_p2p:lead(ledger_writer),
 ok = ledger:append(Entry, #{fence => Fence}).
 
 %% Inside the resource:
-append(Entry, #{fence := F}) when F > LastAcceptedFence ->
+append(Entry, #{fence := F}) when F >= LastAcceptedFence ->
     do_append(Entry, F);
 append(_Entry, _) ->
     {error, fenced_out}.   %% a newer leader has taken over
 ```
 
 A revoked leader's token is now stale, so its late writes are
-refused. That is what turns "we elected one leader" into "exactly
+refused.
+
+The leader can receive `{elected, Fence}` again, with a higher
+token, while it stays leader. That happens when another node
+minted a higher token while it briefly believed it led (it had not
+yet learned of this candidate): that token may already have been
+used, so the leader mints above it. Always use the latest token
+you received; `barrel_p2p:fence/1` returns it. That is what turns "we elected one leader" into "exactly
 one leader can actually mutate state".
 
 ### How the token is built
@@ -121,7 +128,10 @@ The token is a `non_neg_integer()`, minted from barrel_p2p's
 [hybrid logical clock](hybrid-logical-clocks.md). When a node takes a
 term it advances its HLC past a replicated per-name high-water mark
 and then takes a fresh timestamp, so the new token is strictly
-greater than every token observed in its connected component. The
+greater than every token observed in its connected component. A
+leader that later learns of a higher token mints above it again,
+so once gossip settles the leader holds the highest token ever
+issued (checked in `spec/tla/Leader.tla`). The
 high-water mark is gossiped, so the next leader (on any node) mints
 above it.
 
