@@ -25,7 +25,10 @@
     test_merge_overlapping/1,
     test_merge_idempotent/1,
     test_merge_commutative/1,
-    test_merge_associative/1
+    test_merge_associative/1,
+    test_merge_strictly_associative/1,
+    test_legacy_dots_normalized/1,
+    test_add_keeps_newest_dot/1
 ]).
 
 %%====================================================================
@@ -48,7 +51,10 @@ groups() ->
             test_merge_overlapping,
             test_merge_idempotent,
             test_merge_commutative,
-            test_merge_associative
+            test_merge_associative,
+            test_merge_strictly_associative,
+            test_legacy_dots_normalized,
+            test_add_keeps_newest_dot
         ]}
     ].
 
@@ -179,3 +185,33 @@ test_merge_associative(_Config) ->
         lists:sort(barrel_p2p_ormap:to_list(Merged2))
     ),
     ok.
+
+test_merge_strictly_associative(_Config) ->
+    %% The counterexample TLC found when a value kept every dot: a tombstone
+    %% beating an older value used to drop that value's dots in one grouping
+    %% but not the other. Whole entries must now be equal, not just values.
+    T = #{k => {tombstone, ts(2)}},
+    V1 = #{k => {value, b, #{{n2, ts(1)} => true}}},
+    V3 = #{k => {value, b, #{{n2, ts(3)} => true}}},
+    ?assertEqual(
+        barrel_p2p_ormap:merge(barrel_p2p_ormap:merge(T, V1), V3),
+        barrel_p2p_ormap:merge(T, barrel_p2p_ormap:merge(V1, V3))
+    ),
+    ok.
+
+test_legacy_dots_normalized(_Config) ->
+    %% A 0.1.x node gossips a value with its full dot history; merging it
+    %% keeps only the newest dot.
+    Legacy = #{k => {value, v, #{{n1, ts(1)} => true, {n2, ts(3)} => true}}},
+    Newest = #{k => {value, v, #{{n2, ts(3)} => true}}},
+    ?assertEqual(Newest, barrel_p2p_ormap:merge(barrel_p2p_ormap:new(), Legacy)),
+    ?assertEqual(Newest, barrel_p2p_ormap:merge(Legacy, Newest)),
+    ok.
+
+test_add_keeps_newest_dot(_Config) ->
+    M1 = barrel_p2p_ormap:add_dot(k, a, {n1, ts(1)}, barrel_p2p_ormap:new()),
+    M2 = barrel_p2p_ormap:add_dot(k, b, {n1, ts(2)}, M1),
+    ?assertEqual({ok, {value, b, #{{n1, ts(2)} => true}}}, barrel_p2p_ormap:get_entry(k, M2)),
+    ok.
+
+ts(T) -> #timestamp{wall_time = T, logical = 0}.

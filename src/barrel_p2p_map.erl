@@ -420,6 +420,8 @@ drop_key(Key, State) ->
     notify(State, {remove, Key}),
     State#state{map = Map, dirty = true}.
 
+%% A value keeps only its newest dot, so this is "the latest write to
+%% the key came from Node".
 owned_only_by(Key, Node, Map) ->
     case barrel_p2p_ormap:get_entry(Key, Map) of
         {ok, {value, _V, Dots}} ->

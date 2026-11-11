@@ -146,7 +146,7 @@ LocalAdd(n, k, v) ==
            old == map[n][k]
            new == IF old.t = "none" THEN Val(v, {dot})
                   ELSE IF old.t = "x" THEN (IF t > old.ts THEN Val(v, {dot}) ELSE old)
-                  ELSE Val(v, old.d \cup {dot})
+                  ELSE Val(v, {dot})
        IN /\ map' = [map EXCEPT ![n][k] = new]
           /\ clock' = [clock EXCEPT ![n] = t]
           /\ queue' = [queue EXCEPT ![n] = Append(@, [op |-> "add", k |-> k, v |-> v, e |-> new])]

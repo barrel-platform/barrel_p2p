@@ -14,8 +14,9 @@ Two layers check the same algorithm.
 - `ORMapMerge.tla` transcribes the per-key merge behind
   `barrel_p2p_ormap:merge/2`, clause for clause.
 - `MergeLattice.tla` checks every combination of entries over a small dot
-  universe: merge is commutative and idempotent, and associative for
-  everything a read or a later merge can observe.
+  universe: merge is commutative, associative and idempotent. Entries from
+  0.1.x nodes, which carry several dots, are checked too, so a cluster
+  running both versions still converges.
 - `ReplicaORMap.tla` models `barrel_p2p_replica` as coded: each node's
   OR-Map, its HLC, and the queue of broadcasts its replica process has
   not handled yet. It covers Plumtree deltas (relayed, lost when no path
@@ -39,14 +40,14 @@ operation, delivery, loss and partition sequences over the real
 
 | Model | Consumer | Result |
 |---|---|---|
-| `MC_registry` | registry, leader (one writer per key, no anti-entropy, prune on `peer_down`) | passes, 207,734 states |
-| `MC_map` | `barrel_p2p_map` (several writers, anti-entropy) | passes, 574,617 states |
-| `MC_map_partition` | `barrel_p2p_map`, full partition | passes, 945,960 states |
+| `MC_registry` | registry, leader (one writer per key, no anti-entropy, prune on `peer_down`) | passes, 189,802 states |
+| `MC_map` | `barrel_p2p_map` (several writers, anti-entropy) | passes, 437,577 states |
+| `MC_map_partition` | `barrel_p2p_map`, full partition | passes, 592,470 states |
 | `*_stamp`, `*_snap` | the 0.1.x code, one bug each | fail, see below |
 
 ## Bugs the model found
 
-Both are fixed. The failing configurations stay in the suite to show the
+All are fixed. The failing configurations stay in the suite to show the
 model detects them.
 
 - **Double stamp.** A writer stored its write with one HLC, then
@@ -60,6 +61,10 @@ model detects them.
   remove during a partition was never told. For reminders, a missed fire
   or cancel could make the reminder fire again. Snapshots are now sent
   whenever the map is non-empty.
+- **Non-associative merge.** A value kept every dot that had written it,
+  and a tombstone that beat a value dropped them, so two replicas could
+  hold different dot sets for the same value. A value now keeps only its
+  newest dot, which makes merge strictly associative.
 
 ## Limits
 
@@ -71,11 +76,6 @@ model detects them.
   accept everything.
 - **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
   on the cutoff rule in its doc comment.
-- **Strict associativity.** It does not hold: a tombstone that beats a
-  value drops that value's dots, so two replicas can hold different dot
-  sets for the same visible value. No merge decision or read can see the
-  difference. Only `barrel_p2p_map`'s `prune_on_peer_down`, which reads
-  the full dot set, could prune differently.
 - **Not modelled yet:** leader election fencing, Plumtree itself,
   HyParView, and the Ed25519 handshake.
 

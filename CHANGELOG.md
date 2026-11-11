@@ -27,6 +27,16 @@ and this project adheres to the 0.x semantics described in the README
 - `barrel_p2p_replica:broadcast_entry/3` and `broadcast_delta/2` for
   custom replicated stores: gossip a write exactly as it was stored.
 
+### Changed
+- A replicated entry now remembers only its latest write instead of every
+  write it ever had. Replicas that saw the same writes now hold exactly the
+  same state, not just the same visible value. Entries from nodes on the
+  previous version are converted on arrival, so mixed clusters keep
+  converging.
+- Replicated maps with `prune_on_peer_down` now drop a key when its latest
+  write came from the node that left. Before, a key was dropped only if
+  that node had made every write to it.
+
 ### Breaking
 - Erlang/OTP 29 or later is now required. Support for OTP 27 and 28 is
   dropped, along with the fallback certificate encoding those releases

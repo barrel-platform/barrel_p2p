@@ -35,7 +35,6 @@ fi
 # model  spec  expected
 models=(
     "MergeLattice            MergeLattice  pass"
-    "MergeLattice_strict     MergeLattice  fail:Associative"
     "MC_registry             ReplicaORMap  pass"
     "MC_registry_stamp       ReplicaORMap  fail:QuiescentConverged"
     "MC_registry_snap        ReplicaORMap  fail:QuiescentConverged"

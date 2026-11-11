@@ -15,10 +15,9 @@ spec/tla/check.sh
 ```
 
 ```text
-ok    MergeLattice             pass                                1 states    6s
-ok    MergeLattice_strict      fail:Associative                    ? states    5s
-ok    MC_registry              pass                           207734 states    3s
-ok    MC_registry_stamp        fail:QuiescentConverged         95673 states    2s
+ok    MergeLattice             pass                                1 states    4s
+ok    MC_registry              pass                           189802 states    4s
+ok    MC_registry_stamp        fail:QuiescentConverged        100141 states    1s
 ...
 ```
 
