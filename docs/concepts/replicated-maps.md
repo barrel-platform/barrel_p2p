@@ -185,3 +185,5 @@ App env defaults:
   full-syncs.
 - [Hybrid logical clocks](hybrid-logical-clocks.md) stamp the writes the
   merge resolves on.
+- [Replication protocol](../reference/replication-protocol.md) specifies
+  the messages, procedures and guarantees.

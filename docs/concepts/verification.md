@@ -87,4 +87,7 @@ model detects them.
 - **Not modelled yet:** leader election fencing, Plumtree itself,
   HyParView, and the Ed25519 handshake.
 
-To run the checker, see [Run the model checker](../how-to/run-the-model-checker.md).
+The protocol the model describes is specified in [Replication
+protocol](../reference/replication-protocol.md), and the literature it
+builds on is on the [References](../reference/references.md) page. To run
+the checker, see [Run the model checker](../how-to/run-the-model-checker.md).

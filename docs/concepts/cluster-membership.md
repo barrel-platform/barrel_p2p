@@ -185,3 +185,5 @@ metric updates).
   operational sizing table.
 - [Architecture](../reference/architecture.md) has the
   supervision-tree-level picture.
+- [References](../reference/references.md) cites the HyParView
+  paper (DSN 2007) and the defaults it recommends.

@@ -18,6 +18,11 @@ architectural details, comparison with adjacent projects.
 - [The replicated substrate](replicated-substrate.md) — the
   low-level `barrel_p2p_replica` behaviour and `barrel_p2p_crdt_wire`,
   for custom merge beyond `barrel_p2p_map`.
+- [Replication protocol](replication-protocol.md): the state,
+  messages, procedures and guarantees behind every replicated
+  service.
+- [References](references.md): the papers and RFCs barrel_p2p
+  builds on, and where each is used.
 
 ## Related
 

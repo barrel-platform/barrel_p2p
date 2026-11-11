@@ -181,3 +181,5 @@ tagged-stream multiplex ([streams concept](streams.md)).
   of Plumtree broadcasts inside barrel_p2p.
 - [Observe a cluster](../how-to/observe-cluster.md) lists the
   metrics emitted by the gossip layer.
+- [References](../reference/references.md) cites the Plumtree
+  paper (Epidemic Broadcast Trees, SRDS 2007) this layer follows.
