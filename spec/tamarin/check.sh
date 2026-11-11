@@ -19,7 +19,7 @@ command -v maude >/dev/null || { echo "maude not on PATH" >&2; exit 1; }
 lemmas=(
     "DistAuthV2  executable                   verified"
     "DistAuthV2  client_authenticates_target  falsified"
-    "DistAuthV2  client_agreement             verified"
+    "DistAuthV2  client_agreement             falsified"
     "DistAuthV2  server_agreement             falsified"
     "DistAuthV2  dist_name_is_authenticated   falsified"
     "DistAuthV3  executable                   verified"
@@ -44,7 +44,7 @@ for row in "${lemmas[@]}"; do
     start=$(date +%s)
     tamarin-prover --prove="$lemma" "$here/$theory.spthy" >"$log" 2>&1 || true
     took=$(( $(date +%s) - start ))
-    line=$(grep -E "^ +$lemma \((all|exists)-traces\):" "$log" | tail -1 || true)
+    line=$(grep -E "^ +$lemma \((all-traces|exists-trace)\):" "$log" | tail -1 || true)
     case "$line" in
         *verified*) got="verified" ;;
         *falsified*) got="falsified" ;;

@@ -134,8 +134,12 @@ lemma executable:
 lemma client_authenticates_target:
   "All C T N nC nS #i. ClientAccept(C, T, N, nC, nS) @ i ==> N = T"
 
-/* If the client accepts honest N, N signed the client's nonce. (A v2
- * signature covers only the verifier's nonce, so this is all v2 can give.) */
+/* If the client accepts honest N, N signed the client's nonce as a server.
+ * (A v2 signature covers only the verifier's nonce, so this is all v2 can
+ * give.) Role confusion breaks it: a signature N made as a client, over a
+ * nonce the attacker chose and the certificate of the attacker's endpoint,
+ * is accepted as N's server response by a client that reached the same
+ * endpoint. */
 lemma client_agreement:
   "All C T N nC nS #i.
      ClientAccept(C, T, N, nC, nS) @ i & not (Ex #r. Compromised(N) @ r)

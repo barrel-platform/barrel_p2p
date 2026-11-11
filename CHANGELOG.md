@@ -17,10 +17,12 @@ and this project adheres to the 0.x semantics described in the README
   server that authenticates as a node other than the one they dialed. The
   server-side check needs a quic release that enforces the authenticated
   name, and will follow.
-- A node could be tricked into authenticating itself: its handshake
-  signatures did not say which side produced them, so an attacker could
-  make a node sign its own challenge. Signatures now cover the whole
-  handshake (both names, both keys, both nonces) with the signer's role.
+- A node's handshake signatures did not say which side produced them, so
+  a signature made in one role passed in the other. An attacker could make
+  a node accept itself as a peer, or impersonate a node to a client that
+  reached the attacker's endpoint, using a signature that node made while
+  connecting to the attacker. Signatures now cover the whole handshake
+  (both names, both keys, both nonces) with the signer's role.
 
 ### Fixed
 - A removal could be lost on a peer after a network partition healed: the

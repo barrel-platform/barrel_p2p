@@ -83,12 +83,12 @@ with its own keys, and can steal node keys.
 | Lemma | Meaning | v2 (0.1.x) | v3 |
 |---|---|---|---|
 | `client_authenticates_target` | The client ends up authenticated to the node it dialed. | falsified | verified |
-| `client_agreement` | An accepted server really ran this handshake. | verified (weak form) | verified |
+| `client_agreement` | An accepted server really ran this handshake. | falsified (role confusion) | verified |
 | `server_agreement` | An accepted client really ran this handshake with this server. | falsified (reflection) | verified |
 | `client_injective_agreement` | Each accepted handshake matches its own server run. | | verified |
 | `dist_name_is_authenticated` | The Erlang dist name is the authenticated name. | falsified | verified, given the quic check |
 
-Two attacks on v2 come out of the model:
+Three attacks on v2 come out of the model:
 
 - **Name substitution.** Nothing compared the authenticated name
   with the dialed node or with the dist name. Anyone holding a key
@@ -97,6 +97,13 @@ Two attacks on v2 come out of the model:
   the client's challenge before verifying the client. An attacker
   could open two connections to a node and make it sign its own
   challenge, then be accepted as that node.
+- **Role confusion.** For the same reason, a signature a node made
+  as a client passed as its server response. An attacker running
+  one TLS endpoint could get node N to connect to it and sign a
+  challenge taken from a client that reached the same endpoint
+  while looking for N. The client then accepted the attacker as N.
+  The certificate binding does not help: both legs end at the
+  attacker's certificate.
 
 v3 signs the full transcript with a role label, and the client
 checks the authenticated name against the dialed node.
