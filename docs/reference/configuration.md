@@ -69,8 +69,8 @@ These govern sharded placement and its lease-based live-node set. `ring_size` MU
 |-----|---------|------|---------|
 | `ring_size` | `64` | `pos_integer()` | Number of ring partitions. Granularity of ownership events. Must match on every node. |
 | `member_heartbeat_ms` | `2000` | `pos_integer()` | How often a node re-announces itself into the live-node set. |
-| `member_ttl_ms` | `6000` | `pos_integer()` | Lease lifetime. A node drops out of the ring once `Now - last heartbeat` exceeds this. Keep well above `member_heartbeat_ms` plus expected clock skew. |
-| `member_skew_ms` | `5000` | `non_neg_integer()` | Reject heartbeats whose timestamp is more than this far in the future, so a fast clock cannot pin a dead node. |
+| `member_ttl_ms` | `6000` | `pos_integer()` | Lease lifetime. A node drops out of the ring once `Now - last heartbeat` exceeds this, measured on the receiver's clock against the sender's stamp. Node clocks must agree within `member_ttl_ms - member_heartbeat_ms` minus gossip delay (about 3 s with the defaults), or healthy nodes drop each other and partitions get two owners. The shard logs a warning when it sees a larger offset. |
+| `member_skew_ms` | `5000` | `non_neg_integer()` | Reject heartbeats whose timestamp is more than this far in the future, so a fast clock cannot pin a dead node. It does not protect against two owners: that bound comes from `member_ttl_ms`. |
 
 ## Reminders (`barrel_p2p_reminder`)
 

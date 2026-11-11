@@ -49,6 +49,8 @@ models=(
     "MC_map_partition        ReplicaORMap  pass"
     "MC_map_partition_stamp  ReplicaORMap  pass"
     "MC_map_snap             ReplicaORMap  fail:QuiescentConverged"
+    "MC_map_gc               ReplicaORMap  pass"
+    "MC_map_gc_unsafe        ReplicaORMap  fail:NoResurrection"
     "MC_hyparview            HyParView     pass"
     "MC_hyparview4           HyParView     pass"
     "MC_hyparview_link       HyParView     fail:SymmetricAtQuiescence"
@@ -60,6 +62,10 @@ models=(
     "MC_plumtree_drop        Plumtree      fail:DeliveredAtQuiescence"
     "MC_leader_election      Leader        pass"
     "MC_leader_fence         Leader        fail:LeaderHoldsMaxFence"
+    "MC_lease_behind_ok      ShardLease    pass"
+    "MC_lease_ahead_ok       ShardLease    pass"
+    "MC_lease_behind         ShardLease    fail:SingleOwner"
+    "MC_lease_ahead          ShardLease    fail:SingleOwner"
 )
 
 want=("$@")

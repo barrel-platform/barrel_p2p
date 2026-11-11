@@ -99,6 +99,7 @@ Stability tiers used below:
 | `barrel_p2p_hlc` (Hybrid Logical Clock)         | supported    | CT: `barrel_p2p_hlc_SUITE`; prop suite                            |
 | `barrel_p2p_replica` replication behaviour      | beta         | CT: the 4 consumer suites + `barrel_p2p_map_e2e_SUITE`, `barrel_p2p_replica_write_path_SUITE`; prop: `barrel_p2p_replica_convergence_prop_tests` |
 | Membership model (TLA+, `spec/tla/HyParView.tla`) | supported | TLC in CI; CT: `barrel_p2p_hyparview_e2e_SUITE` (5 real nodes) |
+| Shard lease and tombstone GC models (TLA+) | supported | TLC in CI: `ShardLease.tla`, `MC_map_gc*`; CT: `barrel_p2p_shard_SUITE` |
 | Broadcast model (TLA+, `spec/tla/Plumtree.tla`) | supported | TLC in CI; CT: `barrel_p2p_plumtree_SUITE` |
 | Leader fencing model (TLA+, `spec/tla/Leader.tla`) | supported | TLC in CI; CT: `barrel_p2p_leader_SUITE` |
 | Auth handshake model (Tamarin, `spec/tamarin`) | supported    | Tamarin: `spec/tamarin/check.sh` in CI (v2 attacks, v3 proofs)   |
