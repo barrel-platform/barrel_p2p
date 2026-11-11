@@ -25,6 +25,13 @@ and this project adheres to the 0.x semantics described in the README
   (both names, both keys, both nonces) with the signer's role.
 
 ### Fixed
+- A broadcast could miss a node for good after a single link failure: a
+  node remembered only the first peer that offered a missing message, and
+  if that link failed it never asked the others. It now asks each in turn.
+- Broadcasts were dropped silently on a busy connection. They now wait for
+  the connection instead.
+- A peer that had left the membership view could keep receiving every
+  broadcast, if one of its messages arrived just after it left.
 - The membership layer crashed whenever it promoted a spare peer to
   replace a lost one, which happens on every eviction and every failed
   link. The membership process restarted with empty views, so the node

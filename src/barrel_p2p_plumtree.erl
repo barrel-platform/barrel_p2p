@@ -49,8 +49,14 @@
 
     %% MsgId -> {Payload, HLC}
     received = #{} :: #{binary() => {term(), barrel_p2p_hlc:timestamp()}},
-    %% MsgId -> {Sender, TimerRef}
-    pending_ihaves = #{} :: #{binary() => {node(), reference()}},
+    %% MsgId -> {Announcers, TimerRef}: every peer that sent IHAVE for a
+    %% message we lack, oldest first. Each timeout GRAFTs the next one.
+    pending_ihaves = #{} :: #{binary() => {[node()], reference()}},
+
+    %% Peers in the HyParView active view, from peer_up / peer_down. Only
+    %% these may become eager: a GOSSIP or GRAFT still in flight from a peer
+    %% that just left must not put it back.
+    view = [] :: [node()],
 
     %% Subscribers for delivered messages
     subscribers = #{} :: #{pid() => reference()},
@@ -114,7 +120,7 @@ init([]) ->
     %% Schedule periodic cleanup
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup),
 
-    {ok, #state{eager_peers = EagerPeers, watch = Watch}}.
+    {ok, #state{eager_peers = EagerPeers, view = EagerPeers, watch = Watch}}.
 
 handle_call({subscribe, Pid}, _From, State) ->
     case maps:is_key(Pid, State#state.subscribers) of
@@ -210,35 +216,49 @@ handle_info({?PLUMTREE_TAG, {ihave, MsgId, Sender}}, State) ->
             %% Already have it - ignore
             {noreply, State};
         false ->
-            %% Don't have it - schedule GRAFT request
-            case maps:is_key(MsgId, State#state.pending_ihaves) of
-                true ->
-                    %% Already waiting for this message
-                    {noreply, State};
-                false ->
-                    %% Start timer to request via GRAFT
-                    TimerRef = erlang:send_after(
-                        ?IHAVE_TIMEOUT, self(), {graft_timeout, MsgId, Sender}
-                    ),
-                    Pending = maps:put(MsgId, {Sender, TimerRef}, State#state.pending_ihaves),
-                    {noreply, State#state{pending_ihaves = Pending}}
-            end
+            %% Don't have it: remember the announcer. The first one starts
+            %% the GRAFT timer; later ones are kept so a GRAFT that goes
+            %% unanswered (the announcer's link failed) can be retried.
+            Pending0 = State#state.pending_ihaves,
+            Pending =
+                case maps:get(MsgId, Pending0, undefined) of
+                    undefined ->
+                        TimerRef = erlang:send_after(
+                            ?IHAVE_TIMEOUT, self(), {graft_timeout, MsgId}
+                        ),
+                        maps:put(MsgId, {[Sender], TimerRef}, Pending0);
+                    {Announcers, TimerRef} ->
+                        case lists:member(Sender, Announcers) of
+                            true -> Pending0;
+                            false -> maps:put(MsgId, {Announcers ++ [Sender], TimerRef}, Pending0)
+                        end
+                end,
+            {noreply, State#state{pending_ihaves = Pending}}
     end;
-%% GRAFT timeout - request the message
-handle_info({graft_timeout, MsgId, Sender}, State) ->
-    case maps:is_key(MsgId, State#state.received) of
-        true ->
-            %% Already received via another path
-            Pending = maps:remove(MsgId, State#state.pending_ihaves),
-            {noreply, State#state{pending_ihaves = Pending}};
-        false ->
-            %% Still missing - send GRAFT request
-            send_graft(MsgId, Sender),
-            Pending = maps:remove(MsgId, State#state.pending_ihaves),
+%% GRAFT timeout: still missing, so GRAFT the oldest announcer and keep the
+%% rest; the next timeout tries the next one.
+handle_info({graft_timeout, MsgId}, State) ->
+    Pending0 = State#state.pending_ihaves,
+    case {maps:is_key(MsgId, State#state.received), maps:get(MsgId, Pending0, undefined)} of
+        {false, {[Announcer | Rest], _}} ->
+            send_graft(MsgId, Announcer),
+            Pending =
+                case Rest of
+                    [] ->
+                        maps:remove(MsgId, Pending0);
+                    _ ->
+                        TimerRef = erlang:send_after(
+                            ?IHAVE_TIMEOUT, self(), {graft_timeout, MsgId}
+                        ),
+                        maps:put(MsgId, {Rest, TimerRef}, Pending0)
+                end,
             {noreply, State#state{
                 pending_ihaves = Pending,
                 graft_sent = State#state.graft_sent + 1
-            }}
+            }};
+        _ ->
+            %% Received via another path, or nothing left to try.
+            {noreply, State#state{pending_ihaves = maps:remove(MsgId, Pending0)}}
     end;
 %% Receive GRAFT request
 handle_info({?PLUMTREE_TAG, {graft, MsgId, Sender}}, State) ->
@@ -259,8 +279,9 @@ handle_info({?PLUMTREE_TAG, {prune, Sender}}, State) ->
     {noreply, State2};
 %% HyParView events
 handle_info({barrel_p2p_event, {peer_up, Node}}, State) ->
-    %% New peer joins - add to eager peers
-    State2 = ensure_eager(Node, State),
+    %% New peer joins - add to the view and to eager peers
+    View = [Node | State#state.view -- [Node]],
+    State2 = ensure_eager(Node, State#state{view = View}),
     {noreply, State2};
 handle_info({barrel_p2p_event, {peer_down, Node, _Reason}}, State) ->
     %% Peer left - remove from all lists. barrel_p2p_hyparview emits the
@@ -268,7 +289,9 @@ handle_info({barrel_p2p_event, {peer_down, Node, _Reason}}, State) ->
     %% the broadcast tree keep dead peers in eager/lazy.
     EagerPeers = State#state.eager_peers -- [Node],
     LazyPeers = State#state.lazy_peers -- [Node],
-    {noreply, State#state{eager_peers = EagerPeers, lazy_peers = LazyPeers}};
+    {noreply, State#state{
+        eager_peers = EagerPeers, lazy_peers = LazyPeers, view = State#state.view -- [Node]
+    }};
 %% Re-subscribe if a watched source (hyparview events) restarted.
 handle_info({barrel_p2p_source_monitor, retry, Source}, State) ->
     {noreply, State#state{
@@ -326,7 +349,7 @@ send_gossip(MsgId, Tag, Payload, Origin, Peers, State) ->
     Msg = {?PLUMTREE_TAG, {gossip, MsgId, Tag, Payload, Origin}},
     lists:foreach(
         fun(Peer) ->
-            erlang:send({?SERVER, Peer}, Msg, [nosuspend])
+            erlang:send({?SERVER, Peer}, Msg)
         end,
         Peers
     ),
@@ -337,7 +360,7 @@ send_ihaves(MsgId, Peers, State) ->
     Msg = {?PLUMTREE_TAG, {ihave, MsgId, node()}},
     lists:foreach(
         fun(Peer) ->
-            erlang:send({?SERVER, Peer}, Msg, [nosuspend])
+            erlang:send({?SERVER, Peer}, Msg)
         end,
         Peers
     ),
@@ -346,19 +369,23 @@ send_ihaves(MsgId, Peers, State) ->
 
 send_graft(MsgId, Peer) ->
     Msg = {?PLUMTREE_TAG, {graft, MsgId, node()}},
-    erlang:send({?SERVER, Peer}, Msg, [nosuspend]),
+    erlang:send({?SERVER, Peer}, Msg),
     barrel_p2p_metrics:graft_sent(Peer).
 
 send_prune(Peer, _State) ->
     Msg = {?PLUMTREE_TAG, {prune, node()}},
-    erlang:send({?SERVER, Peer}, Msg, [nosuspend]),
+    erlang:send({?SERVER, Peer}, Msg),
     barrel_p2p_metrics:prune_sent(Peer).
 
 ensure_eager(Node, State) when Node =:= node() ->
     State;
 ensure_eager(Node, State) ->
-    case lists:member(Node, State#state.eager_peers) of
+    case
+        lists:member(Node, State#state.eager_peers) orelse
+            not lists:member(Node, State#state.view)
+    of
         true ->
+            %% Already eager, or not (or no longer) in the overlay.
             State;
         false ->
             LazyPeers = State#state.lazy_peers -- [Node],
@@ -380,7 +407,7 @@ move_to_lazy(Node, State) ->
 
 cancel_pending_ihave(MsgId, State) ->
     case maps:take(MsgId, State#state.pending_ihaves) of
-        {{_Sender, TimerRef}, Pending} ->
+        {{_Announcers, TimerRef}, Pending} ->
             erlang:cancel_timer(TimerRef),
             State#state{pending_ihaves = Pending};
         error ->

@@ -54,6 +54,10 @@ models=(
     "MC_hyparview_link       HyParView     fail:SymmetricAtQuiescence"
     "MC_hyparview_leave      HyParView     fail:EventsMatchView"
     "MC_hyparview_rejoin     HyParView     fail:LeftStaysOut"
+    "MC_plumtree             Plumtree      pass"
+    "MC_plumtree_graft       Plumtree      fail:DeliveredAtQuiescence"
+    "MC_plumtree_eager       Plumtree      fail:EagerInView"
+    "MC_plumtree_drop        Plumtree      fail:DeliveredAtQuiescence"
 )
 
 want=("$@")
