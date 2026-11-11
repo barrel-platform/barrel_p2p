@@ -25,6 +25,11 @@ and this project adheres to the 0.x semantics described in the README
   (both names, both keys, both nonces) with the signer's role.
 
 ### Fixed
+- After two nodes started campaigning for the same leadership at the same
+  time, the winner could keep a fencing token lower than one the loser had
+  already issued. A resource checking tokens would then refuse every write
+  from the real leader. The leader now takes a new, higher token when it
+  sees a higher one, and its owner receives `{elected, Fence}` again.
 - A broadcast could miss a node for good after a single link failure: a
   node remembered only the first peer that offered a missing message, and
   if that link failed it never asked the others. It now asks each in turn.

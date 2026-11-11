@@ -24,6 +24,7 @@
     priority_beats_lower_atom/1,
     fence_monotonic_across_relead/1,
     merge_fence_forces_higher_mint/1,
+    leader_remints_on_higher_fence/1,
     malformed_gossip_does_not_crash/1
 ]).
 
@@ -37,6 +38,7 @@ all() ->
         priority_beats_lower_atom,
         fence_monotonic_across_relead,
         merge_fence_forces_higher_mint,
+        leader_remints_on_higher_fence,
         malformed_gossip_does_not_crash
     ].
 
@@ -177,6 +179,26 @@ merge_fence_forces_higher_mint(_Config) ->
     ok = barrel_p2p_leader:resign(job8),
     {ok, {leader, F2}} = barrel_p2p_leader:lead(job8),
     ?assert(F2 > HighPacked),
+    ok.
+
+%% Two nodes campaigning at once can both mint: the one that briefly
+%% believed it led may mint a higher fence than the real leader's, and a
+%% resource that already accepted it would refuse the leader's token for
+%% good. A leader that learns a higher fence now mints above it and tells
+%% its owner. Found by spec/tla/MC_leader_fence.
+leader_remints_on_higher_fence(_Config) ->
+    {ok, {leader, F1}} = barrel_p2p_leader:lead(job9),
+    HighHLC = far_future_hlc(),
+    HighPacked = pack(HighHLC),
+    ?assert(HighPacked > F1),
+    barrel_p2p_leader:merge_fence(job9, HighHLC),
+    F2 =
+        receive
+            {barrel_p2p_leader, job9, {elected, F}} -> F
+        after 2000 -> ct:fail(no_new_fence)
+        end,
+    ?assert(F2 > HighPacked),
+    ?assertEqual({ok, F2}, barrel_p2p_leader:fence(job9)),
     ok.
 
 %%====================================================================

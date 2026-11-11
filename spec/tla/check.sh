@@ -58,6 +58,8 @@ models=(
     "MC_plumtree_graft       Plumtree      fail:DeliveredAtQuiescence"
     "MC_plumtree_eager       Plumtree      fail:EagerInView"
     "MC_plumtree_drop        Plumtree      fail:DeliveredAtQuiescence"
+    "MC_leader_election      Leader        pass"
+    "MC_leader_fence         Leader        fail:LeaderHoldsMaxFence"
 )
 
 want=("$@")

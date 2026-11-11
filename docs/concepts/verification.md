@@ -176,6 +176,34 @@ Recovery of messages broadcast during a partition is out of scope:
 Plumtree does not replay them, and the replicated services resync
 instead (see [Gossip broadcast](gossip-broadcast.md)).
 
+## Leader election
+
+`spec/tla/Leader.tla` models `barrel_p2p_leader` for one election
+name, over the replica layer reduced to what it guarantees (every
+node eventually sees each candidate add and remove, and a remove wins).
+
+| Property | Meaning |
+|---|---|
+| `AgreementAtQuiescence` | Once gossip settles, every node knows the same candidates, so they compute the same leader. |
+| `LeaderHoldsMaxFence` | The agreed leader holds the highest fence ever minted, so a fenced resource accepts its writes. |
+
+| Model | Setting | Result |
+|---|---|---|
+| `MC_leader_election` | 2 candidates campaigning concurrently | passes, 4,927 states |
+| `MC_leader_fence` | the 0.1.x fencing | fails `LeaderHoldsMaxFence` |
+
+Defect found, fixed: when two nodes campaigned at once, the one that
+had not yet heard of the other could mint a higher fence while it
+briefly believed it led. The real leader only raised its high-water
+mark and kept its lower token, so a resource that had accepted the
+higher one refused the leader for good. A leader that learns a higher
+fence now mints above it and sends `{elected, Fence}` again.
+
+While both still believe they lead, they re-mint above each other
+until the candidate updates arrive (one gossip round). The model
+bounds this with a constraint, and checks two nodes: three did not
+fit in the time budget.
+
 ## Authentication
 
 `spec/tamarin/` models the distribution auth handshake in Tamarin,
@@ -227,8 +255,7 @@ the cookie-only path, and TLS beyond the certificate hash.
   accept everything.
 - **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
   on the cutoff rule in its doc comment.
-- **Not modelled yet:** leader election fencing, reminders and
-  tombstone GC.
+- **Not modelled yet:** reminders and tombstone GC.
 
 The protocol the model describes is specified in [Replication
 protocol](../reference/replication-protocol.md), and the literature it
