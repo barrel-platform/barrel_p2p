@@ -16,8 +16,10 @@ Every node maintains two ordered sets of peers:
 
 - The **active view** is the small bounded set (default size 5)
   of peers this node currently exchanges gossip with. The links
-  are symmetric: if A has B in its active view, B has A in its
-  active view. The size is `active_size` in sys.config.
+  are symmetric: once messages settle, if A has B in its active
+  view, B has A in its active view (checked by the TLA+ model in
+  `spec/tla/HyParView.tla`). The size is `active_size` in
+  sys.config.
 - The **passive view** is a larger bounded cache (default size
   30) of *known* peers that this node is not currently
   connected to. The passive view is a reserve: when an active
@@ -51,23 +53,24 @@ NewNode ----JOIN----> ContactNode
                             |
                             +-- adds NewNode to its active view
                             |
-                            +-- sends FORWARD_JOIN(TTL=ARWL) to a
-                                random active peer (which forwards
-                                again, until TTL=0)
+                            +-- sends FORWARD_JOIN(NewNode, TTL=ARWL)
+                                to every other active peer
 ```
 
-Forwarding has two purposes:
+Each node that receives `FORWARD_JOIN` does one of three things:
 
-- Knowledge of the new node spreads beyond the contact node.
-- Each receiving node either adds the new node to its own
-  active view (small probability, decreasing with TTL) or to
-  its passive view (at TTL=0). The passive entry is a warm
-  spare for future use.
+- **TTL is 0:** it adds the new node to its passive view.
+- **It has room in its active view:** it dials the new node, adds
+  it, and sends it a high-priority `NEIGHBOR` so the new node adds
+  the link too. The walk stops there.
+- **Otherwise:** it forwards to one random active peer with TTL - 1.
+  At TTL = `prwl` (default 3) it also keeps the new node in its
+  passive view as a warm spare.
 
-The TTL is the *active random walk length* (`arwl`, default 6).
-A smaller value confines the join to the contact node's
-neighbourhood; a larger value spreads the new node more widely
-at the cost of more messages.
+The TTL starts at the *active random walk length* (`arwl`,
+default 6). A smaller value confines the join to the contact
+node's neighbourhood; a larger value spreads the new node more
+widely at the cost of more messages.
 
 ## Failure handling
 
@@ -75,19 +78,26 @@ A peer failure is detected through the dist channel:
 `net_kernel` reports a `nodedown` event, barrel_p2p translates it
 into a HyParView failure, and the protocol takes over:
 
-1. The failed peer is moved from active to a transient
-   "failed" state with an exponential backoff timer.
-2. After `max_fail_count` consecutive failures (default 5), the
-   peer is moved out of the active view entirely and into the
-   passive view.
-3. A replacement is picked from the passive view and sent a
-   `NEIGHBOR` request. If the candidate accepts, the active
-   view is back to its target size.
+1. The failed peer leaves the active view at once, and
+   subscribers get `peer_down`.
+2. A replacement is taken from the passive view. The node dials
+   it and, once the channel is up, sends `NEIGHBOR`. The priority
+   is high when the active view is empty (the candidate must
+   accept) and low otherwise (it accepts only if it has room).
+3. If the candidate refuses, or the dial fails, the next passive
+   candidate is tried.
 
-Backoff prevents reconnection storms during network partitions.
-If half the cluster becomes unreachable at once, each surviving
-node retries its neighbours on staggered timers rather than
-simultaneously.
+A passive candidate whose dial fails gets an exponential backoff
+before it is tried again. After `max_fail_count` failures
+(default 5) it is dropped from the passive view. Backoff prevents
+reconnection storms during a partition: surviving nodes retry
+their candidates on staggered timers rather than simultaneously.
+
+A node that calls `barrel_p2p:leave/0` sends `DISCONNECT` to its
+active peers, emits `peer_down` for each, and clears both views.
+Until it calls `barrel_p2p:join/1` again it stays out: it refuses
+`NEIGHBOR` requests from peers trying to promote it and answers
+`JOIN` with `DISCONNECT`.
 
 ## Shuffle: keeping passive views fresh
 

@@ -49,6 +49,11 @@ models=(
     "MC_map_partition        ReplicaORMap  pass"
     "MC_map_partition_stamp  ReplicaORMap  pass"
     "MC_map_snap             ReplicaORMap  fail:QuiescentConverged"
+    "MC_hyparview            HyParView     pass"
+    "MC_hyparview4           HyParView     pass"
+    "MC_hyparview_link       HyParView     fail:SymmetricAtQuiescence"
+    "MC_hyparview_leave      HyParView     fail:EventsMatchView"
+    "MC_hyparview_rejoin     HyParView     fail:LeftStaysOut"
 )
 
 want=("$@")
