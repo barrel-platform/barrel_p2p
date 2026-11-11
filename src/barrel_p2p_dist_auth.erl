@@ -22,10 +22,27 @@
 %% Challenge-response primitives used by the auth stream module.
 -export([
     create_challenge/0,
-    sign_challenge/3,
-    verify_response/4,
+    sign_transcript/2,
+    verify_transcript/4,
+    transcript_message/8,
     validate_peer_ts/1
 ]).
+
+-export_type([role/0, peer_view/0]).
+
+%% Which side of the handshake produced a signature.
+-type role() :: client | server.
+
+%% What one side knows about the handshake when it signs or verifies: the
+%% peer's HELLO name and key, both nonces, and the TLS channel binding. The
+%% local name and key complete the transcript.
+-type peer_view() :: #{
+    peer_name := binary(),
+    peer_pk := binary(),
+    client_nonce := binary(),
+    server_nonce := binary(),
+    binding := binary()
+}.
 
 %% TLS channel binding (H1): SHA-256 of the listener's TLS cert.
 -export([
@@ -119,65 +136,102 @@ create_challenge() ->
     MonoStart = erlang:monotonic_time(millisecond),
     {Nonce, WallTs, MonoStart}.
 
-%% @doc Sign a challenge built locally. The message format
-%% `Nonce | Timestamp | OwnPubKey | Binding' binds the signature to the
-%% signer's own identity and to the QUIC TLS channel: `Binding' is the
-%% SHA-256 of the server's TLS certificate (H1). A relayed signature
-%% computed over a different channel's cert no longer verifies.
--spec sign_challenge(binary(), integer(), binary()) ->
-    {ok, binary()} | {error, term()}.
-sign_challenge(Nonce, Timestamp, Binding) when
-    byte_size(Nonce) =:= ?NONCE_SIZE, byte_size(Binding) =:= ?BINDING_SIZE
+%% Domain-separation label of protocol v3 signatures.
+-define(TRANSCRIPT_LABEL, <<"barrel_p2p-dist-auth-v3">>).
+
+%% @doc The bytes a v3 signature covers:
+%% `Label | Role | ClientName | ServerName | ClientPk | ServerPk |
+%% ClientNonce | ServerNonce | Binding', names length-prefixed.
+%%
+%% `Role' is the signer's side. It stops a server's signature from being
+%% replayed as a client's (reflection). Both names bind the signature to
+%% who is talking to whom, both keys and nonces to this handshake, and
+%% `Binding' (SHA-256 of the server's TLS certificate) to the TLS channel.
+-spec transcript_message(
+    role(), binary(), binary(), binary(), binary(), binary(), binary(), binary()
+) -> binary().
+transcript_message(
+    Role, ClientName, ServerName, ClientPk, ServerPk, ClientNonce, ServerNonce, Binding
+) when
+    is_binary(ClientName),
+    is_binary(ServerName),
+    byte_size(ClientPk) =:= ?PUBLIC_KEY_SIZE,
+    byte_size(ServerPk) =:= ?PUBLIC_KEY_SIZE,
+    byte_size(ClientNonce) =:= ?NONCE_SIZE,
+    byte_size(ServerNonce) =:= ?NONCE_SIZE,
+    byte_size(Binding) =:= ?BINDING_SIZE
 ->
-    case get_private_key() of
-        {ok, PrivKey} ->
-            case get_public_key() of
-                {ok, PubKey} ->
-                    Message =
-                        <<Nonce/binary, Timestamp:64/big, PubKey/binary, Binding/binary>>,
-                    Sig = crypto:sign(eddsa, none, Message, [PrivKey, ed25519]),
-                    {ok, Sig};
-                Error ->
-                    Error
-            end;
+    RoleByte = role_byte(Role),
+    <<(?TRANSCRIPT_LABEL)/binary, RoleByte:8, (byte_size(ClientName)):16/big, ClientName/binary,
+        (byte_size(ServerName)):16/big, ServerName/binary, ClientPk/binary, ServerPk/binary,
+        ClientNonce/binary, ServerNonce/binary, Binding/binary>>.
+
+role_byte(client) -> 1;
+role_byte(server) -> 2.
+
+%% @doc Sign the handshake transcript as `Role'. The local name and public
+%% key come from `node()' and the same on-disk key pair the signature is made
+%% with, so a key rotation mid-handshake cannot pair one key's signature with
+%% the other key's identity.
+-spec sign_transcript(role(), peer_view()) -> {ok, binary()} | {error, term()}.
+sign_transcript(Role, #{binding := Binding} = View) when byte_size(Binding) =:= ?BINDING_SIZE ->
+    case load_keypair(get_key_dir()) of
+        {ok, PubKey, PrivKey} ->
+            Message = transcript(Role, Role, PubKey, View),
+            {ok, crypto:sign(eddsa, none, Message, [PrivKey, ed25519])};
         Error ->
             Error
     end;
-sign_challenge(_, _, _) ->
+sign_transcript(_Role, _View) ->
     {error, invalid_binding}.
 
-%% @doc Verify a peer's response. Rebuilds the signed message as
-%% `Nonce | WallTs | ResponderPubKey' and checks the signature. The
-%% handshake-elapsed window is measured against the monotonic clock
-%% captured by `create_challenge/0', so an NTP step during the
-%% handshake cannot spuriously fail (or pass) the duration check.
--spec verify_response(
-    binary(),
-    binary(),
-    {binary(), integer(), integer()},
-    binary()
-) -> boolean().
-verify_response(Signature, ResponderPubKey, {Nonce, WallTs, MonoStart}, Binding) when
+%% @doc Verify the peer's signature over the transcript. `SignerRole' is
+%% the peer's side; the local side is the other one. The handshake-elapsed
+%% window is measured against the monotonic clock captured by
+%% `create_challenge/0', so an NTP step during the handshake cannot
+%% spuriously fail (or pass) the duration check.
+-spec verify_transcript(binary(), role(), peer_view(), integer()) -> boolean().
+verify_transcript(
+    Signature, SignerRole, #{peer_pk := PeerPk, binding := Binding} = View, MonoStart
+) when
     byte_size(Signature) =:= ?SIGNATURE_SIZE,
-    byte_size(ResponderPubKey) =:= ?PUBLIC_KEY_SIZE,
-    byte_size(Nonce) =:= ?NONCE_SIZE,
+    byte_size(PeerPk) =:= ?PUBLIC_KEY_SIZE,
     byte_size(Binding) =:= ?BINDING_SIZE,
-    is_integer(WallTs),
     is_integer(MonoStart)
 ->
     Elapsed = erlang:monotonic_time(millisecond) - MonoStart,
-    case Elapsed =< get_timestamp_window() of
-        true ->
-            Message =
-                <<Nonce/binary, WallTs:64/big, ResponderPubKey/binary, Binding/binary>>,
-            crypto:verify(
-                eddsa, none, Message, Signature, [ResponderPubKey, ed25519]
-            );
-        false ->
+    case Elapsed =< get_timestamp_window() andalso get_public_key() of
+        {ok, MyPubKey} ->
+            Message = transcript(SignerRole, other(SignerRole), MyPubKey, View),
+            crypto:verify(eddsa, none, Message, Signature, [PeerPk, ed25519]);
+        _ ->
             false
     end;
-verify_response(_, _, _, _) ->
+verify_transcript(_, _, _, _) ->
     false.
+
+other(client) -> server;
+other(server) -> client.
+
+%% Fill the transcript from the local side's point of view: `LocalRole' is
+%% the side this node plays, `MyPubKey' its public key.
+transcript(SignerRole, LocalRole, MyPubKey, View) ->
+    #{
+        peer_name := PeerName,
+        peer_pk := PeerPk,
+        client_nonce := ClientNonce,
+        server_nonce := ServerNonce,
+        binding := Binding
+    } = View,
+    MyName = atom_to_binary(node(), utf8),
+    {ClientName, ServerName, ClientPk, ServerPk} =
+        case LocalRole of
+            client -> {MyName, PeerName, MyPubKey, PeerPk};
+            server -> {PeerName, MyName, PeerPk, MyPubKey}
+        end,
+    transcript_message(
+        SignerRole, ClientName, ServerName, ClientPk, ServerPk, ClientNonce, ServerNonce, Binding
+    ).
 
 %% @doc Reject a peer-supplied wall timestamp that is too far from
 %% local wall time. Defense-in-depth against an attacker replaying

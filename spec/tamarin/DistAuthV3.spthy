@@ -1,0 +1,154 @@
+theory DistAuthV3
+begin
+
+/*
+ * The barrel_p2p distribution auth handshake, protocol v3. Same message flow
+ * as v2 (DistAuthV2.spthy), but every signature covers the whole transcript
+ * with a role label:
+ *
+ *   T  = 'barrel_p2p-dist-auth-v3' | role | C | S | pkC | pkS | nC | nS | binding
+ *   C -> S : RESPONSE(sign(T with role 'client', skC))
+ *   S -> C : RESPONSE(sign(T with role 'server', skS))
+ *
+ * and two identity checks are added:
+ *   - the client refuses a server whose authenticated name is not the node
+ *     it dialed (barrel_p2p);
+ *   - the server refuses a dist node name that differs from the
+ *     authenticated one (quic_dist, `{ok, {authenticated_node, Node}}`).
+ *
+ * Network, TLS and trust are modelled as in v2.
+ */
+
+builtins: signing, hashing
+
+restriction Eq:
+  "All x y #i. Eq(x, y) @ i ==> x = y"
+
+restriction register_once:
+  "All A #i #j. Register(A) @ i & Register(A) @ j ==> #i = #j"
+
+restriction one_cert:
+  "All S #i #j. CertOf(S) @ i & CertOf(S) @ j ==> #i = #j"
+
+/* Identities and TLS certificates */
+
+rule Register_honest:
+    [ Fr(~ltk) ]
+  --[ Register($A) ]->
+    [ !Ltk($A, ~ltk), !Pk($A, pk(~ltk)), Out(pk(~ltk)) ]
+
+rule Register_attacker:
+    [ In(k) ]
+  --[ Register($A), Compromised($A) ]->
+    [ !Pk($A, pk(k)) ]
+
+rule Reveal:
+    [ !Ltk(A, k) ]
+  --[ Compromised(A) ]->
+    [ Out(k) ]
+
+rule Server_cert:
+    [ Fr(~ck) ]
+  --[ CertOf($S) ]->
+    [ !Cert($S, h(~ck)), Out(h(~ck)) ]
+
+/* Client (dialer) */
+
+rule Client_dial_direct:
+    [ !Ltk($C, ltkC), !Cert($T, b), Fr(~sid) ]
+  --[ Dial($C, $T) ]->
+    [ C0(~sid, $C, ltkC, $T, b) ]
+
+rule Client_dial_attacker_endpoint:
+    [ !Ltk($C, ltkC), In(x), Fr(~sid) ]
+  --[ Dial($C, $T) ]->
+    [ C0(~sid, $C, ltkC, $T, h(x)) ]
+
+rule Client_hello:
+    [ C0(sid, C, ltkC, T, b) ]
+  -->
+    [ C1(sid, C, ltkC, T, b), Out(<'hello', C, pk(ltkC)>) ]
+
+rule Client_recv_hello:
+    [ C1(sid, C, ltkC, T, b), In(<'hello', N, pkN>), !Pk(N, pkN), Fr(~nC) ]
+  -->
+    [ C2(sid, C, ltkC, T, b, N, pkN, ~nC), Out(<'chal', ~nC>) ]
+
+rule Client_respond:
+    [ C2(sid, C, ltkC, T, b, N, pkN, nC), In(<'chal', nS>) ]
+  --[ ClientSigned(C, N, nC, nS) ]->
+    [ C3(sid, C, ltkC, T, b, N, pkN, nC, nS),
+      Out(<'resp', sign(<'v3', 'client', C, N, pk(ltkC), pkN, nC, nS, b>, ltkC)>) ]
+
+rule Client_accept:
+    [ C3(sid, C, ltkC, T, b, N, pkN, nC, nS), In(<'resp', sig>), In('ok') ]
+  --[ Eq(verify(sig, <'v3', 'server', C, N, pk(ltkC), pkN, nC, nS, b>, pkN), true),
+      Eq(N, T),
+      ClientAccept(C, T, N, nC, nS) ]->
+    [ ]
+
+/* Server (listener) */
+
+rule Server_start:
+    [ !Ltk($S, ltkS), !Cert($S, b), In(<'hello', A, pkA>), !Pk(A, pkA),
+      Fr(~nS), Fr(~sid) ]
+  --[ ServerStart($S, A, ~nS) ]->
+    [ S1(~sid, $S, ltkS, b, A, pkA, ~nS),
+      Out(<'hello', $S, pk(ltkS)>), Out(<'chal', ~nS>) ]
+
+rule Server_respond:
+    [ S1(sid, S, ltkS, b, A, pkA, nS), In(<'chal', nC>) ]
+  --[ ServerSigned(S, A, nC, nS) ]->
+    [ S2(sid, S, ltkS, b, A, pkA, nS, nC),
+      Out(<'resp', sign(<'v3', 'server', A, S, pkA, pk(ltkS), nC, nS, b>, ltkS)>) ]
+
+rule Server_accept:
+    [ S2(sid, S, ltkS, b, A, pkA, nS, nC), In(<'resp', sig>) ]
+  --[ Eq(verify(sig, <'v3', 'client', A, S, pkA, pk(ltkS), nC, nS, b>, pkA), true),
+      ServerAccept(S, A, nC, nS) ]->
+    [ S3(sid, S, A), Out('ok') ]
+
+/* Erlang dist handshake: quic_dist refuses a node name that differs from
+ * the authenticated one. */
+rule Server_dist_name:
+    [ S3(sid, S, A), In(<'dist_name', D>) ]
+  --[ Eq(D, A), ServerDistUp(S, D, A) ]->
+    [ ]
+
+/* Lemmas. Expected verdicts are listed in spec/tamarin/check.sh. */
+
+lemma executable:
+  exists-trace
+  "Ex C T N nC nS #i. ClientAccept(C, T, N, nC, nS) @ i
+     & not (Ex A #j. Compromised(A) @ j)"
+
+/* The client ends up authenticated to the node it dialed. */
+lemma client_authenticates_target:
+  "All C T N nC nS #i. ClientAccept(C, T, N, nC, nS) @ i ==> N = T"
+
+/* If the client accepts honest N, N ran this handshake with this client,
+ * on the same nonces. */
+lemma client_agreement:
+  "All C T N nC nS #i.
+     ClientAccept(C, T, N, nC, nS) @ i & not (Ex #r. Compromised(N) @ r)
+     ==> (Ex #j. ServerSigned(N, C, nC, nS) @ j & #j < #i)"
+
+/* If the server accepts honest A, A ran this handshake as a client talking
+ * to this server, on the same nonces. */
+lemma server_agreement:
+  "All S A nC nS #i.
+     ServerAccept(S, A, nC, nS) @ i & not (Ex #r. Compromised(A) @ r)
+     ==> (Ex #j. ClientSigned(A, S, nC, nS) @ j & #j < #i)"
+
+/* Each accepted handshake matches a distinct server run. */
+lemma client_injective_agreement:
+  "All C T N nC nS #i.
+     ClientAccept(C, T, N, nC, nS) @ i & not (Ex #r. Compromised(N) @ r)
+     ==> (Ex #j. ServerSigned(N, C, nC, nS) @ j & #j < #i)
+         & not (Ex C2 T2 #i2. ClientAccept(C2, T2, N, nC, nS) @ i2 & not (#i2 = #i))"
+
+/* The node name used by Erlang dist is the authenticated one. */
+lemma dist_name_is_authenticated:
+  "All S D A #i. ServerDistUp(S, D, A) @ i ==> D = A"
+
+end

@@ -41,14 +41,16 @@
 %%====================================================================
 
 %% @doc Run the auth protocol as the connection initiator. Returns the
-%% node atom claimed by the peer (verified by signature against the
-%% trusted key for that atom). The dist handshake that runs immediately
-%% after refuses the connection if that name does not match the target.
+%% node atom the peer authenticated as, which is always `TargetNode'.
 %%
-%% `TargetNode' is the node we dialed. It gates the AUTH_OK
-%% short-circuit: a server claiming the cookie-only path is only
-%% trusted if `TargetNode' matches the client's own
-%% `cookie_only_nodes' whitelist.
+%% `TargetNode' is the node we dialed. The server must authenticate as that
+%% node: a server proving a different name (even with a key we trust for
+%% that other name) is refused with `{auth_identity_mismatch, Claimed,
+%% TargetNode}'. It also gates the AUTH_OK short-circuit: a server claiming
+%% the cookie-only path is only trusted if `TargetNode' matches the
+%% client's own `cookie_only_nodes' whitelist. Without a dial target (the
+%% callback used outside `-proto_dist barrel_p2p') the handshake fails
+%% closed with `no_dial_target'.
 -spec authenticate_outgoing(
     Conn :: pid(), TargetNode :: node() | undefined, Timeout :: timeout()
 ) -> {ok, node() | undefined} | {error, term()}.
@@ -125,6 +127,8 @@ with_metrics(Role, F) ->
 %% handshake beyond the operator-configured budget.
 %%====================================================================
 
+run_outgoing(_Conn, undefined, _Timeout) ->
+    {error, no_dial_target};
 run_outgoing(Conn, TargetNode, Timeout) ->
     %% Channel binding (H1): the client binds to the server cert it
     %% actually observed on this TLS connection. Fail closed if the peer
@@ -179,13 +183,19 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, TargetNode, Timeout) ->
         {ok, HelloBin, Rest} ->
             case barrel_p2p_dist_protocol:decode(HelloBin) of
                 {hello, ClaimedNode, PeerPubKey} ->
-                    %% Trust check is done before we issue our challenge:
-                    %% in strict mode, refuse if the claimed node has no
+                    %% Identity and trust checks run before we issue our
+                    %% challenge. The server must claim the node we dialed:
+                    %% the signature below then proves that name, so a key
+                    %% trusted for some other name cannot stand in for it.
+                    %% In strict mode, refuse if the claimed node has no
                     %% pinned key. If a different key is already pinned,
-                    %% refuse regardless of mode. The dist handshake that
-                    %% follows verifies this atom matches the connect
-                    %% target.
-                    case trust_check(ClaimedNode, PeerPubKey) of
+                    %% refuse regardless of mode.
+                    case
+                        check_target(ClaimedNode, TargetNode) =:= ok andalso
+                            trust_check(ClaimedNode, PeerPubKey)
+                    of
+                        false ->
+                            {error, {auth_identity_mismatch, ClaimedNode, TargetNode}};
                         ok ->
                             client_send_challenge(
                                 Conn,
@@ -224,6 +234,13 @@ client_recv_hello(Conn, MyStream, PeerStream, Buffer, TargetNode, Timeout) ->
             end;
         {error, Reason} ->
             {error, {recv_hello_failed, Reason}}
+    end.
+
+%% The server's claimed HELLO name must be the dialed node, byte for byte.
+check_target(ClaimedNode, TargetNode) ->
+    case atom_to_binary(TargetNode, utf8) of
+        ClaimedNode -> ok;
+        _ -> mismatch
     end.
 
 %% Tri-state trust check. A pinned key that does not match the
@@ -315,13 +332,15 @@ client_send_response(
     PeerNode,
     PeerPubKey,
     MyNonce,
-    MyTs,
+    _MyTs,
     MyMono,
     PeerNonce,
     PeerTs,
     Timeout
 ) ->
-    case sign_for_peer(PeerNonce, PeerTs, PeerPubKey) of
+    View = view(PeerNode, PeerPubKey, MyNonce, PeerNonce),
+    _ = PeerTs,
+    case barrel_p2p_dist_auth:sign_transcript(client, View) of
         {ok, MySig} ->
             Resp = barrel_p2p_dist_protocol:encode_response(MySig),
             case stream_send(Conn, MyStream, Resp) of
@@ -332,8 +351,7 @@ client_send_response(
                         Buffer,
                         PeerNode,
                         PeerPubKey,
-                        MyNonce,
-                        MyTs,
+                        View,
                         MyMono,
                         Timeout
                     );
@@ -350,8 +368,7 @@ client_recv_response(
     Buffer,
     PeerNode,
     PeerPubKey,
-    MyNonce,
-    MyTs,
+    View,
     MyMono,
     Timeout
 ) ->
@@ -359,14 +376,7 @@ client_recv_response(
         {ok, Bin, Rest} ->
             case barrel_p2p_dist_protocol:decode(Bin) of
                 {response, PeerSig} ->
-                    case
-                        barrel_p2p_dist_auth:verify_response(
-                            PeerSig,
-                            PeerPubKey,
-                            {MyNonce, MyTs, MyMono},
-                            binding()
-                        )
-                    of
+                    case barrel_p2p_dist_auth:verify_transcript(PeerSig, server, View, MyMono) of
                         true ->
                             client_recv_ok(
                                 Conn,
@@ -619,13 +629,15 @@ server_send_response(
     PeerNode,
     PeerPubKey,
     MyNonce,
-    MyTs,
+    _MyTs,
     MyMono,
     PeerNonce,
     PeerTs,
     Timeout
 ) ->
-    case sign_for_peer(PeerNonce, PeerTs, PeerPubKey) of
+    View = view(PeerNode, PeerPubKey, PeerNonce, MyNonce),
+    _ = PeerTs,
+    case barrel_p2p_dist_auth:sign_transcript(server, View) of
         {ok, MySig} ->
             Resp = barrel_p2p_dist_protocol:encode_response(MySig),
             case stream_send(Conn, MyStream, Resp) of
@@ -637,8 +649,7 @@ server_send_response(
                         Buffer,
                         PeerNode,
                         PeerPubKey,
-                        MyNonce,
-                        MyTs,
+                        View,
                         MyMono,
                         Timeout
                     );
@@ -656,8 +667,7 @@ server_recv_response(
     Buffer,
     PeerNode,
     PeerPubKey,
-    MyNonce,
-    MyTs,
+    View,
     MyMono,
     Timeout
 ) ->
@@ -665,14 +675,7 @@ server_recv_response(
         {ok, Bin, _Rest} ->
             case barrel_p2p_dist_protocol:decode(Bin) of
                 {response, PeerSig} ->
-                    case
-                        barrel_p2p_dist_auth:verify_response(
-                            PeerSig,
-                            PeerPubKey,
-                            {MyNonce, MyTs, MyMono},
-                            binding()
-                        )
-                    of
+                    case barrel_p2p_dist_auth:verify_transcript(PeerSig, client, View, MyMono) of
                         true ->
                             server_send_ok(Conn, MyStream, PeerNode, PeerPubKey);
                         false ->
@@ -781,14 +784,19 @@ recv_first_chunk(Conn, StreamId, Timeout) ->
 %% Helpers
 %%====================================================================
 
-sign_for_peer(Nonce, Timestamp, _PeerPubKey) ->
-    %% Sign <Nonce | Timestamp | OwnPubKey | Binding>. The peer verifies
-    %% via barrel_p2p_dist_auth:verify_response/4, rebuilding the message
-    %% with our pubkey (from its perspective) and the same Binding from
-    %% its own TLS viewpoint. Both the responder identity and the TLS
-    %% channel are bound, so a relayed signature over a different
-    %% channel's cert no longer verifies.
-    barrel_p2p_dist_auth:sign_challenge(Nonce, Timestamp, binding()).
+%% This side's view of the handshake, from which both signing and
+%% verification rebuild the v3 transcript (barrel_p2p_dist_auth:
+%% transcript_message/8). Each side fills the binding from its own TLS
+%% viewpoint, so a signature relayed over a different channel's
+%% certificate no longer verifies.
+view(PeerName, PeerPubKey, ClientNonce, ServerNonce) ->
+    #{
+        peer_name => PeerName,
+        peer_pk => PeerPubKey,
+        client_nonce => ClientNonce,
+        server_nonce => ServerNonce,
+        binding => binding()
+    }.
 
 %% Channel-binding stash (see ?BINDING_KEY).
 set_binding(Binding) ->

@@ -47,7 +47,12 @@
     test_verify_response_uses_monotonic/1,
     test_peer_ts_outside_window_rejected/1,
     test_peer_ts_within_window_accepted/1,
-    test_channel_binding_mismatch_rejected/1
+    test_channel_binding_mismatch_rejected/1,
+    test_reflection_rejected/1,
+    test_peer_name_bound/1,
+    test_transcript_layout/1,
+    test_client_refuses_other_name/1,
+    test_client_requires_dial_target/1
 ]).
 
 %% Test cases - Whitelist
@@ -101,7 +106,12 @@ groups() ->
             test_verify_response_uses_monotonic,
             test_peer_ts_outside_window_rejected,
             test_peer_ts_within_window_accepted,
-            test_channel_binding_mismatch_rejected
+            test_channel_binding_mismatch_rejected,
+            test_reflection_rejected,
+            test_peer_name_bound,
+            test_transcript_layout,
+            test_client_refuses_other_name,
+            test_client_requires_dial_target
         ]},
         {whitelist_tests, [sequence], [
             test_whitelist_exact_match,
@@ -184,91 +194,49 @@ test_keypair_persistence(Config) ->
     ok.
 
 test_sign_verify_roundtrip(_Config) ->
-    %% Ensure keypair exists
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-
-    %% Create a challenge
     {Nonce, Timestamp, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
     ?assertEqual(32, byte_size(Nonce)),
     ?assert(is_integer(Timestamp)),
     ?assert(is_integer(MonoStart)),
-
-    %% Sign the challenge
-    {ok, Signature} = barrel_p2p_dist_auth:sign_challenge(Nonce, Timestamp, ?TEST_BINDING),
-    ?assertEqual(64, byte_size(Signature)),
-
-    %% Verify with our own public key
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-    ?assert(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, PubKey, {Nonce, Timestamp, MonoStart}, ?TEST_BINDING
-        )
-    ),
+    View = self_view(?TEST_BINDING),
+    {ok, ClientSig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    {ok, ServerSig} = barrel_p2p_dist_auth:sign_transcript(server, View),
+    ?assertEqual(64, byte_size(ClientSig)),
+    ?assert(barrel_p2p_dist_auth:verify_transcript(ClientSig, client, View, MonoStart)),
+    ?assert(barrel_p2p_dist_auth:verify_transcript(ServerSig, server, View, MonoStart)),
     ok.
 
 test_invalid_signature_rejected(_Config) ->
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-
-    {Nonce, Timestamp, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
-
-    %% Create a bogus signature
     BogusSignature = crypto:strong_rand_bytes(64),
-
-    %% Should fail verification
     ?assertNot(
-        barrel_p2p_dist_auth:verify_response(
-            BogusSignature, PubKey, {Nonce, Timestamp, MonoStart}, ?TEST_BINDING
+        barrel_p2p_dist_auth:verify_transcript(
+            BogusSignature, client, self_view(?TEST_BINDING), mono_now()
         )
     ),
     ok.
 
 test_replay_attack_prevented(_Config) ->
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-
-    %% Create a valid challenge and signature
-    {Nonce, Timestamp, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
-    {ok, Signature} = barrel_p2p_dist_auth:sign_challenge(Nonce, Timestamp, ?TEST_BINDING),
-
-    %% Verify with correct timestamp - should pass
-    ?assert(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, PubKey, {Nonce, Timestamp, MonoStart}, ?TEST_BINDING
-        )
-    ),
-
-    %% Modify the nonce - should fail
-    ModifiedNonce = crypto:strong_rand_bytes(32),
-    ?assertNot(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, PubKey, {ModifiedNonce, Timestamp, MonoStart}, ?TEST_BINDING
-        )
-    ),
+    View = self_view(?TEST_BINDING),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    ?assert(barrel_p2p_dist_auth:verify_transcript(Sig, client, View, mono_now())),
+    %% A signature from an earlier handshake fails on fresh nonces.
+    Fresh = View#{server_nonce := crypto:strong_rand_bytes(32)},
+    ?assertNot(barrel_p2p_dist_auth:verify_transcript(Sig, client, Fresh, mono_now())),
+    Fresh2 = View#{client_nonce := crypto:strong_rand_bytes(32)},
+    ?assertNot(barrel_p2p_dist_auth:verify_transcript(Sig, client, Fresh2, mono_now())),
     ok.
 
 test_timestamp_window_enforced(_Config) ->
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-
-    %% Manufacture a stale handshake: MonoStart far in the past
-    %% means the elapsed check rejects regardless of NTP drift.
-    Nonce = crypto:strong_rand_bytes(32),
-    WallTs = erlang:system_time(millisecond),
-    StaleMono = erlang:monotonic_time(millisecond) - 60000,
-
-    %% Sign with the wall-time portion (peer would do the same).
-    {ok, PrivKey} = barrel_p2p_dist_auth:get_private_key(),
-    Message = <<Nonce/binary, WallTs:64/big, PubKey/binary, (?TEST_BINDING)/binary>>,
-    Signature = crypto:sign(eddsa, none, Message, [PrivKey, ed25519]),
-
-    %% Verification rejects because Elapsed > window even though the
-    %% signature would otherwise be valid.
-    ?assertNot(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, PubKey, {Nonce, WallTs, StaleMono}, ?TEST_BINDING
-        )
-    ),
+    View = self_view(?TEST_BINDING),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    %% A handshake that started 60 s ago is past the 30 s window, even with
+    %% an otherwise valid signature.
+    StaleMono = mono_now() - 60000,
+    ?assertNot(barrel_p2p_dist_auth:verify_transcript(Sig, client, View, StaleMono)),
     ok.
 
 %%====================================================================
@@ -330,12 +298,16 @@ test_invalid_message_rejected(_Config) ->
     %% Test invalid hello payload (current protocol version, oversized
     %% name length with too few bytes).
     {error, invalid_hello_payload} = barrel_p2p_dist_protocol:decode(
-        <<1:8, 2:8, 100:16/big, "short">>
+        <<1:8, 3:8, 100:16/big, "short">>
     ),
 
-    %% A prior-version HELLO is rejected with an explicit version error.
+    %% Prior-version HELLOs are rejected with an explicit version error. v2
+    %% has no fallback: accepting it would allow a downgrade.
     {error, {unsupported_version, 1}} = barrel_p2p_dist_protocol:decode(
         <<1:8, 1:8, 100:16/big, "short">>
+    ),
+    {error, {unsupported_version, 2}} = barrel_p2p_dist_protocol:decode(
+        <<1:8, 2:8, 100:16/big, "short">>
     ),
     ok.
 
@@ -348,10 +320,10 @@ test_hello_decode_does_not_mint_atom(_Config) ->
     %% Sanity: the atom does not exist yet.
     ?assertError(badarg, binary_to_existing_atom(NameBin, utf8)),
 
-    %% Build a v2 HELLO wire by hand so encode_hello/2 (which takes an
+    %% Build a v3 HELLO wire by hand so encode_hello/2 (which takes an
     %% atom) does not mint it for us.
     PubKey = crypto:strong_rand_bytes(32),
-    Wire = <<1:8, 2:8, (byte_size(NameBin)):16/big, NameBin/binary, PubKey/binary>>,
+    Wire = <<1:8, 3:8, (byte_size(NameBin)):16/big, NameBin/binary, PubKey/binary>>,
     ?assertEqual({hello, NameBin, PubKey}, barrel_p2p_dist_protocol:decode(Wire)),
 
     %% Still no atom after decode.
@@ -430,31 +402,15 @@ test_lookup_pin_tri_state(_Config) ->
     ),
     ok.
 
-%% Window check uses monotonic time. An NTP step on the wall clock
-%% during the handshake should not cause a spurious failure.
 test_verify_response_uses_monotonic(_Config) ->
+    %% The window is measured on the monotonic clock captured by
+    %% create_challenge/0, and wall time is not part of the transcript, so an
+    %% NTP step during the handshake cannot fail it.
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-    {Nonce, WallTs, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
-    {ok, Signature} = barrel_p2p_dist_auth:sign_challenge(Nonce, WallTs, ?TEST_BINDING),
-    %% Use a WallTs far in the future; if the check still used wall
-    %% clock, the assertion below would fail. Monotonic elapsed is
-    %% near zero so verify still succeeds.
-    FutureWall = WallTs + 60_000_000,
-    {ok, PrivKey} = barrel_p2p_dist_auth:get_private_key(),
-    Msg = <<Nonce/binary, FutureWall:64/big, PubKey/binary, (?TEST_BINDING)/binary>>,
-    Sig2 = crypto:sign(eddsa, none, Msg, [PrivKey, ed25519]),
-    ?assert(
-        barrel_p2p_dist_auth:verify_response(
-            Sig2, PubKey, {Nonce, FutureWall, MonoStart}, ?TEST_BINDING
-        )
-    ),
-    %% Sanity: the original wall-time signature still verifies too.
-    ?assert(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, PubKey, {Nonce, WallTs, MonoStart}, ?TEST_BINDING
-        )
-    ),
+    {_Nonce, _WallTs, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
+    View = self_view(?TEST_BINDING),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    ?assert(barrel_p2p_dist_auth:verify_transcript(Sig, client, View, MonoStart)),
     ok.
 
 %% A peer-supplied wall timestamp far from local wall time is
@@ -482,49 +438,74 @@ test_peer_ts_within_window_accepted(_Config) ->
     ?assertEqual(ok, barrel_p2p_dist_auth:validate_peer_ts(Now + 1000)),
     ok.
 
-%% Peer signs the challenge with the wrong key -> verify_response rejects.
 test_wrong_signature_rejected(_Config) ->
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {Nonce, Timestamp, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
-
-    %% Sign with our own key, then claim a different public key as origin.
-    {ok, Signature} = barrel_p2p_dist_auth:sign_challenge(Nonce, Timestamp, ?TEST_BINDING),
+    View = self_view(?TEST_BINDING),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    %% Claim a different public key as the signer's.
     {WrongPubKey, _WrongPriv} = barrel_p2p_dist_auth:generate_keypair(),
-
     ?assertNot(
-        barrel_p2p_dist_auth:verify_response(
-            Signature, WrongPubKey, {Nonce, Timestamp, MonoStart}, ?TEST_BINDING
+        barrel_p2p_dist_auth:verify_transcript(
+            Sig, client, View#{peer_pk := WrongPubKey}, mono_now()
         )
     ),
     ok.
 
-%% Channel binding (H1): a signature produced over one TLS channel's
-%% cert hash must not verify against a different binding. This is the
-%% relay defence - a man-in-the-middle that relays the signature sees a
-%% different cert on its leg, so verification fails.
 test_channel_binding_mismatch_rejected(_Config) ->
     ok = barrel_p2p_dist_auth:ensure_keypair(),
-    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
-    {Nonce, Timestamp, MonoStart} = barrel_p2p_dist_auth:create_challenge(),
-
     ServerCertHash = crypto:hash(sha256, <<"real-server-cert">>),
     MitmCertHash = crypto:hash(sha256, <<"mitm-cert">>),
-
-    %% Signer binds to the real cert it observed.
-    {ok, Sig} = barrel_p2p_dist_auth:sign_challenge(Nonce, Timestamp, ServerCertHash),
-
-    %% Same binding verifies.
-    ?assert(
-        barrel_p2p_dist_auth:verify_response(
-            Sig, PubKey, {Nonce, Timestamp, MonoStart}, ServerCertHash
-        )
-    ),
-
+    View = self_view(ServerCertHash),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    ?assert(barrel_p2p_dist_auth:verify_transcript(Sig, client, View, mono_now())),
     %% A verifier on a relayed channel (different cert) rejects.
     ?assertNot(
-        barrel_p2p_dist_auth:verify_response(
-            Sig, PubKey, {Nonce, Timestamp, MonoStart}, MitmCertHash
+        barrel_p2p_dist_auth:verify_transcript(
+            Sig, client, View#{binding := MitmCertHash}, mono_now()
         )
+    ),
+    ok.
+
+%% Reflection (v2 weakness): a server signature must never verify as a
+%% client one, even on identical names, keys, nonces and binding.
+test_reflection_rejected(_Config) ->
+    ok = barrel_p2p_dist_auth:ensure_keypair(),
+    View = self_view(?TEST_BINDING),
+    {ok, ServerSig} = barrel_p2p_dist_auth:sign_transcript(server, View),
+    {ok, ClientSig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    ?assertNot(barrel_p2p_dist_auth:verify_transcript(ServerSig, client, View, mono_now())),
+    ?assertNot(barrel_p2p_dist_auth:verify_transcript(ClientSig, server, View, mono_now())),
+    ok.
+
+%% Both node names are covered: a signature made while talking to one
+%% peer name does not verify for another.
+test_peer_name_bound(_Config) ->
+    ok = barrel_p2p_dist_auth:ensure_keypair(),
+    View = self_view(?TEST_BINDING),
+    {ok, Sig} = barrel_p2p_dist_auth:sign_transcript(client, View),
+    ?assertNot(
+        barrel_p2p_dist_auth:verify_transcript(
+            Sig, client, View#{peer_name := <<"other@host">>}, mono_now()
+        )
+    ),
+    ok.
+
+%% The transcript layout: label, role, length-prefixed names, keys, nonces,
+%% binding. Pinned so a change to the signed bytes is a deliberate protocol
+%% bump.
+test_transcript_layout(_Config) ->
+    Pk = <<1:256>>,
+    N = <<2:256>>,
+    B = <<3:256>>,
+    Msg = barrel_p2p_dist_auth:transcript_message(client, <<"a@h">>, <<"bb@h">>, Pk, Pk, N, N, B),
+    ?assertEqual(
+        <<"barrel_p2p-dist-auth-v3", 1, 3:16, "a@h", 4:16, "bb@h", Pk/binary, Pk/binary, N/binary,
+            N/binary, B/binary>>,
+        Msg
+    ),
+    ?assertNotEqual(
+        Msg,
+        barrel_p2p_dist_auth:transcript_message(server, <<"a@h">>, <<"bb@h">>, Pk, Pk, N, N, B)
     ),
     ok.
 
@@ -643,3 +624,87 @@ test_whitelist_matches_binary_name(_Config) ->
     ?assert(barrel_p2p_dist_auth:is_cookie_only_allowed(NameBin)),
     ?assertError(badarg, binary_to_existing_atom(NameBin, utf8)),
     ok.
+
+%%====================================================================
+%% v3 transcript helpers
+%%====================================================================
+
+%% Single-node view: the same node plays both sides, so its own name and
+%% key are also the peer's.
+self_view(Binding) ->
+    {ok, PubKey} = barrel_p2p_dist_auth:get_public_key(),
+    #{
+        peer_name => atom_to_binary(node(), utf8),
+        peer_pk => PubKey,
+        client_nonce => crypto:strong_rand_bytes(32),
+        server_nonce => crypto:strong_rand_bytes(32),
+        binding => Binding
+    }.
+
+mono_now() ->
+    erlang:monotonic_time(millisecond).
+
+%%====================================================================
+%% Client identity check (v2 weakness: the authenticated name was never
+%% compared with the dialed node)
+%%====================================================================
+
+%% A server proving a name other than the one dialed is refused right
+%% after its HELLO, before the client sends a challenge or a signature,
+%% even when the key is trusted for the name it claims.
+test_client_refuses_other_name(_Config) ->
+    ok = barrel_p2p_dist_auth:ensure_keypair(),
+    {OtherPk, _} = barrel_p2p_dist_auth:generate_keypair(),
+    ok = barrel_p2p_dist_keys:store_key_if_new('other@host', OtherPk),
+    Sent = with_fake_quic(fun(Conn) ->
+        ServerHello = barrel_p2p_dist_protocol:encode_hello('other@host', OtherPk),
+        self() ! {quic, Conn, {stream_data, 3, frame(ServerHello), false}},
+        ?assertEqual(
+            {error, {auth_identity_mismatch, <<"other@host">>, 'target@host'}},
+            barrel_p2p_dist_auth_stream:authenticate_outgoing(Conn, 'target@host', 1000)
+        )
+    end),
+    %% Only our HELLO went out: no challenge, no signature.
+    ?assertMatch([{hello, _, _}], [barrel_p2p_dist_protocol:decode(M) || M <- Sent]),
+    ok = barrel_p2p_dist_keys:delete_key('other@host'),
+    ok.
+
+%% Without a dial target the client cannot check who it reached, so it
+%% fails closed.
+test_client_requires_dial_target(_Config) ->
+    with_fake_quic(fun(Conn) ->
+        ?assertEqual(
+            {error, no_dial_target},
+            barrel_p2p_dist_auth_stream:authenticate_outgoing(Conn, undefined, 1000)
+        )
+    end),
+    ok.
+
+%% Run Fun(Conn) with the quic stream API stubbed; return the auth messages
+%% the client sent, unframed.
+with_fake_quic(Fun) ->
+    Conn = self(),
+    Self = self(),
+    ok = meck:new(quic, [passthrough, no_link]),
+    try
+        meck:expect(quic, peercert, fun(_) -> {ok, <<"server-cert-der">>} end),
+        meck:expect(quic, open_unidirectional_stream, fun(_) -> {ok, 2} end),
+        meck:expect(quic, send_data, fun(_, _, Data, _Fin) ->
+            Self ! {sent, Data},
+            ok
+        end),
+        Fun(Conn),
+        collect_sent([])
+    after
+        meck:unload(quic)
+    end.
+
+collect_sent(Acc) ->
+    receive
+        {sent, <<>>} -> collect_sent(Acc);
+        {sent, <<Len:16/big, Msg:Len/binary>>} -> collect_sent([Msg | Acc])
+    after 0 -> lists:reverse(Acc)
+    end.
+
+frame(Msg) ->
+    <<(byte_size(Msg)):16/big, Msg/binary>>.

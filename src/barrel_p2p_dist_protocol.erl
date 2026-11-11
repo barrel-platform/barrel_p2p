@@ -17,11 +17,14 @@
     validate_node_name/1
 ]).
 
-%% Protocol version. v2 binds each signature to the QUIC TLS channel
-%% (the signed message gains a 32-byte cert-hash binding); a v1 peer is
-%% rejected at HELLO with {unsupported_version, 1} rather than failing
-%% later with an opaque signature error.
--define(PROTOCOL_VERSION, 2).
+%% Protocol version. v3 signs the whole handshake transcript with a role
+%% label, both node names and both keys (barrel_p2p_dist_auth:
+%% transcript_message/8), and the client checks the authenticated name
+%% against the node it dialed. Older peers are rejected at HELLO with
+%% {unsupported_version, V} rather than failing later with an opaque
+%% signature error. There is no fallback: accepting v2 would let an attacker
+%% downgrade any connection to it.
+-define(PROTOCOL_VERSION, 3).
 
 %% Message types
 -define(AUTH_HELLO, 1).
