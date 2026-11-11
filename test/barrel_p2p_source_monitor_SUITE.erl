@@ -23,7 +23,7 @@
 
 %% Index of the `subscribers' field in each source's #state record
 %% (white-box; a reorder would fail these tests, which is intended).
--define(PLUMTREE_SUBS_IDX, 6).
+-define(PLUMTREE_SUBS_IDX, 7).
 -define(HYPARVIEW_EVENTS_SUBS_IDX, 2).
 -define(SHARD_SUBS_IDX, 9).
 

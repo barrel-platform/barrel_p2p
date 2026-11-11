@@ -10,7 +10,12 @@
 %% CT callbacks
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1]).
 -export([init_per_group/2, end_per_group/2]).
--export([init_per_testcase/2, end_per_testcase/2]).
+-export([
+    init_per_testcase/2,
+    end_per_testcase/2,
+    test_graft_retries_next_announcer/1,
+    test_sender_outside_view_not_eager/1
+]).
 
 %% Test cases
 -export([
@@ -39,7 +44,9 @@ groups() ->
             test_stats,
             test_broadcast_with_tag,
             test_multiple_subscribers,
-            test_peer_down_removes_from_eager_and_lazy
+            test_peer_down_removes_from_eager_and_lazy,
+            test_graft_retries_next_announcer,
+            test_sender_outside_view_not_eager
         ]}
     ].
 
@@ -227,4 +234,47 @@ subscriber_loop(Parent, Name) ->
             subscriber_loop(Parent, Name);
         stop ->
             ok
+    end.
+
+%% A node missing a message used to remember only the first peer that
+%% announced it (IHAVE) and GRAFT it once. If that peer's link failed, the
+%% GRAFT was lost and later announcers were never asked. Each timeout now
+%% GRAFTs the next announcer. Found by spec/tla/MC_plumtree_graft.
+test_graft_retries_next_announcer(_Config) ->
+    Self = self(),
+    ok = meck:new(barrel_p2p_metrics, [passthrough, no_link]),
+    try
+        ok = meck:expect(barrel_p2p_metrics, graft_sent, fun(Peer) ->
+            Self ! {graft, Peer},
+            ok
+        end),
+        Pid = whereis(barrel_p2p_plumtree),
+        MsgId = crypto:strong_rand_bytes(32),
+        Pid ! {'$barrel_p2p_plumtree', {ihave, MsgId, 'first@host'}},
+        Pid ! {'$barrel_p2p_plumtree', {ihave, MsgId, 'second@host'}},
+        ?assertEqual('first@host', next_graft(3000)),
+        ?assertEqual('second@host', next_graft(3000)),
+        ?assertEqual(timeout, next_graft(1500))
+    after
+        meck:unload(barrel_p2p_metrics)
+    end,
+    ok.
+
+%% GOSSIP or GRAFT from a peer outside the HyParView view (in flight when
+%% it left, or never a neighbor) used to make it eager again, so the node
+%% kept pushing to peers it no longer had links to. Found by
+%% spec/tla/MC_plumtree_eager.
+test_sender_outside_view_not_eager(_Config) ->
+    Pid = whereis(barrel_p2p_plumtree),
+    MsgId = crypto:strong_rand_bytes(32),
+    Pid ! {'$barrel_p2p_plumtree', {gossip, MsgId, test, payload, 'stranger@host'}},
+    Pid ! {'$barrel_p2p_plumtree', {graft, crypto:strong_rand_bytes(32), 'other@host'}},
+    #{eager_peers := Eager} = barrel_p2p_plumtree:get_stats(),
+    ?assertEqual(0, Eager),
+    ok.
+
+next_graft(Timeout) ->
+    receive
+        {graft, Peer} -> Peer
+    after Timeout -> timeout
     end.

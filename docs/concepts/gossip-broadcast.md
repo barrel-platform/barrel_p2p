@@ -51,15 +51,22 @@ when the tree breaks, `GRAFT` repairs it.
 ## Protocol messages
 
 ```
-GOSSIP(MsgId, Payload, Round)         %% full body, push
-IHAVE(MsgId, Round)                   %% announcement, lazy
-GRAFT(MsgId)                          %% "promote me to eager"
-PRUNE                                 %% "demote me to lazy"
+GOSSIP(MsgId, Tag, Payload, Sender)   %% full body, push
+IHAVE(MsgId, Sender)                  %% announcement, lazy
+GRAFT(MsgId, Sender)                  %% "send it to me, and push to me"
+PRUNE(Sender)                         %% "demote me to lazy"
 ```
 
-`Round` is a counter on broadcasts; it lets a receiver detect
-out-of-order delivery and decide when to give up waiting for a
-graft.
+A node that hears `IHAVE` for a message it lacks keeps every
+announcer, in order. One second later it sends `GRAFT` to the
+first; if the message still has not arrived a second later, it
+grafts the next one, and so on. A graft lost with its
+announcer's link is retried through another peer that has the
+message.
+
+Sends do not use `nosuspend`: on a busy dist channel the
+Plumtree process waits instead of dropping the message, so a
+message is never lost silently.
 
 ## Visualising a broadcast
 
@@ -113,21 +120,23 @@ Two failure modes are interesting:
   recovery time is bounded by one round-trip plus the
   retransmit.
 - **A network partition splits the active view.** Plumtree
-  keeps broadcasting on each side; when the partition heals,
-  the next broadcast picks up missed messages through
-  `GRAFT`. Older messages (past `MESSAGE_TTL`, default 5
-  minutes) are dropped: the system is eventually consistent,
-  not infinitely retentive.
+  keeps broadcasting on each side. Messages broadcast on one
+  side during the partition are not replayed to the other when
+  it heals: `IHAVE` is sent once, when a node first gets a
+  message. The replicated services (registry, leader election,
+  reminders, maps) do not rely on that: each runs a full sync
+  on `peer_up`, and maps and reminders also run anti-entropy,
+  so their state converges after the heal.
 
 ## Message deduplication
 
-Each peer maintains a small ETS-backed cache of recently-seen
-message IDs. On each `GOSSIP` arrival, the cache is checked
+Each peer keeps an in-process map of recently seen message IDs
+and bodies (the bodies answer `GRAFT`). On each `GOSSIP` arrival, the cache is checked
 first; duplicates trigger `PRUNE` and are dropped from the
 broadcast path.
 
-The cache has a TTL (`MESSAGE_TTL`, 5 minutes); entries past
-that age are discarded. Past the TTL, a re-broadcast of an old
+The cache has a TTL (`MESSAGE_TTL`, 5 minutes, swept every
+minute); entries past that age are discarded. Past the TTL, a re-broadcast of an old
 message would be re-flooded as if new. This is intentional: it
 bounds memory.
 

@@ -140,6 +140,42 @@ nondeterministically, a superset of what the code does at random.
 `test/barrel_p2p_hyparview_e2e_SUITE.erl` checks symmetry and
 connectivity on five real nodes, before and after one dies.
 
+## Broadcast
+
+`spec/tla/Plumtree.tla` models `barrel_p2p_plumtree` for two
+broadcasts from one origin over a 4-node overlay with a chord. The
+first broadcast trims the tree (`PRUNE` turns links lazy), so the
+second depends on `IHAVE` / `GRAFT` repair. Links can be evicted (the
+channel stays up and in-flight messages still arrive) or fail (the
+channel and its messages go).
+
+| Property | Meaning |
+|---|---|
+| `DeliveredAtQuiescence` | Once nothing is in flight, every node still linked to the origin delivered the second message. |
+| `EagerInView` | Plumtree pushes eagerly only to peers in the HyParView view. |
+
+| Model | Setting | Result |
+|---|---|---|
+| `MC_plumtree` | up to 2 link faults | passes, 3,787,344 states |
+| `MC_plumtree_graft` | the 0.1.x announcer handling | fails `DeliveredAtQuiescence` |
+| `MC_plumtree_eager` | the 0.1.x eager handling | fails `EagerInView` |
+| `MC_plumtree_drop` | the 0.1.x `nosuspend` sends | fails `DeliveredAtQuiescence` |
+
+Defects found, all fixed:
+
+- **One announcer, one graft.** A node remembered only the first peer
+  that announced a missing message and grafted it once. When that
+  peer's link failed, the message was never fetched from the other
+  peers that had announced it.
+- **Silent drops.** Sends used `nosuspend` and ignored the result, so a
+  busy channel dropped messages with no failure to react to.
+- **Stale eager peers.** A `GOSSIP` or `GRAFT` arriving after a peer
+  left the view made it eager again, and the node kept pushing to it.
+
+Recovery of messages broadcast during a partition is out of scope:
+Plumtree does not replay them, and the replicated services resync
+instead (see [Gossip broadcast](gossip-broadcast.md)).
+
 ## Authentication
 
 `spec/tamarin/` models the distribution auth handshake in Tamarin,
@@ -191,7 +227,8 @@ the cookie-only path, and TLS beyond the certificate hash.
   accept everything.
 - **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
   on the cutoff rule in its doc comment.
-- **Not modelled yet:** leader election fencing and Plumtree itself.
+- **Not modelled yet:** leader election fencing, reminders and
+  tombstone GC.
 
 The protocol the model describes is specified in [Replication
 protocol](../reference/replication-protocol.md), and the literature it
