@@ -97,7 +97,9 @@ partition learns it only from the snapshot. `barrel_p2p_ormap:is_empty/1`
 ignores tombstones, so do not use it for this check; test
 `map_size(Map) =:= 0`.
 
-The model behind these rules is in [Verification](../concepts/verification.md).
+The full protocol is specified in [Replication
+protocol](replication-protocol.md); the model behind these rules is in
+[Verification](../concepts/verification.md).
 
 ## Late start and recovery
 

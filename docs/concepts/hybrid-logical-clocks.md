@@ -162,6 +162,9 @@ The original paper:
 > Logical Physical Clocks. Sandeep S. Kulkarni, Murat Demirbas,
 > Deepak Madappa, Bharadwaj Avva, Marcelo Leone. OPODIS 2014.
 
+The other papers behind barrel_p2p are on the
+[References](../reference/references.md) page.
+
 The algorithm is small enough to fit on a card and has been
 re-implemented in many distributed systems (CockroachDB, MongoDB,
 Yugabyte, others use variants).
