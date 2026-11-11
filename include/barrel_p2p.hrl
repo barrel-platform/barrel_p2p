@@ -81,7 +81,11 @@
 
     %% Test-support: nodes this node refuses overlay links to (used to hold
     %% a partition in chaos tests). Empty in normal operation -> inert.
-    blocked = [] :: [node()]
+    blocked = [] :: [node()],
+
+    %% Set by leave/0, cleared by join/1. A node that left refuses to be
+    %% pulled back into the overlay (NEIGHBOR, JOIN, FORWARD_JOIN).
+    left = false :: boolean()
 }).
 
 %% Service registry entry

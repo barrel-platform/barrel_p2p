@@ -154,7 +154,7 @@ handle_call({join, ContactNode}, _From, State) ->
                         ContactNode, join, State#view_state.pending
                     ),
                     barrel_p2p_bridge:request_connect(ContactNode),
-                    {reply, ok, State#view_state{pending = Pending}}
+                    {reply, ok, State#view_state{pending = Pending, left = false}}
             end
     end;
 handle_call(leave, _From, State) ->
@@ -162,14 +162,19 @@ handle_call(leave, _From, State) ->
     %% HyParView-level leave: tell every active peer we no longer
     %% participate in gossip. Dist channels stay up; barrel_p2p_dist_gc
     %% will reap them once they go idle and carry no live user streams.
+    %% Subscribers (Plumtree, the replicas) see each link go, so they stop
+    %% gossiping to peers this node no longer talks to.
     maps:foreach(
         fun(Node, _Peer) ->
-            barrel_p2p_protocol:send(Node, {disconnect, Self})
+            barrel_p2p_protocol:send(Node, {disconnect, Self}),
+            barrel_p2p_hyparview_events:notify({peer_down, Node, left})
         end,
         State#view_state.active_view
     ),
     barrel_p2p_hyparview_events:notify(left),
-    {reply, ok, State#view_state{active_view = #{}, passive_view = #{}}};
+    {reply, ok, State#view_state{
+        active_view = #{}, passive_view = #{}, pending = #{}, left = true
+    }};
 handle_call({block_peers, Nodes}, _From, State) ->
     %% Drop the blocked nodes from both views and notify peer_down so
     %% Plumtree stops gossiping to them. The guards (is_blocked/2) keep
@@ -199,35 +204,36 @@ handle_call(get_churn_stats, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
+handle_cast({peer_connected, _Node, _DHandle}, #view_state{left = true} = State) ->
+    %% Left: a channel coming up does not bring the node back.
+    {noreply, State};
 handle_cast({peer_connected, Node, _DHandle}, State) ->
     case maps:take(Node, State#view_state.pending) of
         {{join, _Ref, TimerRef}, NewPending} ->
             %% Initial join - send JOIN message
             cancel_pending_timer(TimerRef),
-            Peer = make_peer(Node),
-            Active = maps:put(Node, Peer, State#view_state.active_view),
             barrel_p2p_protocol:send(Node, {join, State#view_state.self}),
-            barrel_p2p_hyparview_events:notify({peer_up, Node}),
-            {noreply, State#view_state{active_view = Active, pending = NewPending}};
+            {noreply, activate(make_peer(Node), State#view_state{pending = NewPending})};
         {{connect, _Ref, TimerRef}, NewPending} ->
-            %% Regular connect from passive promotion
+            %% Accepting a forward-join: we dialed the new peer. Its bridge
+            %% does not report a channel it did not ask for, so tell it with
+            %% a high-priority NEIGHBOR; otherwise the link would exist on
+            %% our side only.
             cancel_pending_timer(TimerRef),
-            Peer = make_peer(Node),
-            State1 = add_to_active_view(Peer, State#view_state{pending = NewPending}),
-            barrel_p2p_hyparview_events:notify({peer_up, Node}),
-            {noreply, State1};
+            barrel_p2p_protocol:send(Node, {neighbor, high, State#view_state.self}),
+            {noreply, activate(make_peer(Node), State#view_state{pending = NewPending})};
+        {{{neighbor, Priority, _Candidate}, _Ref, _TimerRef}, _NewPending} ->
+            %% Passive promotion: the channel is up, so the NEIGHBOR request
+            %% can now reach the peer. The entry stays pending (its timer
+            %% still guards the reply) until neighbor_reply resolves it.
+            barrel_p2p_protocol:send(Node, {neighbor, Priority, State#view_state.self}),
+            {noreply, State};
         error ->
-            %% Incoming connection or unknown
-            case maps:is_key(Node, State#view_state.active_view) of
-                true ->
-                    %% Already in active view
-                    {noreply, State};
-                false ->
-                    Peer = make_peer(Node),
-                    State1 = add_to_active_view(Peer, State),
-                    barrel_p2p_hyparview_events:notify({peer_up, Node}),
-                    {noreply, State1}
-            end
+            %% Every dial HyParView asks for has a pending entry, so this is
+            %% a stale report (the entry timed out, or leave/0 cleared it).
+            %% Adding the peer now would create a link the peer does not
+            %% know about; ignore it.
+            {noreply, State}
     end;
 handle_cast({peer_disconnected, Node, Reason}, State) ->
     handle_peer_removal(Node, Reason, graceful, State);
@@ -247,6 +253,21 @@ handle_cast({initiate_shuffle, Target, ShuffleLength}, State) ->
         false ->
             {noreply, State}
     end;
+%% A node that left takes no part until it joins again: it refuses
+%% NEIGHBOR (so a peer promoting it does not pull it back) and ignores
+%% JOIN and FORWARD_JOIN.
+handle_cast({protocol_msg, {neighbor, _Priority, Sender}, _From}, #view_state{left = true} = State) ->
+    barrel_p2p_protocol:send(Sender#peer.id, {neighbor_reply, false, State#view_state.self}),
+    {noreply, State};
+handle_cast({protocol_msg, {join, Sender}, _From}, #view_state{left = true} = State) ->
+    %% The joiner added us as soon as its channel came up; tell it to drop
+    %% the link, so it does not keep a one-sided entry.
+    barrel_p2p_protocol:send(Sender#peer.id, {disconnect, State#view_state.self}),
+    {noreply, State};
+handle_cast({protocol_msg, {neighbor_reply, _, _}, _From}, #view_state{left = true} = State) ->
+    {noreply, State};
+handle_cast({protocol_msg, {forward_join, _, _, _}, _From}, #view_state{left = true} = State) ->
+    {noreply, State};
 handle_cast({protocol_msg, {join, Sender}, _From}, State) ->
     State1 = handle_join(Sender, State),
     {noreply, State1};
@@ -322,19 +343,9 @@ handle_join(Sender, State) ->
     %% Track churn event
     State0 = record_churn_event(join, State),
 
-    %% Add sender to active view
-    State1 = add_to_active_view(Sender, State0),
-
-    %% Surface the new peer to subscribers (plumtree's eager_peers list,
-    %% the replica drivers, etc). Without this, broadcast trees miss any
-    %% peer that joined via the JOIN handshake.
-    case maps:is_key(Sender#peer.id, State#view_state.active_view) of
-        true ->
-            %% Already had them; no transition.
-            ok;
-        false ->
-            barrel_p2p_hyparview_events:notify({peer_up, Sender#peer.id})
-    end,
+    %% Add sender to active view and surface it to subscribers (plumtree's
+    %% eager_peers list, the replica drivers, etc).
+    State1 = activate(Sender, State0),
 
     %% Forward join to all active peers (except sender)
     TTL = State1#view_state.arwl,
@@ -429,24 +440,77 @@ handle_disconnect(Sender, State) ->
 
 handle_neighbor(Priority, Sender, State) ->
     ActiveSize = maps:size(State#view_state.active_view),
+    %% A peer already in the active view is accepted whatever the priority:
+    %% the link exists, and refusing would make the asker drop it.
     Accept =
-        case Priority of
-            high -> true;
-            low -> ActiveSize < State#view_state.active_size
-        end,
+        maps:is_key(Sender#peer.id, State#view_state.active_view) orelse
+            case Priority of
+                high -> true;
+                low -> ActiveSize < State#view_state.active_size
+            end,
     barrel_p2p_protocol:send(Sender#peer.id, {neighbor_reply, Accept, State#view_state.self}),
     case Accept of
         true ->
-            add_to_active_view(Sender, State);
+            activate(Sender, State);
         false ->
             State
     end.
 
-handle_neighbor_reply(true, Sender, State) ->
-    add_to_active_view(Sender, State);
-handle_neighbor_reply(false, _Sender, State) ->
-    %% Rejected - try another passive peer
-    maybe_promote_passive(State).
+handle_neighbor_reply(Accept, Sender, State) ->
+    Node = Sender#peer.id,
+    {Candidate, State1} =
+        case maps:take(Node, State#view_state.pending) of
+            {{{neighbor, _, Cand}, _Ref, TimerRef}, NewPending} ->
+                cancel_pending_timer(TimerRef),
+                {Cand, State#view_state{pending = NewPending}};
+            _ ->
+                {undefined, State}
+        end,
+    case {Accept, Candidate} of
+        {true, undefined} ->
+            %% Not a request we track. If the peer is active this confirms an
+            %% accepted forward-join. Otherwise it is late (we evicted the
+            %% peer, or the request timed out) and the peer now holds a link
+            %% we do not: tell it to drop it.
+            case maps:is_key(Node, State1#view_state.active_view) of
+                true ->
+                    State1;
+                false ->
+                    barrel_p2p_protocol:send(Node, {disconnect, State1#view_state.self}),
+                    %% Keep it as a spare: dropping it could leave this node
+                    %% with no candidate to promote.
+                    Passive = add_to_passive(
+                        Sender, State1#view_state.passive_view, State1#view_state.passive_size
+                    ),
+                    State1#view_state{passive_view = Passive}
+            end;
+        {true, _} ->
+            activate(Sender, State1);
+        {false, undefined} ->
+            %% A refusal we did not ask for: we added this peer on our side
+            %% (an accepted forward-join) and it does not keep the link, for
+            %% example because it left. Drop it so the link stays symmetric.
+            case maps:is_key(Node, State1#view_state.active_view) of
+                true ->
+                    barrel_p2p_hyparview_events:notify({peer_down, Node, refused}),
+                    Active = maps:remove(Node, State1#view_state.active_view),
+                    maybe_promote_passive(State1#view_state{active_view = Active});
+                false ->
+                    State1
+            end;
+        {false, _} ->
+            case maps:is_key(Node, State1#view_state.active_view) of
+                true ->
+                    %% Linked meanwhile through another request: keep it.
+                    State1;
+                false ->
+                    %% Rejected: keep the candidate, but with a backoff, so a
+                    %% full or departed peer is not asked again at once; try
+                    %% another.
+                    Passive = requeue_failed_candidate(Candidate, State1),
+                    maybe_promote_passive(State1#view_state{passive_view = Passive})
+            end
+    end.
 
 handle_shuffle(TTL, Peers, Sender, State) ->
     %% Filter out self from received peers
@@ -533,10 +597,12 @@ handle_peer_removal(Node, Reason, Type, State) ->
         false ->
             %% Check if this was a pending connection that failed
             case maps:take(Node, State0#view_state.pending) of
-                {{neighbor, _Ref, TimerRef}, NewPending} ->
-                    %% Failed neighbor request - track failure and try another
+                {{{neighbor, _, Candidate}, _Ref, TimerRef}, NewPending} ->
+                    %% The dial to a passive candidate failed: put it back
+                    %% with the failure counted (backoff, or dropped after
+                    %% max_fail_count), then try another.
                     cancel_pending_timer(TimerRef),
-                    Passive = record_peer_failure(Node, State0),
+                    Passive = requeue_failed_candidate(Candidate, State0),
                     State1 = State0#view_state{pending = NewPending, passive_view = Passive},
                     State2 = maybe_promote_passive(State1),
                     {noreply, State2};
@@ -556,8 +622,20 @@ make_peer(Node) ->
         port = undefined,
         connected = true,
         priority = low,
-        last_seen = erlang:monotonic_time()
+        last_seen = erlang:monotonic_time(millisecond)
     }.
+
+%% Add a peer to the active view and emit `peer_up' if it was not there
+%% already. A refused (blocked) peer emits nothing.
+activate(Peer, State) ->
+    Node = Peer#peer.id,
+    Was = maps:is_key(Node, State#view_state.active_view),
+    State1 = add_to_active_view(Peer, State),
+    case (not Was) andalso maps:is_key(Node, State1#view_state.active_view) of
+        true -> barrel_p2p_hyparview_events:notify({peer_up, Node});
+        false -> ok
+    end,
+    State1.
 
 add_to_active_view(Peer, State) ->
     case is_blocked(Peer#peer.id, State) of
@@ -570,7 +648,10 @@ add_to_active_view(Peer, State) ->
 
 do_add_to_active_view(Peer, State) ->
     Active = State#view_state.active_view,
-    case maps:size(Active) < State#view_state.active_size of
+    case
+        maps:is_key(Peer#peer.id, Active) orelse
+            maps:size(Active) < State#view_state.active_size
+    of
         true ->
             NewActive = maps:put(Peer#peer.id, Peer, Active),
             State#view_state{active_view = NewActive};
@@ -598,7 +679,11 @@ do_add_to_active_view(Peer, State) ->
             State#view_state{active_view = Active2, passive_view = Passive}
     end.
 
-add_to_passive(Peer, Passive, MaxSize) ->
+add_to_passive(Peer0, Passive, MaxSize) ->
+    %% `last_seen' is compared with this node's monotonic clock (cleanup,
+    %% promotion order), so stamp it here: a peer record from a shuffle
+    %% carries the sender's clock, which means nothing on this node.
+    Peer = Peer0#peer{last_seen = erlang:monotonic_time(millisecond)},
     %% Don't add self to passive view
     case Peer#peer.id =:= node() of
         true ->
@@ -624,7 +709,7 @@ maybe_promote_passive(State) ->
         true ->
             Now = erlang:monotonic_time(millisecond),
             case find_eligible_passive_peer(State, Now) of
-                {ok, Node, _Peer} ->
+                {ok, Node, Peer} ->
                     Passive = maps:remove(Node, State#view_state.passive_view),
 
                     %% Send NEIGHBOR request with priority based on active view state
@@ -634,10 +719,12 @@ maybe_promote_passive(State) ->
                             _ -> low
                         end,
 
+                    %% NEIGHBOR is sent once the dist channel is up
+                    %% (peer_connected/2); sent now over `noconnect' it
+                    %% would be dropped when no channel exists yet.
                     Pending = insert_pending(
-                        Node, neighbor, State#view_state.pending
+                        Node, {neighbor, Priority, Peer}, State#view_state.pending
                     ),
-                    barrel_p2p_protocol:send(Node, {neighbor, Priority, State#view_state.self}),
                     barrel_p2p_bridge:request_connect(Node),
                     State#view_state{passive_view = Passive, pending = Pending};
                 none ->
@@ -741,6 +828,14 @@ maybe_reset_churn_window(Now, State) ->
         false ->
             State
     end.
+
+%% A promotion candidate (already taken out of the passive view) failed to
+%% connect: return it to the passive view with one more failure and an
+%% exponential backoff, or drop it after max_fail_count failures.
+requeue_failed_candidate(Peer, State) ->
+    Node = Peer#peer.id,
+    Passive = maps:put(Node, Peer, State#view_state.passive_view),
+    record_peer_failure(Node, State#view_state{passive_view = Passive}).
 
 %% Record a peer failure in the passive view with exponential backoff
 record_peer_failure(Node, State) ->

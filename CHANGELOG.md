@@ -25,6 +25,23 @@ and this project adheres to the 0.x semantics described in the README
   (both names, both keys, both nonces) with the signer's role.
 
 ### Fixed
+- The membership layer crashed whenever it promoted a spare peer to
+  replace a lost one, which happens on every eviction and every failed
+  link. The membership process restarted with empty views, so the node
+  briefly lost its place in the overlay.
+- Membership links could exist on one side only: a node that accepted a
+  newcomer added it, but the newcomer never added the node back. Gossip
+  then flowed in one direction on that link. Links are now always set up
+  on both ends, and spare peers taking over a lost link are announced to
+  the rest of the node (gossip and replication) like any other link.
+- Leaving the cluster (`barrel_p2p:leave/0`) did not tell the node's own
+  gossip layer, which kept sending to peers it had left. A node that had
+  left could also be pulled straight back in by a peer looking for a
+  replacement link; it now stays out until it joins again.
+- A spare peer that could not be reached was silently forgotten instead of
+  being retried later with a backoff, so the pool of spares shrank with
+  every failed attempt. Spare entries also never expired because of a time
+  unit mismatch.
 - A removal could be lost on a peer after a network partition healed: the
   resync skipped any node whose data held only removals. A stopped service
   could stay listed, a resigned leader candidate could stay a candidate, a

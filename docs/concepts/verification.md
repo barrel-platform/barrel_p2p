@@ -74,6 +74,72 @@ model detects them.
   hold different dot sets for the same value. A value now keeps only its
   newest dot, which makes merge strictly associative.
 
+## Membership
+
+`spec/tla/HyParView.tla` models `barrel_p2p_hyparview` and the bridge
+as coded: dist channels separate from the views, `noconnect` sends
+lost without a channel, one ordered inbox per node for the bridge's
+reports and arriving messages, and the event stream Plumtree and the
+replicas consume.
+
+| Property | Meaning |
+|---|---|
+| `SymmetricAtQuiescence` | Once messages settle, B is in A's active view exactly when A is in B's. |
+| `EventsMatchView` | Subscribers' view, folded from `peer_up` and `peer_down`, equals the active view. |
+| `ConnectedAtQuiescence` | Without faults, every node can reach every other through active links. |
+| `LeftStaysOut` | A node that called `leave/0` holds no active links until it joins again. |
+| `ViewBounds`, `NoSelf` | Views stay within their sizes and never hold the node itself. |
+
+| Model | Setting | Result |
+|---|---|---|
+| `MC_hyparview` | 3 nodes, one fault (failed dial, channel drop, crash, leave or 30 s stall), rejoin after leave | passes, 80,927 states |
+| `MC_hyparview4` | 4 nodes, active views of 2, so joins evict | passes, 781,528 states |
+| `MC_hyparview_link` | the 0.1.x forward-join | fails `SymmetricAtQuiescence` |
+| `MC_hyparview_leave` | the 0.1.x leave | fails `EventsMatchView` |
+| `MC_hyparview_rejoin` | the 0.1.x handling of a node that left | fails `LeftStaysOut` |
+
+Defects found, all fixed:
+
+- **One-sided links.** A node accepting a forward-join dialed the
+  new peer and added it, but the new peer's bridge does not report
+  a channel it did not ask for, so the new peer never added the
+  link. The dialer now sends a high-priority `NEIGHBOR`.
+- **Leave without events.** `leave/0` cleared the views without
+  `peer_down`, so Plumtree kept gossiping to peers the node had
+  left.
+- **Pulled back after leave.** A peer receiving the leaving node's
+  `DISCONNECT` kept it as a spare, promoted it at once, and the
+  node, still running, accepted. A node that left now refuses
+  `NEIGHBOR`, answers `JOIN` with `DISCONNECT`, and ignores
+  `FORWARD_JOIN` and connection reports until it joins again.
+- **Crossing and late replies.** Several races left a link on one
+  side: a refusal arriving from a peer that had meanwhile become a
+  neighbor through another request, a late acceptance for a peer
+  evicted since or whose request timed out, and a connection report
+  for a dial the node no longer tracked. The rules now are:
+  - a request from a peer that is already active is accepted;
+  - an acceptance counts only for a request the node is tracking;
+  - an unexpected acceptance from a peer that is not active gets a
+    `DISCONNECT`, and the peer is kept as a spare;
+  - a refusal from a peer that is active anyway only clears the
+    request;
+  - an untracked connection report is ignored.
+- Found while modelling, outside the invariants:
+  - promoting a passive peer crashed the server as soon as the dial
+    succeeded (an unmatched `neighbor` pending entry);
+  - `NEIGHBOR` was sent before the dial, so it was lost when no
+    channel existed yet;
+  - neighbor links emitted no `peer_up`;
+  - a failed or refused promotion candidate vanished instead of
+    backing off (a refused one was asked again at once);
+  - `last_seen` mixed time units, so passive entries never aged out.
+
+The model leaves out shuffle (it only refreshes passive views) and
+picks evictions, forward targets and promotion candidates
+nondeterministically, a superset of what the code does at random.
+`test/barrel_p2p_hyparview_e2e_SUITE.erl` checks symmetry and
+connectivity on five real nodes, before and after one dies.
+
 ## Authentication
 
 `spec/tamarin/` models the distribution auth handshake in Tamarin,
@@ -125,8 +191,7 @@ the cookie-only path, and TLS beyond the certificate hash.
   accept everything.
 - **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
   on the cutoff rule in its doc comment.
-- **Not modelled yet:** leader election fencing, Plumtree itself,
-  HyParView, and the Ed25519 handshake.
+- **Not modelled yet:** leader election fencing and Plumtree itself.
 
 The protocol the model describes is specified in [Replication
 protocol](../reference/replication-protocol.md), and the literature it
