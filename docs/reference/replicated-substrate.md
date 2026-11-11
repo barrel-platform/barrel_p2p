@@ -82,8 +82,9 @@ you built yourself, as is.
 `broadcast_update(Name, {remove, Key})` stamp the delta with a fresh HLC in
 the replica process. Use them only for writes with no local OR-Map copy
 (the sharded-placement heartbeat is one). After a local write the two
-stamps differ, which can leave a removed key visible on a peer after a
-partition heals.
+stamps differ. If your owner does not merge its own deltas back into the
+map it snapshots, a later full sync carries the older stamp and can leave
+a removed key visible on a peer after a partition heals.
 
 `broadcast_custom/2` gossips an arbitrary payload on the instance's tag,
 delivered to `replica_merge_custom/2`. Use it for invariants the plain

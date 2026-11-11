@@ -40,25 +40,33 @@ operation, delivery, loss and partition sequences over the real
 
 | Model | Consumer | Result |
 |---|---|---|
-| `MC_registry` | registry, leader (one writer per key, no anti-entropy, prune on `peer_down`) | passes, 189,802 states |
-| `MC_map` | `barrel_p2p_map` (several writers, anti-entropy) | passes, 437,577 states |
+| `MC_registry` | registry (one writer per key, snapshots of its own keys, deltas kept in a separate remote cache, prune on `peer_down`) | passes, 189,802 states |
+| `MC_leader` | leader election (one writer per key, snapshots of all candidates, prune on `peer_down`) | passes, 456,930 states |
+| `MC_map` | `barrel_p2p_map` and reminders (several writers, anti-entropy) | passes, 437,577 states |
 | `MC_map_partition` | `barrel_p2p_map`, full partition | passes, 592,470 states |
-| `*_stamp`, `*_snap` | the 0.1.x code, one bug each | fail, see below |
+| `*_stamp`, `*_snap` | the 0.1.x code, one bug each | see below |
 
 ## Bugs the model found
 
 All are fixed. The failing configurations stay in the suite to show the
 model detects them.
 
-- **Double stamp.** A writer stored its write with one HLC, then
-  `broadcast_update/2` gossiped it with a second, later one. After a
-  partition, the writer's full sync repaired peers with its older stored
-  copy, which lost to the gossiped one. A removed registration stayed
-  visible on a peer, and a removed map key came back on every node. Writers
-  now gossip the stored entry with `broadcast_entry/3`.
-- **Tombstone-only snapshots.** `replica_full_sync_snapshot/1` returned
-  `empty` for a map holding only tombstones, so a peer that missed a
-  remove during a partition was never told. For reminders, a missed fire
+- **Double stamp** (registry). A writer stored its write with one HLC,
+  then `broadcast_update/2` gossiped it with a second, later one. The
+  registry keeps its own writes apart from the deltas it receives, and
+  snapshots only its own writes. So after a partition its full sync
+  repaired peers with the older stored copy, which lost to the gossiped
+  one: an unregistered service stayed listed on a peer
+  (`MC_registry_stamp` fails). The map, leader election and reminders
+  merge their own deltas back into the map they write, which replaced the
+  stale stamp a moment later; the model confirms they were not exposed
+  (`MC_leader_stamp` and `MC_map_partition_stamp` pass). Writers now
+  gossip the stored entry with `broadcast_entry/3`, which removes the
+  window for everyone.
+- **Tombstone-only snapshots** (all four services). `replica_full_sync_snapshot/1`
+  returned `empty` for a map holding only tombstones, so a peer that
+  missed a remove during a partition was never told (`MC_registry_snap`,
+  `MC_leader_snap` and `MC_map_snap` fail). For reminders, a missed fire
   or cancel could make the reminder fire again. Snapshots are now sent
   whenever the map is non-empty.
 - **Non-associative merge.** A value kept every dot that had written it,
@@ -72,7 +80,7 @@ model detects them.
   link failures. Bugs that need more nodes or more writes to show up are
   not excluded.
 - **Abstractions.** An HLC is a natural number. A Plumtree delta reaches
-  any node within one relay hop. `crdt_wire` validation is assumed to
+  any node within one relay hop, and reaches its sender at once. `crdt_wire` validation is assumed to
   accept everything.
 - **Tombstone GC** (`gc_tombstones/2`) is not modelled. Its safety rests
   on the cutoff rule in its doc comment.

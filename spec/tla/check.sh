@@ -5,6 +5,10 @@
 # "fail:<Invariant>" models reproduce a known bug and must violate exactly
 # that invariant. The script fails if any verdict differs.
 #
+# *_stamp and *_snap model the 0.1.x code with one bug each. A *_stamp
+# model that passes documents that the consumer was not exposed to the
+# double stamp (it merges its own deltas, which healed the stale stamp).
+#
 # Usage: spec/tla/check.sh [model ...]   (default: every model below)
 set -euo pipefail
 
@@ -38,9 +42,12 @@ models=(
     "MC_registry             ReplicaORMap  pass"
     "MC_registry_stamp       ReplicaORMap  fail:QuiescentConverged"
     "MC_registry_snap        ReplicaORMap  fail:QuiescentConverged"
+    "MC_leader               ReplicaORMap  pass"
+    "MC_leader_stamp         ReplicaORMap  pass"
+    "MC_leader_snap          ReplicaORMap  fail:QuiescentConverged"
     "MC_map                  ReplicaORMap  pass"
     "MC_map_partition        ReplicaORMap  pass"
-    "MC_map_partition_stamp  ReplicaORMap  fail:WriterIntentKept"
+    "MC_map_partition_stamp  ReplicaORMap  pass"
     "MC_map_snap             ReplicaORMap  fail:QuiescentConverged"
 )
 

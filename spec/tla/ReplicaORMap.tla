@@ -37,6 +37,11 @@ CONSTANTS
                     \*   keys) | "dots" (map: drop values all of whose dots
                     \*   are the downed node's)
     AE,             \* periodic anti-entropy (map, reminder)
+    SelfMerge,      \* TRUE: Plumtree delivers a broadcast to its sender too,
+                    \*   and the consumer merges it into the map it writes
+                    \*   (map, leader, reminder). FALSE: the registry merges
+                    \*   deltas into a separate remote cache, so its own
+                    \*   delta never reaches the map it snapshots.
     SingleStamp,    \* TRUE: the delta is the entry stored locally
                     \*   (barrel_p2p_replica:broadcast_entry/3). FALSE: the
                     \*   0.1.x code, broadcast_update/2 minted a second HLC.
@@ -171,17 +176,23 @@ LocalRemove(n, k) ==
     /\ UNCHANGED <<msgs, link, phase, flips, aeDone>>
 
 \* The replica process handles the oldest queued cast and broadcasts it.
+\* Plumtree hands the delta to local subscribers at once, so with SelfMerge
+\* the sender merges its own delta in the same step.
 Broadcast(n) ==
     /\ queue[n] # <<>>
     /\ LET c == Head(queue[n])
            t == clock[n] + 1
            e == IF SingleStamp THEN c.e
                 ELSE IF c.op = "add" THEN Val(c.v, {<<n, t>>}) ELSE Tomb(t)
+           own == IF SelfMerge THEN MergeMap(map[n], Delta(c.k, e)) ELSE map[n]
        IN /\ clock' = IF SingleStamp THEN clock ELSE [clock EXCEPT ![n] = t]
           /\ msgs' = msgs \cup
                 {[kind |-> "delta", from |-> n, to |-> m, m |-> Delta(c.k, e)] : m \in Nodes \ {n}}
+          /\ map' = [map EXCEPT ![n] = own]
+          /\ seenTomb' = [seenTomb EXCEPT ![n][c.k] =
+                IF own[c.k].t = "x" THEN Max2(@, own[c.k].ts) ELSE @]
     /\ queue' = [queue EXCEPT ![n] = Tail(@)]
-    /\ UNCHANGED <<map, link, phase, writes, flips, aeDone, seenTomb, intent>>
+    /\ UNCHANGED <<link, phase, writes, flips, aeDone, intent>>
 
 \* A message arrives: replica_merge_delta / replica_apply_full_sync.
 Deliver(msg) ==

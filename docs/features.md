@@ -98,7 +98,7 @@ Stability tiers used below:
 | `barrel_p2p_ormap` (OR-Map CRDT)                | supported    | CT: `barrel_p2p_ormap_SUITE`; prop suite                          |
 | `barrel_p2p_hlc` (Hybrid Logical Clock)         | supported    | CT: `barrel_p2p_hlc_SUITE`; prop suite                            |
 | `barrel_p2p_replica` replication behaviour      | beta         | CT: the 4 consumer suites + `barrel_p2p_map_e2e_SUITE`, `barrel_p2p_replica_write_path_SUITE`; prop: `barrel_p2p_replica_convergence_prop_tests` |
-| Replication model (TLA+, `spec/tla`)          | supported    | TLC: `spec/tla/check.sh` in CI (merge lattice, registry, map)    |
+| Replication model (TLA+, `spec/tla`)          | supported    | TLC: `spec/tla/check.sh` in CI (merge lattice, registry, leader, map)    |
 | Periodic anti-entropy (reminder + map)        | beta         | CT: `barrel_p2p_anti_entropy_e2e_SUITE` (off/on convergence)      |
 | `barrel_p2p_crdt_wire` safe gossip ingest       | supported    | EUnit: `barrel_p2p_crdt_wire_tests`; CT: `barrel_p2p_map_SUITE`     |
 | `barrel_p2p_replica_log` (WAL + snapshot store) | supported    | EUnit: `barrel_p2p_replica_log_tests`                             |

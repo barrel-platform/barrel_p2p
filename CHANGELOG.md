@@ -8,16 +8,16 @@ and this project adheres to the 0.x semantics described in the README
 ## [Unreleased]
 
 ### Fixed
-- A removed entry could stay visible on a peer after a network partition
-  healed. Affected the service registry (a stopped or unregistered service
-  still listed), leader election (a resigned candidate), reminders (a
-  cancelled or already fired reminder could fire again) and replicated
-  maps (a removed key could come back on every node, including the one
-  that removed it). Two causes: a write was gossiped with a different
-  timestamp than the one the writer stored, and the resync after a heal
-  skipped nodes holding only removals. Both are fixed; peers now receive
-  writes exactly as the writer stored them, and removals are always part
-  of the resync.
+- A removal could be lost on a peer after a network partition healed: the
+  resync skipped any node whose data held only removals. A stopped service
+  could stay listed, a resigned leader candidate could stay a candidate, a
+  removed map key could stay on that peer, and a cancelled or already
+  fired reminder could fire again there. Removals are now always part of
+  the resync.
+- The service registry could keep listing an unregistered service on a
+  peer after a partition, because the registry's own copy of a write
+  carried an older timestamp than the copy it sent to peers. Every
+  replicated service now sends a write exactly as it stored it.
 
 ### Added
 - A TLA+ model of the replication layer, checked in CI. It proves that

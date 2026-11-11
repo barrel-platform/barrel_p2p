@@ -37,8 +37,10 @@ prop_test_() ->
 run(Prop) ->
     proper:quickcheck(Prop, [{numtests, ?NUMTESTS}, {to_file, user}]).
 
-%% The TLA+ counterexamples (spec/tla/MC_*_stamp and MC_*_snap), replayed:
-%% each bug alone breaks the writer's intent, the fixed path keeps it.
+%% The TLA+ counterexamples (MC_registry_stamp, MC_*_snap), replayed: each
+%% bug alone breaks the writer's intent, the fixed path keeps it. The
+%% simulation never merges a node's own deltas back, like the registry; a
+%% consumer that does was healed from the double stamp (see check.sh).
 %% n1 puts then removes before its replica process runs; n2 receives the
 %% add and then loses its link before the tombstone arrives.
 counterexample_test_() ->
