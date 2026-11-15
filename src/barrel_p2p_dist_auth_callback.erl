@@ -27,17 +27,27 @@
 
 -export([authenticate/3]).
 
+%% A node proven by the Ed25519 handshake is returned as
+%% `{authenticated_node, Node}': quic_dist then refuses the connection
+%% unless the peer's Erlang dist name is `Node' (on the server, the name the
+%% peer announces; on the client, the node dialed). Without that binding a
+%% peer holding any key the cluster accepts could authenticate under one
+%% name and join as another. `undefined' (auth disabled, cookie-only peer)
+%% admits the peer without the check.
 -spec authenticate(
     Conn :: pid(),
     Side :: client | server,
     Timeout :: timeout()
 ) ->
-    {ok, node() | undefined} | {error, term()}.
+    {ok, {authenticated_node, node()} | undefined} | {error, term()}.
 authenticate(Conn, server, Timeout) ->
-    barrel_p2p_dist_auth_stream:authenticate_incoming(Conn, Timeout);
+    bind(barrel_p2p_dist_auth_stream:authenticate_incoming(Conn, Timeout));
 authenticate(Conn, client, Timeout) ->
     %% barrel_p2p_dist:setup/5 stashes the dialed node in the process
     %% dictionary so the client side can verify cookie_only_nodes
     %% before accepting an AUTH_OK short-circuit.
     TargetNode = erlang:get(barrel_p2p_dial_target),
-    barrel_p2p_dist_auth_stream:authenticate_outgoing(Conn, TargetNode, Timeout).
+    bind(barrel_p2p_dist_auth_stream:authenticate_outgoing(Conn, TargetNode, Timeout)).
+
+bind({ok, Node}) when is_atom(Node), Node =/= undefined -> {ok, {authenticated_node, Node}};
+bind(Other) -> Other.
