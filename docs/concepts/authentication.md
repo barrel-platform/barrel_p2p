@@ -88,13 +88,11 @@ dialed (`auth_identity_mismatch`), before sending anything signed.
 A key trusted for some other node cannot stand in for the target.
 
 On the server side, the authenticated name must also be the name
-the peer then uses in the Erlang dist handshake. That check runs
-in `quic_dist` and needs a quic release that supports
-`{ok, {authenticated_node, Node}}` from the auth callback. Until
-barrel_p2p depends on it, a peer holding a key the server accepts
-can authenticate under that key's name and announce another name
-to `dist_util`. Use strict mode and keep every node key private
-until then.
+the peer then uses in the Erlang dist handshake. The auth callback
+returns `{ok, {authenticated_node, Node}}`, and `quic_dist` refuses a
+peer whose dist name differs, before the node becomes visible in
+`nodes()`. A key trusted for one node cannot be used to join as
+another.
 
 **The window check uses monotonic time.** The wall timestamp
 goes on the wire so peers can sanity-check each other's clocks,

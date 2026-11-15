@@ -271,9 +271,8 @@ Three attacks on v2 come out of the model:
 v3 signs the full transcript with a role label, and the client
 checks the authenticated name against the dialed node.
 `dist_name_is_authenticated` relies on `quic_dist` refusing a dist
-name that differs from the authenticated one. Until barrel_p2p
-depends on a quic release that does this, the server side of that
-lemma does not hold in the code.
+name that differs from the authenticated one, which quic does from
+3.0.0 when the callback returns `{ok, {authenticated_node, Node}}`.
 
 The model leaves out timestamps (freshness comes from the nonces),
 the cookie-only path, and TLS beyond the certificate hash.

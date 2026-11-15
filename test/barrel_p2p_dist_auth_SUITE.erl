@@ -52,7 +52,8 @@
     test_peer_name_bound/1,
     test_transcript_layout/1,
     test_client_refuses_other_name/1,
-    test_client_requires_dial_target/1
+    test_client_requires_dial_target/1,
+    test_callback_binds_authenticated_node/1
 ]).
 
 %% Test cases - Whitelist
@@ -111,7 +112,8 @@ groups() ->
             test_peer_name_bound,
             test_transcript_layout,
             test_client_refuses_other_name,
-            test_client_requires_dial_target
+            test_client_requires_dial_target,
+            test_callback_binds_authenticated_node
         ]},
         {whitelist_tests, [sequence], [
             test_whitelist_exact_match,
@@ -708,3 +710,35 @@ collect_sent(Acc) ->
 
 frame(Msg) ->
     <<(byte_size(Msg)):16/big, Msg/binary>>.
+
+%% quic_dist enforces the dist name only when the callback says which node
+%% it authenticated: a proven node must come back as
+%% {authenticated_node, Node}. Auth disabled or a cookie-only peer
+%% (undefined) and errors pass through unchanged.
+test_callback_binds_authenticated_node(_Config) ->
+    ok = meck:new(barrel_p2p_dist_auth_stream, [passthrough, no_link]),
+    try
+        ok = meck:expect(barrel_p2p_dist_auth_stream, authenticate_incoming, fun(_, _) ->
+            {ok, 'peer@host'}
+        end),
+        ?assertEqual(
+            {ok, {authenticated_node, 'peer@host'}},
+            barrel_p2p_dist_auth_callback:authenticate(self(), server, 1000)
+        ),
+        ok = meck:expect(barrel_p2p_dist_auth_stream, authenticate_outgoing, fun(_, _, _) ->
+            {ok, undefined}
+        end),
+        ?assertEqual(
+            {ok, undefined}, barrel_p2p_dist_auth_callback:authenticate(self(), client, 1000)
+        ),
+        ok = meck:expect(barrel_p2p_dist_auth_stream, authenticate_incoming, fun(_, _) ->
+            {error, untrusted_key}
+        end),
+        ?assertEqual(
+            {error, untrusted_key},
+            barrel_p2p_dist_auth_callback:authenticate(self(), server, 1000)
+        )
+    after
+        meck:unload(barrel_p2p_dist_auth_stream)
+    end,
+    ok.

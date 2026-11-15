@@ -13,10 +13,8 @@ and this project adheres to the 0.x semantics described in the README
   with the name the peer then used in the Erlang dist handshake. With the
   default trust-on-first-use mode and the default cookie, anyone could
   join a cluster under a known node's name; in strict mode, one stolen
-  node key was enough to impersonate every node. Clients now refuse a
-  server that authenticates as a node other than the one they dialed. The
-  server-side check needs a quic release that enforces the authenticated
-  name, and will follow.
+  node key was enough to impersonate every node. Both sides now refuse a
+  peer whose node name differs from the one it authenticated as.
 - A node's handshake signatures did not say which side produced them, so
   a signature made in one role passed in the other. An attacker could make
   a node accept itself as a peer, or impersonate a node to a client that
@@ -79,6 +77,11 @@ and this project adheres to the 0.x semantics described in the README
   custom replicated stores: gossip a write exactly as it was stored.
 
 ### Changed
+- quic 2.6.1 -> 3.0.0. quic now refuses a peer certificate issued for
+  another purpose. The certificates barrel_p2p generates already allow both
+  accepting and opening connections, so nothing changes for them. If you
+  supply your own node certificate, it must allow TLS server and client
+  authentication, or carry no Extended Key Usage.
 - A replicated entry now remembers only its latest write instead of every
   write it ever had. Replicas that saw the same writes now hold exactly the
   same state, not just the same visible value. Entries from nodes on the
