@@ -77,7 +77,7 @@ and this project adheres to the 0.x semantics described in the README
   custom replicated stores: gossip a write exactly as it was stored.
 
 ### Changed
-- quic 2.6.1 -> 3.0.0. quic now refuses a peer certificate issued for
+- quic 2.6.1 -> 3.1.0. quic now refuses a peer certificate issued for
   another purpose. The certificates barrel_p2p generates already allow both
   accepting and opening connections, so nothing changes for them. If you
   supply your own node certificate, it must allow TLS server and client
